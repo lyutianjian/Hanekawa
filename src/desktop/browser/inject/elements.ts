@@ -159,3 +159,14 @@ export function hkCollectElements(
     scanned: state.nodes,
   }
 }
+
+/**
+ * Drops the refs the last scan handed out, and the target the last resolve
+ * settled on. Used when the user has been at the page between turns: whatever
+ * `e3` pointed at may have been replaced, and a miss is the honest answer.
+ */
+export function hkForgetRefs(g: InjGlobal): boolean {
+  delete g.__hanekawaBrowserElements
+  delete g.__hanekawaBrowserTarget
+  return true
+}

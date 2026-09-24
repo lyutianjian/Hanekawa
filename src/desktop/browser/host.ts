@@ -37,6 +37,7 @@ import type {
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpLease, cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
+import { forgetRefsScript } from './inject/bundle.js'
 import {
   clickTarget,
   pressKeys,
@@ -68,6 +69,8 @@ export interface DesktopBrowserHostDeps {
 export class DesktopBrowserHost implements BrowserHost {
   private readonly projection = new BrowserProjection()
   private readonly ownership = new BrowserOwnership()
+  /** Tabs whose refs were dropped since their last element scan; see `forgetPage`. */
+  private readonly forgotten = new Set<string>()
   private readonly unsubscribe: readonly (() => void)[]
 
   constructor(private readonly deps: DesktopBrowserHostDeps) {
@@ -77,16 +80,30 @@ export class DesktopBrowserHost implements BrowserHost {
     // driving.
     this.unsubscribe = [
       deps.tabs.onTakeOver((tabId) => {
-        if (this.ownership.takeOver(tabId)) deps.tabs.setTakenOver(tabId, true)
+        if (this.ownership.takeOver(tabId)) this.paint([tabId], true)
+      }),
+      deps.tabs.onUserInput((tabId, intent) => {
+        const outcome = this.ownership.userInput(tabId, intent)
+        if (outcome === 'takeover') this.paint([tabId], true)
+        else if (outcome === 'stale') this.forgetPage(tabId)
       }),
       deps.tabs.onRelease((tabId) => {
-        for (const freed of this.ownership.release(tabId)) deps.tabs.setTakenOver(freed, false)
+        this.paint(this.ownership.release(tabId))
       }),
     ]
   }
 
   dispose(): void {
     for (const off of this.unsubscribe) off()
+  }
+
+  /**
+   * The runtime finished a session's turn. The session goes back to idle: its
+   * tabs are the user's again, a takeover it was under ends, and whatever the
+   * turn left running stops at its next checkpoint.
+   */
+  turnEnded(sessionId: string): void {
+    this.paint(this.ownership.turnEnded(sessionId))
   }
 
   async listTabs(caller: BrowserCaller): Promise<BrowserTabState[]> {
@@ -116,6 +133,7 @@ export class DesktopBrowserHost implements BrowserHost {
     }
     this.projection.dropTab(tabId)
     this.ownership.dropTab(tabId)
+    this.forgotten.delete(tabId)
   }
 
   async navigate(caller: BrowserCaller, tabId: string, url: string): Promise<BrowserTabState> {
@@ -188,6 +206,8 @@ export class DesktopBrowserHost implements BrowserHost {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
     const snapshot = await this.projection.elements(ownerOf(page), pageEvaluator(page), request)
+    // The page has live refs again, so the next idle touch has some to forget.
+    this.forgotten.delete(tabId)
     this.ownership.assertAllowed(caller.sessionId, revision)
     return snapshot
   }
@@ -318,10 +338,46 @@ export class DesktopBrowserHost implements BrowserHost {
    * turn is also what frees the tabs it had flagged.
    */
   private enter(caller: BrowserCaller): number {
-    const { revision, released } = this.ownership.observeTurn(caller.sessionId, caller.turnId)
-    for (const tabId of released) this.deps.tabs.setTakenOver(tabId, false)
+    const { revision } = this.ownership.observeTurn(caller.sessionId, caller.turnId)
+    this.paint(this.ownership.tabsOf(caller.sessionId))
     this.ownership.assertAllowed(caller.sessionId, revision)
     return revision
+  }
+
+  /**
+   * Draws each tab as its session's state says: the banner while the agent is
+   * driving, the badge while the user holds it, neither while idle. Both setters
+   * skip a value that did not change, so painting too much costs nothing.
+   *
+   * `takenOver` is passed by the takeover paths, which already know the answer,
+   * so the badge lands in the same change as the banner leaving.
+   */
+  private paint(tabIds: readonly string[], takenOver?: boolean): void {
+    for (const tabId of tabIds) {
+      const driver = this.ownership.tabDriver(tabId)
+      this.deps.tabs.setTakenOver(tabId, takenOver ?? driver === 'user')
+      this.deps.tabs.setAgentActive(tabId, driver === 'agent')
+    }
+  }
+
+  /**
+   * The user touched a tab while its session was idle: whatever the agent last
+   * read of it may no longer be true. Cursors go now; the refs live in the page,
+   * so they are cleared there — a ref the model still holds then misses with
+   * `STALE_ELEMENT` instead of landing on whatever took its place.
+   *
+   * Once per scan rather than per keystroke: the first touch already dropped
+   * every ref there was.
+   */
+  private forgetPage(tabId: string): void {
+    this.projection.dropTab(tabId)
+    if (this.forgotten.has(tabId)) return
+    const page = this.deps.tabs.pageFor(tabId)
+    if (page === undefined) return
+    this.forgotten.add(tabId)
+    pageEvaluator(page)(forgetRefsScript()).catch(() => {
+      // A page mid-navigation loses its automation world, refs and all.
+    })
   }
 
   /**
@@ -365,12 +421,13 @@ export class DesktopBrowserHost implements BrowserHost {
 
   /**
    * Records the driver, on both sides of the split: arbitration needs the
-   * session, and the panel needs to know there is one — a tab nobody drives
-   * draws「接管」as unavailable rather than as a press that does nothing.
+   * session, and the panel needs to know whether it is mid-turn — a tab nobody
+   * is driving draws「接管」as unavailable rather than as a press that does
+   * nothing.
    */
   private claim(tabId: string, sessionId: string): void {
     this.ownership.claim(tabId, sessionId)
-    this.deps.tabs.setAgentControlled(tabId)
+    this.paint([tabId])
   }
 
   private requirePage(caller: BrowserCaller, tabId: string): BrowserPage {

@@ -204,6 +204,44 @@ async function run() {
   const after = await codeOf(host.click(caller, tab.tabId, { selector: '#far' }))
   check('closing DevTools gives the automation its channel back', after === 'none' && contents.debugger.isAttached(), after)
 
+  // J: who is driving. Real input from the person, through Chromium's own
+  // input pipeline, read against the three states.
+  const rowOf = () => tabs.describe().find((entry) => entry.tabId === tab.tabId)
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 200))
+  check('mid-turn the tab is drawn as the agent\'s', rowOf()?.agentActive === true, JSON.stringify(rowOf()))
+  contents.sendInputEvent({ type: 'mouseWheel', x: 100, y: 100, deltaX: 0, deltaY: -120 })
+  contents.sendInputEvent({ type: 'keyDown', keyCode: 'Shift' })
+  contents.sendInputEvent({ type: 'keyUp', keyCode: 'Shift' })
+  await settle()
+  check('a wheel and a lone modifier are not a takeover', rowOf()?.takenOver !== true, JSON.stringify(rowOf()))
+  contents.sendInputEvent({ type: 'mouseDown', x: 100, y: 100, button: 'left', clickCount: 1 })
+  contents.sendInputEvent({ type: 'mouseUp', x: 100, y: 100, button: 'left', clickCount: 1 })
+  await settle()
+  check('a press mid-turn takes the tab over', rowOf()?.takenOver === true && rowOf()?.agentActive !== true, JSON.stringify(rowOf()))
+  const blocked = await codeOf(host.listTabs(caller))
+  check('the taken-over session is refused', blocked === 'BROWSER_USER_TAKEOVER', blocked)
+
+  host.turnEnded(caller.sessionId)
+  check('the turn ending hands the tab back to idle', rowOf()?.takenOver !== true && rowOf()?.agentActive !== true, JSON.stringify(rowOf()))
+  const late = await codeOf(host.listTabs(caller))
+  check('a straggler from the ended turn is refused', late === 'OPERATION_ABORTED', late)
+  const idleCaller = { sessionId: caller.sessionId, turnId: 'turn-2' }
+  const snapshot = await host.elements(idleCaller, tab.tabId, {})
+  const ref = /\b(e\d+)\b/.exec(snapshot.text)?.[1]
+  host.turnEnded(caller.sessionId)
+  contents.sendInputEvent({ type: 'mouseDown', x: 5, y: 5, button: 'left', clickCount: 1 })
+  contents.sendInputEvent({ type: 'mouseUp', x: 5, y: 5, button: 'left', clickCount: 1 })
+  contents.sendInputEvent({ type: 'keyDown', keyCode: 'A' })
+  await settle()
+  check('a press between turns is not a takeover', rowOf()?.takenOver !== true, JSON.stringify(rowOf()))
+  const nextTurn = { sessionId: caller.sessionId, turnId: 'turn-3' }
+  const stale = await codeOf(host.click(nextTurn, tab.tabId, { ref }))
+  check('a ref taken before the user touched the page misses', stale === 'STALE_ELEMENT', `${ref} → ${stale}`)
+  check('the next turn draws the tab as the agent\'s again', rowOf()?.agentActive === true, JSON.stringify(rowOf()))
+  contents.sendInputEvent({ type: 'keyDown', keyCode: 'A' })
+  await settle()
+  check('a keystroke mid-turn takes the tab over', rowOf()?.takenOver === true, JSON.stringify(rowOf()))
+
   host.dispose()
   tabs.dispose()
   window.destroy()

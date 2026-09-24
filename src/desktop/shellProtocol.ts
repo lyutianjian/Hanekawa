@@ -246,16 +246,17 @@ export interface WireBrowserTabInfo {
   favicon?: string
   /**
    * The agent's control of this tab was taken back by the user. Drawn as a
-   * badge; cleared by 「交还」, by the user's next message, or by the lane's
-   * session starting its next turn — whichever comes first.
+   * badge; cleared by 「交还」, by the user's next message, or by the turn it
+   * interrupted ending — whichever comes first.
    */
   takenOver?: boolean
   /**
-   * A session has addressed this tab, so there is something to take over. A tab
-   * the user opened with 「＋」 has nobody driving it and the panel draws its
-   * control as unavailable rather than as a press that does nothing.
+   * The session driving this tab is mid-turn, so there is something to take
+   * over: the panel draws the「agent 正在操作」banner. Between turns, and on a
+   * tab no session has driven, the tab is the user's and「接管」is unavailable
+   * rather than a press that does nothing.
    */
-  agentControlled?: boolean
+  agentActive?: boolean
 }
 
 // --- settings ----------------------------------------------------------------

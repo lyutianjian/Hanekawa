@@ -22,6 +22,7 @@ import {
   checkStateScript,
   conditionScript,
   elementsScript,
+  forgetRefsScript,
   guardScript,
   resolveScript,
   scrollScript,
@@ -366,6 +367,15 @@ test('the built script runs with nothing but a DOM, and hands back refs', () => 
   const registry = sandbox['__hanekawaBrowserElements'] as { snapshotId: string; elements: Map<string, unknown> }
   assert.equal(registry.snapshotId, 'snapshot-1')
   assert.equal(registry.elements.size, 2)
+})
+
+test('forgetting refs makes a ref from the last scan miss', () => {
+  const { sandbox } = runElements(el('body', { children: [el('button', { text: 'Save' })] }))
+  runResolve(sandbox, { ref: 'e1' })
+
+  vm.runInNewContext(forgetRefsScript(), sandbox)
+  assert.equal(sandbox['__hanekawaBrowserElements'], undefined)
+  assert.throws(() => runResolve(sandbox, { ref: 'e1' }), hasCode('STALE_ELEMENT'))
 })
 
 test('open shadow roots are walked, and slotted light children are not lost', () => {

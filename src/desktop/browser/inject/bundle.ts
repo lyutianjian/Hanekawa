@@ -44,7 +44,14 @@ import {
   type TargetOptions,
   type TargetResult,
 } from './actions.js'
-import { hkCollectElements, hkFlag, hkValue, type ElementScanOptions, type ElementScanResult } from './elements.js'
+import {
+  hkCollectElements,
+  hkFlag,
+  hkForgetRefs,
+  hkValue,
+  type ElementScanOptions,
+  type ElementScanResult,
+} from './elements.js'
 import {
   hkInputRole,
   hkInteractive,
@@ -89,6 +96,11 @@ const AIM = [hkDeepHit, hkContains, hkDeepActive, hkDescribe]
 export function elementsScript(options: ElementScanOptions): string {
   const call = `${hkCollectElements.name}(document, window, globalThis, ${literal(options)})`
   return wrap([...SHARED, hkFlag, hkValue, hkOffscreen, hkCollectElements], call)
+}
+
+/** Forgets every ref this page was handed; see `hkForgetRefs`. */
+export function forgetRefsScript(): string {
+  return wrap([hkForgetRefs], `${hkForgetRefs.name}(globalThis)`)
 }
 
 export function textScript(options: TextScanOptions): string {

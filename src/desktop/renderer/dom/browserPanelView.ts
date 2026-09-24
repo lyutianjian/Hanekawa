@@ -25,6 +25,7 @@ import { icon } from './icons.js'
 import type { WireBrowserRect, WireBrowserTabInfo } from '../../shellProtocol.js'
 import {
   addressLabel,
+  browserBanner,
   browserControlState,
   browserOverlay,
   normalizeAddress,
@@ -74,6 +75,7 @@ export function createBrowserPanelView(
     resizer: HTMLElement
     tabs: HTMLElement
     address: HTMLElement
+    banner: HTMLElement
     hole: HTMLElement
   },
   handlers: BrowserPanelHandlers,
@@ -285,6 +287,12 @@ export function createBrowserPanelView(
     // unusable exactly when someone is trying to leave the page.
     if (document.activeElement !== url) url.value = addressLabel(tab)
 
+    // Above the hole, not in it: the native view covers the hole entirely.
+    // Showing it shrinks the hole, which the `measure()` below pushes.
+    const banner = browserBanner(tab)
+    nodes.banner.textContent = banner ?? ''
+    show(nodes.banner, banner !== undefined)
+
     drawOverlay(browserOverlay(tab))
 
     // Last, and unconditional: a render that changed which tab is active, or
@@ -349,12 +357,13 @@ function tabClass(tab: WireBrowserTabInfo, activeTabId: string | undefined): str
   return classes.join(' ')
 }
 
-/** The three ids `index.html` declares for the panel, resolved in one place. */
+/** The ids `index.html` declares for the panel, resolved in one place. */
 export function browserPanelNodes(): {
   panel: HTMLElement
   resizer: HTMLElement
   tabs: HTMLElement
   address: HTMLElement
+  banner: HTMLElement
   hole: HTMLElement
 } {
   return {
@@ -362,6 +371,7 @@ export function browserPanelNodes(): {
     resizer: required('browser-resizer'),
     tabs: required('browser-tabs'),
     address: required('browser-address'),
+    banner: required('browser-banner'),
     hole: required('browser-hole'),
   }
 }

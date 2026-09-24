@@ -1031,6 +1031,16 @@ body.resizing #sidebar { transition: none; }
   padding: 0 var(--space-2);
 }
 .browser-takeover.holding { color: var(--accent-warn); }
+/* 「agent 正在操作」. Outside the hole, because the page's native view covers
+   the hole; its height comes out of the hole, which the view re-measures. */
+#browser-banner {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--type-meta);
+  color: var(--text-warn);
+  border-top: 1px solid var(--border-subtle);
+}
+#browser-banner[hidden] { display: none; }
 /* A groove rather than a form field, the same call `.sidebar-search` makes: this
    sits on the panel's own paper, and a bordered white capsule reads there as
    something unfinished. */

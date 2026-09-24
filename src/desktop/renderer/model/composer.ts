@@ -142,17 +142,14 @@ export type SubmitButtonState = 'idle' | 'ready' | 'streaming'
 export interface SubmitButtonView {
   readonly state: SubmitButtonState
   readonly label: string
-  /** The spinning ring beside the model chip; on exactly while a turn is in flight. */
-  readonly progress: boolean
 }
 
 export function submitButtonView(input: { streaming: boolean; empty: boolean }): SubmitButtonView {
   return {
-    // Streaming wins over emptiness: the ring and the "queue" label describe the
+    // Streaming wins over emptiness: the "queue" label describes the
     // turn, not the textarea, and an empty composer mid-turn must not read as idle.
     state: input.streaming ? 'streaming' : input.empty ? 'idle' : 'ready',
     label: submitLabel(input.streaming),
-    progress: input.streaming,
   }
 }
 

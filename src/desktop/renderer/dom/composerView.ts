@@ -139,8 +139,6 @@ export function createComposerView(els: {
   /** The permission-mode pill's trigger, and the shell its menu is drawn into. */
   chipPermission: HTMLButtonElement
   permissionShell: HTMLElement
-  /** The spinning ring beside the chip while a turn is in flight. */
-  progress: HTMLElement
   /** The draft attachments' strip host, above the textarea in the capsule. */
   attachStrip: HTMLElement
 }, actions: {
@@ -201,11 +199,8 @@ export function createComposerView(els: {
   replace(els.submit, icon('send'))
   replace(els.stop, icon('stop'))
   replace(els.attach, icon('plus'))
-  replace(els.progress, icon('spinner'))
   els.attach.setAttribute('aria-label', '附件')
   els.attach.title = '添加附件（图片 / @ 引用项目文件）'
-  els.progress.setAttribute('aria-hidden', 'true')
-  show(els.progress, false)
 
   // --- the attachment control (S11) ------------------------------------------------
   //
@@ -416,7 +411,6 @@ export function createComposerView(els: {
     const label = view.state === 'streaming' ? view.label : (sendBlockNote ?? view.label)
     els.submit.setAttribute('aria-label', label)
     els.submit.title = label
-    show(els.progress, view.progress)
   }
   els.chipRuntime.addEventListener('click', () => {
     if (runtimeMenu) {
@@ -756,6 +750,12 @@ export function createComposerView(els: {
   }
 
   els.input.addEventListener('input', () => applySubmitState())
+  // A draft past the height cap scrolls, and its top line then sits half under
+  // the capsule's edge. The stylesheet fades that edge, but only while there is
+  // something above it — at rest the first line must stay fully inked.
+  els.input.addEventListener('scroll', () => {
+    els.input.classList.toggle('scrolled', els.input.scrollTop > 0)
+  })
   // Paste: an image in the clipboard becomes an attachment rather than text.
   // Only files make that call — a plain-text paste, even of a path, stays the
   // textarea's business (path pastes are the TUI's rule; here the picker, drag

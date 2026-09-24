@@ -230,7 +230,6 @@ const composer = createComposerView({
   chipShell: required('composer-chip'),
   chipPermission: required<HTMLButtonElement>('chip-permission'),
   permissionShell: required('composer-permission'),
-  progress: required('composer-progress'),
   attachStrip: required('composer-attachments'),
 }, {
   // The chip's popover is built from the same picker rows `/model` and `/effort`

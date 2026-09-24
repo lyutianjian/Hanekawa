@@ -132,9 +132,7 @@ test('the send button has three visual states, and streaming outranks emptiness'
   assert.equal(submitButtonView({ streaming: true, empty: false }).state, 'streaming')
 })
 
-test('the ring is on exactly while a turn is in flight, and the label still queues', () => {
-  assert.equal(submitButtonView({ streaming: true, empty: false }).progress, true)
-  assert.equal(submitButtonView({ streaming: false, empty: false }).progress, false)
+test('mid-turn the label still queues', () => {
   // The three states are visual only: mid-turn the button still means "queue",
   // which is what `model/keymap.ts` decides for Enter. If this ever says
   // "interrupt", the two paths have drifted.

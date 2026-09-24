@@ -41,9 +41,8 @@ test('token counts abbreviate without losing the leading digits', () => {
 })
 
 test('an untouched session leaves the status line empty', () => {
-  // `#status` has no reserved height: three empty flex items generate no line
-  // box, so a fresh session must produce an empty string rather than a row of
-  // zeros holding a band of dead space under the composer.
+  // `#status` reserves its line height, so an empty string draws nothing
+  // rather than a row of zeros under the composer.
   for (const view of [statusUsageView(usage()), statusUsageView(undefined)]) {
     assert.deepEqual(view.metrics, [])
     assert.equal(view.rate, undefined)
@@ -116,6 +115,18 @@ test('a session with no request behind it yet shows the count and no rate', () =
   const view = statusUsageView(usage({ inputTokens: 100, outputTokens: 500 }))
   assert.equal(view.rate, undefined)
   assert.equal(view.text, '总计 600 tok')
+})
+
+test('a session that never touched the cache shows no rate', () => {
+  // An endpoint with prompt caching off reports neither reads nor writes; a
+  // 0.0% there would read as a cache that is failing, not one that is absent.
+  const view = statusUsageView(
+    usage({ inputTokens: 5_000, outputTokens: 500 }),
+    usage({ inputTokens: 2_000, outputTokens: 200 }),
+  )
+  assert.equal(view.rate, undefined)
+  assert.equal(view.text, '总计 5.5k tok')
+  assert.ok(!view.breakdown.some((row) => row.label === '会话累计命中'))
 })
 
 test('a turn with no input side reports no rate at all', () => {

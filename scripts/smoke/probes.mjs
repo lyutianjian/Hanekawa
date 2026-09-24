@@ -466,7 +466,6 @@ export const chip = () => `(() => {
     },
     permission: (document.getElementById('chip-permission') || {}).textContent || '',
     submitState: (document.getElementById('submit') || { className: '' }).className,
-    progress: (document.getElementById('composer-progress') || {}).hidden,
   }
 })()`
 

@@ -69,7 +69,6 @@ interface Rendered {
     | 'chipShell'
     | 'chipPermission'
     | 'permissionShell'
-    | 'progress'
     | 'attachStrip',
     HTMLElement
   >
@@ -117,7 +116,6 @@ function render(t: { after(fn: () => void): void }): Rendered {
     chipShell: stub.createContainer(),
     chipPermission: stub.createContainer(),
     permissionShell: stub.createContainer(),
-    progress: stub.createContainer(),
     attachStrip: stub.createContainer(),
   }
   els.permissionShell.appendChild(els.chipPermission)
@@ -149,7 +147,6 @@ function render(t: { after(fn: () => void): void }): Rendered {
       chipShell: els.chipShell,
       chipPermission: els.chipPermission as HTMLButtonElement,
       permissionShell: els.permissionShell,
-      progress: els.progress,
       attachStrip: els.attachStrip,
     },
     {
@@ -568,7 +565,7 @@ test('a programmatic edit updates the button too', (t) => {
   assert.deepEqual(r.view('submit').classes, ['idle'])
 })
 
-test('streaming turns the ring on and keeps the button enabled and queueing', (t) => {
+test('streaming keeps the button enabled and queueing', (t) => {
   const r = render(t)
   input(r).value = 'next message'
   r.stub.dispatch(r.els.input, 'input')
@@ -576,7 +573,6 @@ test('streaming turns the ring on and keeps the button enabled and queueing', (t
   r.composer.setStreaming(true)
 
   assert.deepEqual(r.view('submit').classes, ['streaming'])
-  assert.equal(r.view('progress').hidden, false)
   assert.equal(r.view('stop').hidden, false, 'stop appears beside it, not instead of it')
   // Enabled in every state: `requestSubmit()` ignores a disabled button, so the
   // click would vanish with no error anywhere.
@@ -585,7 +581,6 @@ test('streaming turns the ring on and keeps the button enabled and queueing', (t
 
   r.composer.setStreaming(false)
   assert.deepEqual(r.view('submit').classes, ['ready'])
-  assert.equal(r.view('progress').hidden, true)
   assert.equal(r.view('stop').hidden, true)
 })
 

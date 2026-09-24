@@ -632,11 +632,11 @@ body {
      figures now, and a baseline hangs a 11px icon off the text's descender. */
   align-items: center;
   padding: 2px 8px 0;
-  /* No reserved height: `statusView` writes empty strings while nothing is
-     happening, and three empty flex items generate no line box — so the strip
-     collapses to nothing on a fresh session instead of holding a band of dead
-     space under the composer. It grows on its own once a turn has run. */
-  min-height: 0;
+  /* The line's height is reserved from the start: `statusView` writes empty
+     strings on a fresh session, and a strip that only grew once the first turn
+     reported usage pushed the whole composer up by its height mid-session. */
+  min-height: 20px;
+  box-sizing: border-box;
   color: var(--text-tertiary);
   font-size: var(--type-meta);
   /* Usage and cost are rewritten on every usage event while a turn streams, and
@@ -1092,8 +1092,11 @@ body.settings-open #browser-resizer { display: none; }
   margin: var(--space-3) var(--space-3) var(--space-2);
   /* A groove, not a form field (design_guidance 六.2): the sidebar shares the
      title bar's paper, and a white capsule behind a strong hairline reads there
-     as something waiting to be filled in. Card fill, no border at all. */
+     as something waiting to be filled in. Card fill, no border at all — only
+     an inset hairline in the quietest border rung, because in dark the card
+     fill sits 3 steps off the sidebar's paper and the groove disappears. */
   background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px var(--border-subtle);
   color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-pill);
@@ -1501,6 +1504,10 @@ body.settings-open #browser-resizer { display: none; }
 .session-row:hover .session-title.marquee,
 .session-row:focus-within .session-title.marquee {
   text-overflow: clip;
+  /* The ellipsis is gone from here on, including the hover delay before the
+     track starts moving — so the right edge fades instead of cutting the name
+     mid-character. */
+  mask-image: linear-gradient(to right, currentColor calc(100% - 20px), transparent);
 }
 .session-row:hover .session-title.marquee > .session-title-text,
 .session-row:focus-within .session-title.marquee > .session-title-text {
@@ -1531,7 +1538,7 @@ body.settings-open #browser-resizer { display: none; }
 }
 .session-badge { flex: 0 0 auto; display: inline-flex; align-items: center; }
 .session-badge .icon { width: 8px; height: 8px; }
-.session-badge.running { color: var(--accent-info); gap: 4px; }
+.session-badge.running { color: var(--accent-brand-strong); gap: 4px; }
 /* The running badge is a spinning ring rather than a static dot; awaiting-input
    stays a still dot. The spinner path is stroked, so `.running`'s colour reaches
    it through `currentColor`.
@@ -2551,9 +2558,14 @@ body.settings-open #browser-resizer { display: none; }
   margin: 0 auto;
   padding: var(--space-6) var(--reading-gutter);
 }
+/* While the completion list is up it covers the lower half of the Hero, and the
+   upper half peeking out above it reads as a rendering fault. The block steps
+   back for as long as the list is wanted (`inert` is off exactly then). */
+.welcome { transition: opacity var(--motion-micro) var(--ease-standard); }
+#canvas:has(#suggestions:not([inert])) .welcome { opacity: 0; }
 /* The masthead, and the rule it hangs on. A left border rather than a drawn
    element: it then spans exactly the block's own height, so a Hero that wraps
-   to two lines lengthens the rule instead of leaving it short. */
+   to two lines lengthens the rule instead of leaving it short.
    Spelled as three longhands rather than the `border-left` shorthand: the
    accent has to land on a *colour* property or `rendererStyleTokens`'s
    "accents are never fills" guard cannot tell a hairline from a background,
@@ -3230,6 +3242,11 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
      a stylesheet cannot do that arithmetic. */
   max-height: 200px;
 }
+/* Scrolled down: the line above the top edge fades out instead of being cut
+   through its middle. `composerView` sets the class from `scrollTop`. */
+#input.scrolled {
+  mask-image: linear-gradient(to bottom, transparent, currentColor 12px);
+}
 #composer-bar {
   display: flex;
   align-items: center;
@@ -3323,8 +3340,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .composer-menu-item.active { background: var(--surface-active); }
 /* The in-flight ring, beside the model chip. Same rotation the sidebar's
    running badge uses — one animation, one duration. */
-#composer-progress { display: inline-flex; color: var(--text-secondary); }
-#composer-progress .icon { animation: spin var(--motion-running) linear infinite; }
 /* The context indicator and the runtime chip are one visual group, but not one
    control: four pixels keeps the gauge beside the model name without borrowing
    the action bar's eight-pixel rhythm. */
@@ -5131,8 +5146,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   .task-bead,
   .task-panel,
   .session-badge.running .icon,
-  .session-title-text,
-  #composer-progress .icon {
+  .session-title-text {
     animation: none !important;
   }
   .step.thinking.live .step-rule {
@@ -5145,6 +5159,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   .session-row:hover .session-title.marquee,
   .session-row:focus-within .session-title.marquee {
     text-overflow: ellipsis;
+    mask-image: none;
   }
   .session-row:hover .session-title.marquee > .session-title-text,
   .session-row:focus-within .session-title.marquee > .session-title-text {

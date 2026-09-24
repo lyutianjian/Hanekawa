@@ -176,14 +176,18 @@ export function statusUsageView(
   ]
 
   const parts = metrics.map((metric) => `${metric.label} ${metric.value}`)
-  const lastRate = lastRequest ? hitRate(lastRequest) : undefined
+  // A session that has never written to or read from the cache is one whose
+  // endpoint is not caching at all: 「本轮命中 0.0%」 there reads as a broken
+  // cache rather than an absent one, so the rate is left out entirely.
+  const cacheTouched = cacheReadInputTokens > 0 || writes(total) > 0
+  const lastRate = lastRequest && cacheTouched ? hitRate(lastRequest) : undefined
   let rate: UsageRateView | undefined
   if (lastRate !== undefined) {
     rate = { label: '本轮命中', percent: `${lastRate.toFixed(1)}%` }
     parts.push(`${rate.label} ${rate.percent}`)
     breakdown.push({ label: '本轮命中', value: rate.percent })
   }
-  const sessionRate = hitRate(total)
+  const sessionRate = cacheTouched ? hitRate(total) : undefined
   if (sessionRate !== undefined) {
     breakdown.push({ label: '会话累计命中', value: `${sessionRate.toFixed(1)}%` })
   }

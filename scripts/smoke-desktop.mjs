@@ -179,8 +179,8 @@ async function main() {
 
     // --- fixtures ------------------------------------------------------------
     console.log(`scratch: ${runDir}`)
-    const projectA = makeProject(runDir, 'projA')
-    const projectB = makeProject(runDir, 'projB')
+    const projectA = makeProject(runDir, 'projA', environment.home)
+    const projectB = makeProject(runDir, 'projB', environment.home)
     if (opts.firstRun) firstRunFixture = await startFirstRunFixture()
     // `ask: ['Write']` makes the permission prompt deterministic whatever the
     // gate's default for a `confirm` tool is, and it is a *local* entry, so the

@@ -1,6 +1,6 @@
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { patchDetail } from '../editPatch.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from '../fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
@@ -33,7 +33,7 @@ export const editFileTool: Tool = {
       newString: string
       replaceAll?: boolean
     }
-    const absolute = assertInsideCwd(context.cwd, filePath)
+    const absolute = resolveToolPath(context, filePath)
     if (absolute.toLowerCase().endsWith('.ipynb')) {
       return {
         ok: false,

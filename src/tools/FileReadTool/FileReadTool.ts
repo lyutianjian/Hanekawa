@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod/v3'
 import type { Tool, ToolContext, ToolResult } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { readFileAndRemember } from '../fileState.js'
 import {
   formatImageCaption,
@@ -56,7 +56,7 @@ export const readFileTool: Tool = {
   shouldDisplayResult: () => true,
   async execute(input, context) {
     const { filePath, offset = 1, limit } = input as { filePath: string; offset?: number; limit?: number }
-    const absolute = assertInsideCwd(context.cwd, filePath)
+    const absolute = resolveToolPath(context, filePath)
 
     // Block dangerous device paths
     if (isBlockedDevicePath(absolute)) {

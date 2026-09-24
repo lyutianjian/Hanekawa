@@ -569,8 +569,8 @@ export interface WireHelloResult {
   projectName: string
   /**
    * Whether this pane runs in the global (home-rooted) workspace rather than a
-   * project — the desktop's fallback when nothing is opened, whose records land
-   * in `~/.myagent/sessions`.
+   * project — the desktop's fallback when nothing is opened, whose records are
+   * keyed by the home directory under `~/.myagent/projects/`.
    *
    * A boolean on the wire rather than a name the renderer could match: display
    * names are localized and mutable, and the empty-state screen has to know the

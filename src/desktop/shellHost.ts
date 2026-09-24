@@ -1,6 +1,7 @@
 import { z } from 'zod/v3'
 import path from 'node:path'
 import { homedir } from 'node:os'
+import { rm } from 'node:fs/promises'
 import { maskKey } from '../config/maskKey.js'
 import { VALID_EFFORT_LEVELS, normalizeSupportedEfforts } from '../config/effort.js'
 import { resolveImageCapability, SUPPORTED_PROVIDER_NAMES } from '../config/providers/registry.js'
@@ -33,7 +34,7 @@ import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/A
 import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
 import { importSkill } from '../services/skills/importSkill.js'
 import { peekSessions } from './recentProjects.js'
-import { getSkillsDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
+import { getProjectDataDir, getSkillsDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type {
   DirectoryProject,
   DirectoryWorkspace,
@@ -1185,8 +1186,9 @@ export class ShellHost<
    * path a single `delete-session` takes — that function owns *what* a session
    * leaves behind (JSONL, file history, session memory, subagent transcripts),
    * and duplicating the list here is how the other three got leaked once before.
-   * Nothing else under `.myagent/` is touched: settings, skills and rules are
-   * not history.
+   * Once every session is gone, the rest of the project's data dir (index,
+   * plans) goes with it. The project's own `.myagent/` is never touched:
+   * settings, skills and rules are not history.
    *
    * The lane teardown borrows `deleteSession`'s deferral (below): detaching the
    * window's *last* lane fires `onAllLanesClosed`, which quits the app off
@@ -1259,6 +1261,7 @@ export class ShellHost<
           failures.push(`${session.id}: ${error instanceof Error ? error.message : String(error)}`)
         }
       }
+      if (failures.length === 0) await rm(getProjectDataDir(cwd), { recursive: true, force: true })
     } catch (error) {
       failures.push(error instanceof Error ? error.message : String(error))
     }

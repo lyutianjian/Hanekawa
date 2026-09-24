@@ -6,7 +6,7 @@ import type { SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
 import type { SessionRecord } from './types.js'
 import { parseJsonLinesWithDiagnostics } from '../utils/json.js'
-import { getMyAgentDir } from '../utils/paths.js'
+import { getSessionsDir } from '../utils/paths.js'
 
 export function getSubagentTranscriptPath(cwd: string, parentSessionId: string, agentId: string): string {
   return path.join(getSubagentTranscriptDir(cwd, parentSessionId), `${agentId}.jsonl`)
@@ -20,7 +20,7 @@ export function getSubagentTranscriptPath(cwd: string, parentSessionId: string, 
  * parent's id.
  */
 export function getSubagentTranscriptDir(cwd: string, parentSessionId: string): string {
-  return path.join(getMyAgentDir(cwd), 'sessions', 'subagents', parentSessionId)
+  return path.join(getSessionsDir(cwd), 'subagents', parentSessionId)
 }
 
 export class SidechainRecordStream implements RecordStream {

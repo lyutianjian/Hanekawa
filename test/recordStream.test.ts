@@ -8,6 +8,7 @@ import { MemoryRecordStream } from '../src/harness/recordStream.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { JsonlRecordStream } from '../src/sessions/recordStream.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { getSessionsDir } from '../src/utils/paths.js'
 
 function message(id: string, content: string): SessionRecord {
   return {
@@ -54,7 +55,7 @@ test('JsonlRecordStream delegates records and metrics to SessionStore', async ()
     assert.equal(loaded.records.length, 1)
     assert.equal(loaded.records[0]?.id, 'msg-1')
 
-    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metricsPath = path.join(getSessionsDir(dir), `${session.id}.metrics.jsonl`)
     const metrics = readFileSync(metricsPath, 'utf8').trim().split('\n')
     assert.equal(metrics.length, 2)
     assert.equal(JSON.parse(metrics[1] ?? '{}').event, 'session_cache_summary')

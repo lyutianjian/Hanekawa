@@ -2,7 +2,7 @@ import { mkdir, readdir, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from '../fileState.js'
 import { patchDetail } from '../editPatch.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
@@ -28,7 +28,7 @@ export const writeFileTool: Tool = {
   },
   async execute(input, context) {
     const { filePath, content } = input as { filePath: string; content: string }
-    const absolute = assertInsideCwd(context.cwd, filePath)
+    const absolute = resolveToolPath(context, filePath)
     const unsafeParentBeforeRead = await assertParentNotSymlink(absolute, filePath)
     if (unsafeParentBeforeRead) {
       return unsafeParentBeforeRead

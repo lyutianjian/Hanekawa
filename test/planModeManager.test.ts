@@ -55,7 +55,7 @@ test('resolvePlanFilePathLazy generates the slug on demand', async () => {
     const { manager } = await setup(cwd)
     await manager.onEnterPlanMode()
     const planPath = manager.resolvePlanFilePathLazy()
-    assert.match(planPath, /[/\\]\.myagent[/\\]plans[/\\][a-z]+-[a-z]+-[a-z]+\.md$/)
+    assert.match(planPath, /[/\\]plans[/\\][a-z]+-[a-z]+-[a-z]+\.md$/)
     const slug = manager.getSlug()
     assert.ok(slug)
     assert.ok(planPath.includes(slug!))
@@ -106,7 +106,7 @@ test('buildBridge returns a bridge whose activePlanFilePath getter is live', asy
     assert.equal(bridge.activePlanFilePath, undefined, 'no path before slug')
     await manager.onEnterPlanMode()
     manager.resolvePlanFilePathLazy()
-    assert.match(bridge.activePlanFilePath ?? '', /\.myagent[/\\]plans[/\\][a-z]+-[a-z]+-[a-z]+\.md$/)
+    assert.match(bridge.activePlanFilePath ?? '', /[/\\]plans[/\\][a-z]+-[a-z]+-[a-z]+\.md$/)
   })
 })
 

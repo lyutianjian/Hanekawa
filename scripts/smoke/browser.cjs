@@ -51,17 +51,45 @@ const PAGES = {
     <div style="height:3000px">top</div>
     <button id="far" style="width:200px;height:40px" onclick="document.title = 'clicked'">far</button>
     <div style="height:3000px">bottom</div>`,
+  '/hover': `<!doctype html><title>Hover</title>
+    <div id="trigger" style="width:200px;height:40px;background:#ddd">menu</div>
+    <ul id="menu" style="display:none"><li>Profile</li></ul>
+    <p id="ghost" hidden>ghost</p>
+    <button id="later" disabled style="width:200px;height:40px">later</button>
+    <input id="agree" type="checkbox">
+    <p id="flicker" style="display:none">flicker</p>
+    <script>
+      const menu = document.getElementById('menu')
+      document.getElementById('trigger').onmouseenter = () => { menu.style.display = 'block' }
+      window.startTimers = () => {
+        const flicker = document.getElementById('flicker').style
+        setTimeout(() => { document.getElementById('later').disabled = false; document.getElementById('agree').checked = true }, 300)
+        setTimeout(() => { flicker.display = 'block' }, 100)
+        setTimeout(() => { flicker.display = 'none' }, 250)
+        setTimeout(() => { flicker.display = 'block' }, 400)
+      }
+    </script>`,
+  // The HTML is parsed at once; the image holds the load back.
+  '/slow': `<!doctype html><title>Slow</title><p>parsed</p><img src="/slow.png">`,
   '/spa': `<!doctype html><title>Spa</title>
     <button id="push" style="width:200px;height:40px" onclick="history.pushState({}, '', '/spa/two')">push</button>`,
 }
 
 const server = createServer((request, response) => {
-  if (request.url === '/report.csv') {
+  const path = new URL(request.url ?? '/', 'http://x').pathname
+  if (path === '/report.csv') {
     response.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="report 1.csv"' })
     response.end('a,b\n1,2\n')
     return
   }
-  const page = PAGES[new URL(request.url ?? '/', 'http://x').pathname]
+  if (path === '/slow.png') {
+    setTimeout(() => {
+      response.writeHead(404)
+      response.end()
+    }, 1500)
+    return
+  }
+  const page = PAGES[path]
   response.writeHead(page === undefined ? 404 : 200, { 'content-type': 'text/html; charset=utf-8' })
   response.end(page ?? 'not found')
 })
@@ -188,6 +216,40 @@ async function run() {
   check('the click reached the button', clicked?.title === 'clicked', clicked?.title)
   const scrolled = await host.scroll(caller, tab.tabId, { direction: 'top' })
   check('scrolling to the top reports where it landed', /y=0 of /.test(scrolled.text), scrolled.text)
+
+  // K: hover opens what only hover opens; the richer wait states read the real DOM.
+  await host.navigate(caller, tab.tabId, `${origin}/hover`)
+  await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  const hovered = await host.hover(caller, tab.tabId, { selector: '#trigger' }).catch((error) => error)
+  check('hover reports the element it moved onto', /hovered over #trigger/.test(hovered?.text ?? ''), hovered?.text ?? hovered?.message)
+  const menu = await codeOf(host.waitFor(caller, tab.tabId, { selector: '#menu', timeoutMs: 1000 }))
+  check('the hover opened the menu', menu === 'none', menu)
+  const ghostVisible = await codeOf(host.waitFor(caller, tab.tabId, { selector: '#ghost', timeoutMs: 200 }))
+  const ghostAttached = await codeOf(host.waitFor(caller, tab.tabId, { selector: '#ghost', state: 'attached', timeoutMs: 200 }))
+  check('a hidden node is attached but not visible', ghostVisible === 'WAIT_TIMEOUT' && ghostAttached === 'none', `${ghostVisible}/${ghostAttached}`)
+  await tabs.pageFor(tab.tabId).contents.executeJavaScript('startTimers()')
+  const enabled = await codeOf(host.waitFor(caller, tab.tabId, { selector: '#later', state: 'enabled', timeoutMs: 2000 }))
+  check('a wait for enabled sees the button come alive', enabled === 'none', enabled)
+  const checked = await codeOf(host.waitFor(caller, tab.tabId, { selector: '#agree', state: 'checked', timeoutMs: 2000 }))
+  check('a wait for checked sees the box ticked', checked === 'none', checked)
+  const stableStart = Date.now()
+  const stable = await host.waitFor(caller, tab.tabId, { selector: '#flicker', stableForMs: 300, timeoutMs: 3000 }).catch((error) => error)
+  const stableMs = Date.now() - stableStart
+  // The timers were started a little before this wait; it can only succeed
+  // once the third timer fired and the element then held for 300ms.
+  check('stableForMs outlasts a flicker', /held for/.test(stable?.text ?? '') && stableMs >= 300, `${stableMs}ms ${stable?.text ?? stable?.message}`)
+
+  const domStart = Date.now()
+  await host.navigate(caller, tab.tabId, `${origin}/slow`)
+  const dom = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000, until: 'domcontentloaded' })
+  const domMs = Date.now() - domStart
+  check('domcontentloaded does not wait for the slow image', dom.loading === true && domMs < 1200, `${domMs}ms loading=${dom.loading}`)
+  const full = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  const fullMs = Date.now() - domStart
+  check('load waits for it', full.loading === false && fullMs >= 1400, `${fullMs}ms`)
+  // Back to the page the steps below click on.
+  await host.navigate(caller, tab.tabId, `${origin}/smooth`)
+  await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
 
   // I: the debugger is attached for input, steps aside for DevTools, and the
   // automation refuses — retryably, naming DevTools — until it is closed.

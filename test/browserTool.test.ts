@@ -58,6 +58,7 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     pressKey: record('pressKey', { text: 'pressed Escape on the focused element.' }),
     selectOption: record('selectOption', { text: 'selected option 1 "France" in e5 (combobox "Country").' }),
     setChecked: record('setChecked', { text: 'e6 (checkbox "Remember me") is already checked; nothing was clicked.' }),
+    hover: record('hover', { text: 'hovered over e7 (button "Menu") at (40, 20).' }),
     scroll: record('scroll', { text: 'scrolled down 648px: y=648 of 4000.' }),
     waitFor: record('waitFor', { text: '#done is visible.' }),
     ...overrides,
@@ -163,6 +164,36 @@ test('the input operations pass their own fields through, and carry the abort si
   // shorter question than a document arriving.
   assert.deepEqual(calls[3]?.args[2], { text: 'Done', timeoutMs: 10_000, signal: controller.signal })
   assert.equal(clicked.content, 'clicked e3 (button "Sign in") at (120, 240).')
+})
+
+test('hover, the richer wait states and wait_for_load until reach the host', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const hovered = await run(tool, { operation: 'page.hover', tabId: 'tab-1', ref: 'e7' })
+  await run(tool, { operation: 'page.wait_for', tabId: 'tab-1', selector: '#go', state: 'enabled', stableForMs: 300 })
+  await run(tool, { operation: 'tab.wait_for_load', tabId: 'tab-1', until: 'domcontentloaded' })
+
+  assert.equal(hovered.content, 'hovered over e7 (button "Menu") at (40, 20).')
+  assert.deepEqual(calls.map((call) => call.method), ['hover', 'waitFor', 'waitForLoad'])
+  assert.deepEqual(calls[0]?.args[2], { ref: 'e7' })
+  assert.deepEqual(calls[1]?.args[2], { selector: '#go', state: 'enabled', stableForMs: 300, timeoutMs: 10_000 })
+  assert.deepEqual(calls[2]?.args[2], { timeoutMs: 15_000, until: 'domcontentloaded' })
+
+  assert.equal((await run(tool, { operation: 'page.hover', tabId: 'tab-1' })).ok, false)
+  const withText = validateBrowserInput({ operation: 'page.wait_for', tabId: 't', text: 'Go', state: 'checked' })
+  assert.equal(withText.ok, false)
+  assert.match(withText.errors[0]?.message ?? '', /pass a CSS "selector" and no "text"/)
+  const tooStable = validateBrowserInput({ operation: 'page.wait_for', tabId: 't', selector: '#a', stableForMs: 2000, timeoutMs: 1000 })
+  assert.equal(tooStable.ok, false)
+  assert.match(tooStable.errors[0]?.message ?? '', /stableForMs \(2000\) must be shorter/)
+  assert.equal(validateBrowserInput({ operation: 'page.wait_for', tabId: 't', text: 'Go', state: 'detached' }).ok, true)
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'hover', tab_id: 't', stable_for_ms: '200', waitUntil: 'load' }), {
+    operation: 'page.hover',
+    tabId: 't',
+    stableForMs: 200,
+    until: 'load',
+  })
 })
 
 test('press_key passes its chord through, and takes a single key or a snake-cased alias', async () => {
@@ -297,7 +328,7 @@ test('the flat API schema covers every branch and requires only the discriminato
     }
   }
   assert.deepEqual(browserApiInputSchema.properties?.operation?.enum, [...BROWSER_OPERATIONS])
-  assert.deepEqual(browserApiInputSchema.properties?.state?.enum, ['visible', 'hidden'])
+  assert.deepEqual(browserApiInputSchema.properties?.state?.enum, ['visible', 'hidden', 'attached', 'detached', 'enabled', 'disabled', 'checked', 'unchecked'])
   assert.match(browserApiInputSchema.properties?.text?.description ?? '', /page\.type: The text to type/)
   // The union is what actually decides, so it must still refuse a mixed call.
   assert.equal(browserInputSchema.safeParse({ operation: 'browser.get_state', url: 'x' }).success, false)

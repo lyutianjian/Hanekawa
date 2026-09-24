@@ -137,11 +137,26 @@ export interface ScrollResult {
   title: string
 }
 
+/**
+ * What a wait asks of its target. `visible`/`hidden` are about rendering,
+ * `attached`/`detached` about the node existing at all, and the last four are
+ * about one element's own state and so need a selector and no text.
+ */
+export type ConditionState =
+  | 'visible'
+  | 'hidden'
+  | 'attached'
+  | 'detached'
+  | 'enabled'
+  | 'disabled'
+  | 'checked'
+  | 'unchecked'
+
 export interface ConditionOptions {
   /** Restricts the search, or is the condition itself when `text` is absent. */
   selector?: string
   text?: string
-  state: 'visible' | 'hidden'
+  state: ConditionState
   maxNodes: number
   budgetMs: number
   segmentMax: number
@@ -542,9 +557,11 @@ export function hkScrollPage(doc: InjDocument, win: InjWindow, g: InjGlobal, opt
 export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: ConditionOptions): ConditionResult {
   const url = hkString(hkProp(doc as unknown as InjElement, 'URL'))
   const title = typeof doc.title === 'string' ? doc.title : ''
-  const wantVisible = opts.state === 'visible'
+  const state = opts.state
+  // `hidden` and `detached` are the negations; everything else asks for presence.
+  const negated = state === 'hidden' || state === 'detached'
   const answer = (present: boolean, observed: string): ConditionResult => ({
-    matched: wantVisible ? present : !present,
+    matched: negated ? !present : present,
     observed,
     url,
     title,
@@ -554,11 +571,32 @@ export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: Conditi
   const root = selector === undefined || selector === '' ? doc.body ?? doc.documentElement : hkQuery(doc, selector)
   const where = selector === undefined || selector === '' ? 'the page' : selector
   if (root === null || root === undefined) {
-    return answer(false, 'no element matches ' + where)
+    // No element is neither enabled nor disabled: those states wait for one.
+    return { matched: state === 'hidden' || state === 'detached', observed: 'no element matches ' + where, url, title }
+  }
+
+  if (state === 'enabled' || state === 'disabled') {
+    // `:disabled` also covers a control inside a disabled fieldset.
+    const off = hkFlag(root, 'disabled', 'aria-disabled') || root.matches(':disabled')
+    return { matched: state === 'disabled' ? off : !off, observed: where + (off ? ' is disabled' : ' is enabled'), url, title }
+  }
+  if (state === 'checked' || state === 'unchecked') {
+    const tag = hkTag(root)
+    const type = hkString(root.getAttribute('type')).toLowerCase()
+    let on: boolean
+    if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+      on = hkProp(root, 'checked') === true
+    } else if (root.hasAttribute('aria-checked')) {
+      on = hkString(root.getAttribute('aria-checked')).toLowerCase() === 'true'
+    } else {
+      throw new Error('UNSUPPORTED_ELEMENT: ' + where + ' is a ' + hkRole(root) + ', not a checkbox, radio or switch.')
+    }
+    return { matched: state === 'checked' ? on : !on, observed: where + (on ? ' is checked' : ' is unchecked'), url, title }
   }
 
   const needle = opts.text
   if (needle === undefined || needle === '') {
+    if (state === 'attached' || state === 'detached') return answer(true, where + ' is attached')
     const visible = hkVisible(root, win)
     return answer(visible, visible ? where + ' is visible' : where + ' is present but not visible')
   }
@@ -566,11 +604,12 @@ export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: Conditi
   // Text is matched per block, the unit the text snapshot reads out: a phrase
   // split across inline tags (`Order <b>confirmed</b>`) is found, while one
   // scattered across unrelated blocks — which a container's `textContent`
-  // would happily match — is not.
+  // would happily match — is not. `attached`/`detached` read hidden text too.
+  const inDom = state === 'attached' || state === 'detached'
   const lower = needle.toLowerCase()
-  const state = { nodes: 0, maxNodes: opts.maxNodes, deadline: Date.now() + opts.budgetMs, truncated: false }
-  const blocks = hkTextBlocks(root, win, state, {
-    visibleOnly: true,
+  const scan = { nodes: 0, maxNodes: opts.maxNodes, deadline: Date.now() + opts.budgetMs, truncated: false }
+  const blocks = hkTextBlocks(root, win, scan, {
+    visibleOnly: !inDom,
     maxBlocks: opts.maxNodes,
     maxBlockChars: opts.segmentMax * 100,
     sensitiveWords: opts.sensitiveWords,
@@ -584,11 +623,11 @@ export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: Conditi
     }
   }
 
-  const suffix = state.truncated ? ' (the scan hit its budget before finishing)' : ''
+  const suffix = scan.truncated ? ' (the scan hit its budget before finishing)' : ''
   if (hit !== '') return answer(true, 'found "' + needle + '" in: ' + hit)
-  // "Not seen" only proves "hidden" if the whole subtree was looked at.
-  if (state.truncated && !wantVisible) {
+  // "Not seen" only proves absence if the whole subtree was looked at.
+  if (scan.truncated && negated) {
     return { matched: false, observed: '"' + needle + '" was not seen in ' + where + suffix, url, title }
   }
-  return answer(false, '"' + needle + '" is not visible in ' + where + suffix)
+  return answer(false, '"' + needle + '" is not ' + (inDom ? 'in ' : 'visible in ') + where + suffix)
 }

@@ -1,5 +1,5 @@
 /**
- * The agent's half of the browser: one tool, fifteen operations, no Electron.
+ * The agent's half of the browser: one tool, one operation enum, no Electron.
  *
  * Everything that touches a real tab is behind {@link BrowserHost}, which is a
  * type and nothing else — the TUI never constructs one, so the tool simply does
@@ -148,6 +148,8 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return 'Choosing an option'
         case 'page.set_checked':
           return parsed.checked ? 'Checking a box' : 'Unchecking a box'
+        case 'page.hover':
+          return 'Hovering over the page'
         case 'page.scroll':
           return 'Scrolling the page'
         case 'page.wait_for':
@@ -237,12 +239,14 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       return tabResult(tab, action.summary)
     }
     case 'tab.wait_for_load': {
-      const options: { timeoutMs: number; signal?: AbortSignal } = {
+      const options: { timeoutMs: number; until?: 'domcontentloaded' | 'load'; signal?: AbortSignal } = {
         timeoutMs: input.timeoutMs ?? WAIT_FOR_LOAD_DEFAULT_MS,
       }
+      if (input.until !== undefined) options.until = input.until
       if (context.abortSignal) options.signal = context.abortSignal
       const tab = await host.waitForLoad(session, input.tabId, options)
-      return tabResult(tab, tab.error === undefined ? 'Page loaded' : 'Load failed')
+      const loaded = input.until === 'domcontentloaded' && tab.loading ? 'DOM ready' : 'Page loaded'
+      return tabResult(tab, tab.error === undefined ? loaded : 'Load failed')
     }
     case 'page.elements.snapshot': {
       const snapshot = input.cursor === undefined
@@ -316,6 +320,10 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       }, context))
       return actionResult(result, input.checked ? 'Checked' : 'Unchecked')
     }
+    case 'page.hover': {
+      const result = await host.hover(session, input.tabId, action({ ref: input.ref, selector: input.selector }, context))
+      return actionResult(result, 'Hovered')
+    }
     case 'page.scroll': {
       const result = await host.scroll(session, input.tabId, action({
         ref: input.ref,
@@ -330,6 +338,7 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
         selector: input.selector,
         text: input.text,
         state: input.state,
+        stableForMs: input.stableForMs,
         url: input.url,
         urlMatch: input.urlMatch,
         timeoutMs: input.timeoutMs ?? WAIT_FOR_DEFAULT_MS,

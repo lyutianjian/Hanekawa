@@ -211,3 +211,51 @@ test('a URL plus a text needs both, and a timeout says which URL it last saw', a
       error instanceof BrowserHostError && error.code === 'WAIT_TIMEOUT' && /Last seen: url=https:\/\/a\.test\/login/.test(error.message),
   )
 })
+
+test('stableForMs waits for the condition to hold without a break', async () => {
+  const { deps, polls, elapsed } = harness({
+    observations: [
+      { matched: true, observed: '#done is visible' },
+      { matched: false, observed: '#done is present but not visible' },
+      { matched: true, observed: '#done is visible' },
+    ],
+  })
+  const result = await waitForCondition(deps, { selector: '#done', stableForMs: 250 })
+  // Held at 0, broken at 100, held again from 200: success at 450, not 250.
+  assert.equal(elapsed(), 450)
+  assert.equal(polls(), 6)
+  assert.match(result.text, /#done is visible\. url=.* \(held for 250ms\)/)
+})
+
+test('a condition that never holds long enough times out saying how long it held', async () => {
+  const { deps } = harness({
+    observations: [
+      { matched: true, observed: '#done is visible' },
+      { matched: false, observed: 'gone' },
+    ],
+    timeoutMs: 300,
+  })
+  await assert.rejects(
+    () => waitForCondition(deps, { selector: '#done', stableForMs: 250 }),
+    (error: unknown) => error instanceof BrowserHostError && error.code === 'WAIT_TIMEOUT' && /Last seen: gone/.test(error.message),
+  )
+})
+
+test('a document swap restarts the stability clock', async () => {
+  const { deps, elapsed } = harness({
+    observations: [{ matched: true, observed: '#done is visible' }],
+    generations: [1, 1, 1, 2, 2],
+  })
+  await waitForCondition(deps, { selector: '#done', stableForMs: 150 })
+  // Held from 0 on generation 1, restarted at 100 on generation 2.
+  assert.equal(elapsed(), 250)
+})
+
+test('an element state needs a selector and no text', async () => {
+  const { deps, polls } = harness({ observations: [{ matched: true, observed: 'x' }] })
+  await assert.rejects(
+    () => waitForCondition(deps, { text: 'Go', state: 'enabled' }),
+    (error: unknown) => error instanceof BrowserHostError && error.code === 'INVALID_REQUEST',
+  )
+  assert.equal(polls(), 0)
+})

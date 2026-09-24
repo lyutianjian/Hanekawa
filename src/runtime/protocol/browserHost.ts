@@ -107,16 +107,41 @@ export interface BrowserSetCheckedRequest extends BrowserTarget {
   signal?: AbortSignal
 }
 
+/** Moves the pointer onto the element and leaves it there. */
+export interface BrowserHoverRequest extends BrowserTarget {
+  signal?: AbortSignal
+}
+
 export interface BrowserScrollRequest extends BrowserTarget {
   direction?: 'up' | 'down' | 'top' | 'bottom'
   amount?: number
   signal?: AbortSignal
 }
 
+/**
+ * What `page.wait_for` asks of its selector or text. `attached`/`detached`
+ * ignore rendering; `enabled`, `disabled`, `checked` and `unchecked` are one
+ * element's own state and take a selector without text.
+ */
+export type BrowserWaitState =
+  | 'visible'
+  | 'hidden'
+  | 'attached'
+  | 'detached'
+  | 'enabled'
+  | 'disabled'
+  | 'checked'
+  | 'unchecked'
+
+/** How far `tab.wait_for_load` waits: the parsed DOM, or the full load. */
+export type BrowserLoadState = 'domcontentloaded' | 'load'
+
 export interface BrowserWaitRequest {
   selector?: string
   text?: string
-  state?: 'visible' | 'hidden'
+  state?: BrowserWaitState
+  /** The condition must hold continuously for this long before the wait returns. */
+  stableForMs?: number
   /** The committed URL to wait for; `urlMatch` defaults to `prefix`. */
   url?: string
   urlMatch?: 'exact' | 'prefix' | 'contains'
@@ -167,7 +192,7 @@ export interface BrowserHost {
   waitForLoad(
     caller: BrowserCaller,
     tabId: string,
-    options: { timeoutMs: number; signal?: AbortSignal },
+    options: { timeoutMs: number; until?: BrowserLoadState; signal?: AbortSignal },
   ): Promise<BrowserTabState>
   elements(caller: BrowserCaller, tabId: string, request: BrowserElementsRequest): Promise<BrowserSnapshot>
   text(caller: BrowserCaller, tabId: string, request: BrowserTextRequest): Promise<BrowserSnapshot>
@@ -180,6 +205,8 @@ export interface BrowserHost {
   selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult>
   /** Clicks only when the control is not already in the asked-for state. */
   setChecked(caller: BrowserCaller, tabId: string, request: BrowserSetCheckedRequest): Promise<BrowserActionResult>
+  /** Moves the pointer onto the element, for menus and tooltips that open on hover. */
+  hover(caller: BrowserCaller, tabId: string, request: BrowserHoverRequest): Promise<BrowserActionResult>
   scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult>
   /** Polls a condition about the page's contents, not about its load state. */
   waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult>

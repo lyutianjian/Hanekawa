@@ -124,6 +124,10 @@ const SPECS: Record<string, AliasSpec> = {
       press_enter: 'submit',
       key: 'keys',
       url_match: 'urlMatch',
+      stable_for_ms: 'stableForMs',
+      // Playwright's name for the load state a navigation waits on.
+      waitUntil: 'until',
+      wait_until: 'until',
     },
     // Operation names the model brings from other browser tools, which have
     // no `tab.` namespace.
@@ -138,10 +142,11 @@ const SPECS: Record<string, AliasSpec> = {
         reload: 'tab.reload',
         refresh: 'tab.reload',
         'tab.refresh': 'tab.reload',
+        hover: 'page.hover',
       },
     },
     arrays: ['keys'],
-    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index'],
+    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs'],
     booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit', 'checked'],
   },
 }

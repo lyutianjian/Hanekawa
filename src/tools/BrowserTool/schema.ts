@@ -83,6 +83,10 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
         .max(WAIT_FOR_LOAD_MAX_MS)
         .optional()
         .describe(`How long to wait (default ${WAIT_FOR_LOAD_DEFAULT_MS}, max ${WAIT_FOR_LOAD_MAX_MS}).`),
+      until: z
+        .enum(['domcontentloaded', 'load'])
+        .optional()
+        .describe('load (default) waits for images and subresources too; domcontentloaded returns once the HTML is parsed.'),
     })
     .strict(),
   z.object({ operation: z.literal('page.elements.snapshot'), ...elementsFields }).strict(),
@@ -137,6 +141,7 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
       checked: z.boolean().describe('true to check it, false to uncheck it.'),
     })
     .strict(),
+  z.object({ operation: z.literal('page.hover'), tabId, ...target }).strict(),
   z
     .object({
       operation: z.literal('page.scroll'),
@@ -155,7 +160,17 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
       tabId,
       selector: z.string().min(1).optional().describe('Wait for this CSS selector.'),
       text: z.string().min(1).optional().describe('Wait for this text. With a selector, waits for it inside that.'),
-      state: z.enum(['visible', 'hidden']).optional().describe('Default visible. Applies to selector and text, not url.'),
+      state: z
+        .enum(['visible', 'hidden', 'attached', 'detached', 'enabled', 'disabled', 'checked', 'unchecked'])
+        .optional()
+        .describe('Default visible. attached/detached ignore whether it is rendered; enabled, disabled, checked and unchecked need a selector and no text. Not about url.'),
+      stableForMs: z
+        .number()
+        .int()
+        .positive()
+        .max(WAIT_FOR_MAX_MS)
+        .optional()
+        .describe('Only succeed once the whole condition has held continuously this long, e.g. 500 to let an animation settle.'),
       url: z.string().min(1).optional().describe('Wait until the tab’s committed URL matches this.'),
       urlMatch: z
         .enum(['exact', 'prefix', 'contains'])

@@ -112,6 +112,7 @@ class StubElement {
   /** Not every element takes focus. `page.type` has to notice when it does not. */
   focusable = true
   scrolledIntoView = false
+  scrollBehavior: string | undefined
   owner: { activeElement: StubElement | null } | undefined
   private readonly size: { width: number; height: number }
   private readonly at: { top: number; left: number }
@@ -184,8 +185,9 @@ class StubElement {
     return { ...this.size, ...this.at }
   }
 
-  scrollIntoView(): void {
+  scrollIntoView(options?: { behavior?: string }): void {
     this.scrolledIntoView = true
+    this.scrollBehavior = options?.behavior
   }
 
   focus(): void {
@@ -257,8 +259,9 @@ function windowFor(): {
   innerHeight: number
   scrollX: number
   scrollY: number
-  scrollBy: (x: number, y: number) => void
-  scrollTo: (x: number, y: number) => void
+  scrollBehaviors: string[]
+  scrollBy: (options: { top?: number; behavior?: string }) => void
+  scrollTo: (options: { top?: number; behavior?: string }) => void
   Event: new (type: string, init?: { bubbles?: boolean; composed?: boolean }) => { type: string }
 } {
   const win = {
@@ -273,11 +276,14 @@ function windowFor(): {
     innerHeight: 720,
     scrollX: 0,
     scrollY: 0,
-    scrollBy: (_x: number, y: number) => {
-      win.scrollY = Math.max(0, win.scrollY + y)
+    scrollBehaviors: [] as string[],
+    scrollBy: (options: { top?: number; behavior?: string }) => {
+      win.scrollBehaviors.push(String(options.behavior))
+      win.scrollY = Math.max(0, win.scrollY + (options.top ?? 0))
     },
-    scrollTo: (_x: number, y: number) => {
-      win.scrollY = Math.max(0, y)
+    scrollTo: (options: { top?: number; behavior?: string }) => {
+      win.scrollBehaviors.push(String(options.behavior))
+      win.scrollY = Math.max(0, options.top ?? win.scrollY)
     },
   }
   return win
@@ -577,6 +583,7 @@ test('a snapshot ref resolves to a point, and dies with its node', () => {
   assert.equal(target.name, 'Home')
   assert.deepEqual([target.x, target.y], [50, 10])
   assert.equal(link.scrolledIntoView, true, 'a click has to bring its element on screen first')
+  assert.equal(link.scrollBehavior, 'instant', 'a smooth-scrolling page would leave the rect read at the old position')
 
   link.isConnected = false
   assert.throws(() => runResolve(sandbox, { ref: 'e1' }), hasCode('STALE_ELEMENT'))
@@ -683,6 +690,9 @@ test('scrolling moves the window and reports where it stopped', () => {
   const targeted = runScroll(sandbox, { selector: '#far' })
   assert.equal(targeted.target, 'selector #far')
   assert.equal(far.scrolledIntoView, true)
+  // A page's `scroll-behavior: smooth` would otherwise leave every read-back stale.
+  assert.equal(far.scrollBehavior, 'instant')
+  assert.deepEqual((sandbox.window as { scrollBehaviors: string[] }).scrollBehaviors, ['instant', 'instant', 'instant', 'instant'])
 })
 
 test('text is grouped by block, in reading order, and scripts never contribute', () => {

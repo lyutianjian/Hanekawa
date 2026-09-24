@@ -44,6 +44,15 @@ const PAGES = {
       document.getElementById('country').onchange = (e) => { document.title = 'picked ' + e.target.value }
     </script>`,
   '/next': '<!doctype html><title>Next</title><p>next page</p>',
+  // Bootstrap's reboot sets this; an animated scroll leaves a rect read right
+  // after it at the old position.
+  '/smooth': `<!doctype html><title>Smooth</title>
+    <style>html { scroll-behavior: smooth }</style>
+    <div style="height:3000px">top</div>
+    <button id="far" style="width:200px;height:40px" onclick="document.title = 'clicked'">far</button>
+    <div style="height:3000px">bottom</div>`,
+  '/spa': `<!doctype html><title>Spa</title>
+    <button id="push" style="width:200px;height:40px" onclick="history.pushState({}, '', '/spa/two')">push</button>`,
 }
 
 const server = createServer((request, response) => {
@@ -134,6 +143,46 @@ async function run() {
   check('wait_for url follows a navigation once the page lets go', arrived === 'none', arrived)
   const next = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
   check('the next page loads normally', next.url === `${origin}/next` && next.title === 'Next', next.url)
+
+  // G: back and reload honour a refusal the same way navigate does.
+  await host.navigate(caller, tab.tabId, `${origin}/stay`)
+  await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  await host.click(caller, tab.tabId, { selector: '#arm' })
+  await host.waitFor(caller, tab.tabId, { selector: '#armed', timeoutMs: 2000 })
+  for (const action of ['reload', 'back']) {
+    await host.history(caller, tab.tabId, action)
+    const code = await codeOf(host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 }))
+    check(`a refused ${action} ends the wait with NAVIGATION_FAILED`, code === 'NAVIGATION_FAILED', code)
+    const still = await codeOf(host.waitFor(caller, tab.tabId, { selector: '#armed', timeoutMs: 500 }))
+    check(`the page that refused the ${action} is still there`, still === 'none', still)
+  }
+  await host.click(caller, tab.tabId, { selector: '#disarm' })
+  await host.history(caller, tab.tabId, 'back')
+  const back = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  check('back goes back once the page lets go', back.url === `${origin}/next`, back.url)
+  await host.history(caller, tab.tabId, 'reload')
+  const reloaded = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  check('a reload the page allows still loads', reloaded.url === `${origin}/next` && reloaded.title === 'Next', reloaded.url)
+
+  // I: back between pushState entries keeps the document and still ends the wait.
+  await host.navigate(caller, tab.tabId, `${origin}/spa`)
+  await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  await host.click(caller, tab.tabId, { selector: '#push' })
+  await host.waitFor(caller, tab.tabId, { url: `${origin}/spa/two`, timeoutMs: 2000 })
+  await host.history(caller, tab.tabId, 'back')
+  const inPage = await host.waitForLoad(caller, tab.tabId, { timeoutMs: 3000 }).catch((error) => error)
+  check('back across a pushState entry settles', inPage?.url === `${origin}/spa`, inPage?.url ?? inPage?.message)
+
+  // H: a smooth-scrolling page does not leave an off-screen target off screen.
+  await host.navigate(caller, tab.tabId, `${origin}/smooth`)
+  await host.waitForLoad(caller, tab.tabId, { timeoutMs: 5000 })
+  const far = await codeOf(host.click(caller, tab.tabId, { selector: '#far' }))
+  check('an off-screen button on a smooth-scrolling page is clicked', far === 'none', far)
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  const clicked = (await host.listTabs(caller)).find((entry) => entry.tabId === tab.tabId)
+  check('the click reached the button', clicked?.title === 'clicked', clicked?.title)
+  const scrolled = await host.scroll(caller, tab.tabId, { direction: 'top' })
+  check('scrolling to the top reports where it landed', /y=0 of /.test(scrolled.text), scrolled.text)
 
   host.dispose()
   tabs.dispose()

@@ -177,6 +177,21 @@ test('press_key passes its chord through, and takes a single key or a snake-case
   assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't' }).ok, false)
 })
 
+test('operation names from other browser tools map onto the tab history operations', () => {
+  for (const [alias, operation] of [
+    ['back', 'tab.go_back'],
+    ['go_back', 'tab.go_back'],
+    ['forward', 'tab.go_forward'],
+    ['refresh', 'tab.reload'],
+    ['reload', 'tab.reload'],
+  ]) {
+    assert.deepEqual(normalizeToolInput('Browser', { action: alias, tab_id: 't' }), { operation, tabId: 't' }, alias)
+  }
+  // A real operation name is left as it is.
+  const canonical = { operation: 'tab.go_back', tabId: 't' }
+  assert.equal(normalizeToolInput('Browser', canonical), canonical)
+})
+
 test('select_option takes exactly one pick, and set_checked passes its state through', async () => {
   const { host, calls } = stubHost()
   const tool = createBrowserTool(host)

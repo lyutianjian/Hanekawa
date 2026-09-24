@@ -29,6 +29,8 @@ interface AliasSpec {
   booleans?: string[]
   /** canonical array keys that also accept a single bare value */
   arrays?: string[]
+  /** canonical key -> alias value -> canonical value, for enum-like strings */
+  values?: Record<string, Record<string, string>>
   /** array-valued key whose items get their own spec */
   nested?: { key: string; spec: AliasSpec }
 }
@@ -123,6 +125,21 @@ const SPECS: Record<string, AliasSpec> = {
       key: 'keys',
       url_match: 'urlMatch',
     },
+    // Operation names the model brings from other browser tools, which have
+    // no `tab.` namespace.
+    values: {
+      operation: {
+        back: 'tab.go_back',
+        go_back: 'tab.go_back',
+        'tab.back': 'tab.go_back',
+        forward: 'tab.go_forward',
+        go_forward: 'tab.go_forward',
+        'tab.forward': 'tab.go_forward',
+        reload: 'tab.reload',
+        refresh: 'tab.reload',
+        'tab.refresh': 'tab.reload',
+      },
+    },
     arrays: ['keys'],
     numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index'],
     booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit', 'checked'],
@@ -161,6 +178,10 @@ function applySpec(input: Record<string, unknown>, spec: AliasSpec): Record<stri
   }
   for (const key of spec.booleans ?? []) {
     if (key in next) next[key] = coerceBoolean(next[key])
+  }
+  for (const [key, map] of Object.entries(spec.values ?? {})) {
+    const value = next[key]
+    if (typeof value === 'string' && Object.hasOwn(map, value)) next[key] = map[value]
   }
   for (const key of spec.arrays ?? []) {
     if (key in next && typeof next[key] === 'string') next[key] = [next[key]]

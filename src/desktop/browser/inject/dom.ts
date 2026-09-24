@@ -71,7 +71,7 @@ export interface InjElement extends InjNode {
   hasAttribute(name: string): boolean
   getBoundingClientRect(): InjRect
   /** Input needs the element on screen before it can aim a real event at it. */
-  scrollIntoView(options?: { block?: string; inline?: string }): void
+  scrollIntoView(options?: { block?: string; inline?: string; behavior?: string }): void
   focus(): void
   /** `select_option` announces its change the way a user's pick would. */
   dispatchEvent(event: unknown): boolean
@@ -88,14 +88,25 @@ export interface InjDocument {
   elementFromPoint(x: number, y: number): InjElement | null
 }
 
+export interface InjScrollOptions {
+  left?: number
+  top?: number
+  behavior: 'instant'
+}
+
 export interface InjWindow {
   getComputedStyle(element: InjElement): InjStyle
   readonly innerWidth: number
   readonly innerHeight: number
   readonly scrollX: number
   readonly scrollY: number
-  scrollBy(x: number, y: number): void
-  scrollTo(x: number, y: number): void
+  /**
+   * Always the options form with `behavior: 'instant'`: a page's
+   * `scroll-behavior: smooth` otherwise animates, and the position read back
+   * right after is still the old one.
+   */
+  scrollBy(options: InjScrollOptions): void
+  scrollTo(options: InjScrollOptions): void
   /** The page's own `Event`, so a dispatched one belongs to its realm. */
   readonly Event: new (type: string, init?: InjEventInit) => unknown
 }

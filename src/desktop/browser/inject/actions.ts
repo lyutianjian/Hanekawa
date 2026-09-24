@@ -263,7 +263,9 @@ export function hkResolveTarget(
 
   if (opts.scrollIntoView) {
     try {
-      el.scrollIntoView({ block: 'center', inline: 'center' })
+      // `instant` overrides a page's `scroll-behavior: smooth`, which would
+      // leave the rect below at its pre-scroll position and the target off screen.
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
     } catch {
       // Not every element accepts it (a detached one, an exotic polyfill); the
       // geometry check below is what actually decides whether this can proceed.
@@ -511,17 +513,17 @@ export function hkScrollPage(doc: InjDocument, win: InjWindow, g: InjGlobal, opt
 
   if ((opts.ref !== undefined && opts.ref !== '') || (opts.selector !== undefined && opts.selector !== '')) {
     const el = hkFindTarget(doc, g, opts.ref, opts.selector)
-    el.scrollIntoView({ block: 'center', inline: 'center' })
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
     target = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
   } else if (opts.direction === 'top') {
-    win.scrollTo(0, 0)
+    win.scrollTo({ top: 0, behavior: 'instant' })
     target = 'top'
   } else if (opts.direction === 'bottom') {
-    win.scrollTo(0, maxScrollY)
+    win.scrollTo({ top: maxScrollY, behavior: 'instant' })
     target = 'bottom'
   } else {
     const step = opts.amount !== undefined ? opts.amount : Math.round(win.innerHeight * opts.viewportFraction)
-    win.scrollBy(0, opts.direction === 'up' ? -step : step)
+    win.scrollBy({ top: opts.direction === 'up' ? -step : step, behavior: 'instant' })
     target = opts.direction + ' ' + step + 'px'
   }
 

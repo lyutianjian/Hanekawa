@@ -23,6 +23,7 @@ import type {
   BrowserElementsRequest,
   BrowserHistoryAction,
   BrowserHost,
+  BrowserPressKeyRequest,
   BrowserScreenshot,
   BrowserScrollRequest,
   BrowserSnapshot,
@@ -34,7 +35,7 @@ import type {
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
-import { clickTarget, scrollPage, typeText, type InputDeps } from './input.js'
+import { clickTarget, pressKeys, scrollPage, typeText, type InputDeps } from './input.js'
 import { SCREENSHOT_TIMEOUT_MS } from './limits.js'
 import { BrowserOwnership } from './ownership.js'
 import { BrowserProjection } from './projection.js'
@@ -213,6 +214,12 @@ export class DesktopBrowserHost implements BrowserHost {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
     return typeText(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return pressKeys(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult> {

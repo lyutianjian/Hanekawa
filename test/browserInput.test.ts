@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { BrowserHostError } from '../src/desktop/browser/errors.js'
+import { describeKeys } from '../src/desktop/browser/keys.js'
 import {
   clickTarget,
+  dispatchKeys,
   enqueueInput,
+  pressKeys,
   isInputActive,
   scrollPage,
   typeText,
@@ -193,17 +196,21 @@ test('a ref wins over a selector, because it names what was read', async () => {
 test('clearing a field uses the platform’s own select-all', async () => {
   const mac = harness({ platform: 'darwin' })
   await typeText(mac.deps, { ref: 'e1', text: 'hi', clear: true })
-  const macSelect = mac.sent[0]
-  assert.equal(macSelect?.method, 'Input.dispatchKeyEvent')
-  assert.deepEqual(macSelect?.params['commands'], ['selectAll'])
-  assert.equal(macSelect?.params['modifiers'], 4)
-  assert.deepEqual(mac.sent[2]?.params['commands'], ['deleteBackward'])
+  const keys = mac.sent.filter((entry) => entry.method === 'Input.dispatchKeyEvent')
+  assert.deepEqual(
+    keys.map((entry) => `${String(entry.params['type'])}:${String(entry.params['key'])}`),
+    ['rawKeyDown:Meta', 'rawKeyDown:a', 'keyUp:a', 'keyUp:Meta', 'rawKeyDown:Backspace', 'keyUp:Backspace'],
+  )
+  assert.deepEqual(keys[1]?.params['commands'], ['selectAll'])
+  assert.equal(keys[1]?.params['modifiers'], 4)
+  assert.deepEqual(keys[4]?.params['commands'], ['deleteBackward'])
 
   const linux = harness({ platform: 'linux' })
   await typeText(linux.deps, { ref: 'e1', text: 'hi', clear: true })
-  assert.equal(linux.sent[0]?.params['modifiers'], 2)
-  assert.equal(linux.sent[0]?.params['commands'], undefined)
-  assert.equal(linux.sent[2]?.params['commands'], undefined)
+  assert.equal(linux.sent[0]?.params['key'], 'Control')
+  assert.equal(linux.sent[1]?.params['modifiers'], 2)
+  assert.equal(linux.sent[1]?.params['commands'], undefined)
+  assert.equal(linux.sent[4]?.params['commands'], undefined)
 })
 
 test('typing inserts the text once and never echoes it back', async () => {
@@ -352,4 +359,89 @@ test('the active flag is set for the length of an action and cleared after it', 
   await click
   await observed
   assert.equal(isInputActive(deps.key), false)
+})
+
+// --- page.press_key -----------------------------------------------------------
+
+function keyEvents(sent: Sent[]): string[] {
+  return sent
+    .filter((entry) => entry.method === 'Input.dispatchKeyEvent')
+    .map((entry) => `${String(entry.params['type'])}:${String(entry.params['key'])}`)
+}
+
+test('ControlOrMeta is Meta on macOS and Control everywhere else', async () => {
+  const mac = harness({ platform: 'darwin' })
+  const macResult = await pressKeys(mac.deps, { keys: ['ControlOrMeta', 'c'] })
+  assert.deepEqual(keyEvents(mac.sent), ['rawKeyDown:Meta', 'rawKeyDown:c', 'keyUp:c', 'keyUp:Meta'])
+  assert.equal(mac.sent[1]?.params['modifiers'], 4)
+  assert.deepEqual(mac.sent[1]?.params['commands'], ['copy'])
+  assert.match(macResult.text, /pressed Meta\+C on the focused element/)
+
+  const linux = harness({ platform: 'linux' })
+  await pressKeys(linux.deps, { keys: ['ControlOrMeta+c'] })
+  assert.deepEqual(keyEvents(linux.sent), ['rawKeyDown:Control', 'rawKeyDown:c', 'keyUp:c', 'keyUp:Control'])
+  assert.equal(linux.sent[1]?.params['modifiers'], 2)
+  assert.equal(linux.sent[1]?.params['commands'], undefined)
+})
+
+test('Shift+1 types "!", while Control+A types nothing and goes down raw', async () => {
+  const shifted = harness()
+  await pressKeys(shifted.deps, { keys: ['Shift', '1'] })
+  const bang = shifted.sent[1]?.params
+  assert.equal(bang?.['type'], 'keyDown')
+  assert.equal(bang?.['key'], '!')
+  assert.equal(bang?.['text'], '!')
+  assert.equal(bang?.['code'], 'Digit1')
+  assert.equal(bang?.['modifiers'], 8)
+
+  const chord = harness()
+  await pressKeys(chord.deps, { keys: ['Control', 'A'] })
+  const a = chord.sent[1]?.params
+  assert.equal(a?.['type'], 'rawKeyDown')
+  assert.equal(a?.['text'], undefined)
+  assert.equal(a?.['modifiers'], 2)
+})
+
+test('keys already down are lifted in reverse when a later press fails', async () => {
+  const { deps, sent } = harness()
+  deps.send = async (method, params) => {
+    sent.push({ method, params: params ?? {} })
+    if (params?.['type'] === 'rawKeyDown' && params['key'] === 'Tab') throw new Error('tab failed')
+    return undefined
+  }
+  await assert.rejects(() => dispatchKeys(deps, describeKeys(['Control', 'Shift', 'Tab'], 'linux')), /tab failed/)
+  assert.deepEqual(keyEvents(sent), [
+    'rawKeyDown:Control',
+    'rawKeyDown:Shift',
+    'rawKeyDown:Tab',
+    'keyUp:Tab',
+    'keyUp:Shift',
+    'keyUp:Control',
+  ])
+})
+
+test('an unknown key, or a chord of nothing but modifiers, is refused before anything is pressed', () => {
+  const invalid = (error: unknown) => error instanceof BrowserHostError && error.code === 'INVALID_REQUEST'
+  const { deps, sent, scripts } = harness()
+  assert.throws(() => pressKeys(deps, { keys: ['Hyper'] }), invalid)
+  assert.throws(() => pressKeys(deps, { keys: ['Control', 'Shift'] }), invalid)
+  assert.throws(() => pressKeys(deps, { keys: ['constructor'] }), invalid)
+  assert.throws(() => pressKeys(deps, { keys: [] }), invalid)
+  assert.deepEqual(sent, [])
+  assert.deepEqual(scripts, [])
+})
+
+test('a key pressed on a target focuses it first, and a secret field never hears its characters echoed', async () => {
+  const plain = harness({ target: { ref: 'e4', role: 'textbox', name: '搜索' } })
+  const plainResult = await pressKeys(plain.deps, { ref: 'e4', keys: ['Control', 'a'] })
+  assert.match(plain.scripts[0] ?? '', /"focus":true/)
+  assert.match(plain.scripts[1] ?? '', /"mode":"keyboard"/)
+  assert.match(plainResult.text, /pressed Control\+A on e4 \(textbox "搜索"\)/)
+
+  const secret = harness({ target: { ref: 'e3', role: 'textbox', name: 'Password', sensitive: true } })
+  const secretResult = await pressKeys(secret.deps, { ref: 'e3', keys: ['x', 'y', 'z'] })
+  assert.match(secretResult.text, /pressed 3 keys on e3 \(textbox\)/)
+  assert.doesNotMatch(secretResult.text, /X\+Y|Password/)
+  // Named keys type nothing worth hiding.
+  assert.match((await pressKeys(secret.deps, { ref: 'e3', keys: ['Enter'] })).text, /pressed Enter/)
 })

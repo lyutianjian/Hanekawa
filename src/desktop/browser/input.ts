@@ -25,6 +25,7 @@
 import type { GuardOptions, ScrollOptions, ScrollResult, TargetOptions, TargetResult } from './inject/bundle.js'
 import { guardScript, resolveScript, scrollScript, unwrap } from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
+import { describeKeys, isModifier, macCommand, MODIFIER_BITS, type KeyDescription } from './keys.js'
 import { FIELD_MAX_NAME, SCROLL_VIEWPORT_FRACTION, SENSITIVE_AUTOCOMPLETE, TYPE_TEXT_MAX } from './limits.js'
 
 export type InputEvaluator = (script: string) => Promise<unknown>
@@ -58,6 +59,14 @@ export interface TypeRequest {
   submit?: boolean
 }
 
+export interface PressKeyRequest {
+  /** Absent: the keys go to whatever has focus now. */
+  ref?: string
+  selector?: string
+  /** One chord: pressed in order, released in reverse. */
+  keys: string[]
+}
+
 export interface ScrollRequest {
   ref?: string
   selector?: string
@@ -68,10 +77,6 @@ export interface ScrollRequest {
 export interface ActionResult {
   text: string
 }
-
-/** CDP's modifier bitmask. Only the two the editing shortcuts need. */
-const MOD_CTRL = 2
-const MOD_META = 4
 
 const BUTTON_MASK: Record<string, number> = { left: 1, right: 2, middle: 4 }
 
@@ -147,10 +152,8 @@ export function typeText(deps: InputDeps, request: TypeRequest): Promise<ActionR
 
     if (request.clear === true) {
       await guard(deps, target, 'keyboard')
-      await selectAll(deps)
-      deps.check()
-      await pressKey(deps, BACKSPACE)
-      deps.check()
+      await dispatchKeys(deps, describeKeys(['ControlOrMeta', 'a'], deps.platform))
+      await dispatchKeys(deps, describeKeys(['Backspace'], deps.platform))
     }
     if (request.text !== '') {
       // `insertText` rather than a key event per character: a hundred round trips
@@ -164,14 +167,40 @@ export function typeText(deps: InputDeps, request: TypeRequest): Promise<ActionR
     }
     if (request.submit === true) {
       await guard(deps, target, 'keyboard')
-      await pressKey(deps, ENTER)
-      deps.check()
+      await dispatchKeys(deps, describeKeys(['Enter'], deps.platform))
     }
 
     const parts = [`typed ${request.text.length} characters into ${describe(target)}`]
     if (request.clear === true) parts.push('after clearing it')
     if (request.submit === true) parts.push('then pressed Enter')
     return { text: `${parts.join(', ')}. ${where(target)}` }
+  })
+}
+
+/**
+ * A chord, on a target or on whatever has focus.
+ *
+ * With a target it is focused first, like `page.type`, and the focus is
+ * re-checked right before the first key goes down. Without one the keys go
+ * where the page already has them going, which is what Escape on a dialog or
+ * PageDown on a document wants.
+ */
+export function pressKeys(deps: InputDeps, request: PressKeyRequest): Promise<ActionResult> {
+  const descriptions = describeKeys(request.keys, deps.platform)
+  return exclusive(deps, async () => {
+    const hasTarget = (request.ref ?? '') !== '' || (request.selector ?? '') !== ''
+    const target = hasTarget ? await resolve(deps, request, { focus: true, requireEnabled: true }) : undefined
+    if (target !== undefined) await guard(deps, target, 'keyboard')
+    await dispatchKeys(deps, descriptions)
+
+    // A printable key into a password field is a character of the password.
+    // Without a target the focused field is unknown, so it gets the same care.
+    const secret = typesCharacters(descriptions) && (target === undefined || target.sensitive)
+    const what = secret
+      ? `${descriptions.length} key${descriptions.length === 1 ? '' : 's'}`
+      : descriptions.map(keyLabel).join('+')
+    if (target === undefined) return { text: `pressed ${what} on the focused element.` }
+    return { text: `pressed ${what} on ${describe(target)}. ${where(target)}` }
   })
 }
 
@@ -292,37 +321,6 @@ function where(target: TargetResult): string {
   return `url=${target.url} title=${target.title}`
 }
 
-interface Key {
-  key: string
-  code: string
-  virtualKeyCode: number
-  text?: string
-  /** macOS editing commands, which is the only way the system ones fire. */
-  command?: string
-}
-
-const BACKSPACE: Key = { key: 'Backspace', code: 'Backspace', virtualKeyCode: 8, command: 'deleteBackward' }
-const ENTER: Key = { key: 'Enter', code: 'Enter', virtualKeyCode: 13, text: '\r' }
-
-async function pressKey(deps: InputDeps, key: Key): Promise<void> {
-  const base: Record<string, unknown> = {
-    key: key.key,
-    code: key.code,
-    windowsVirtualKeyCode: key.virtualKeyCode,
-    nativeVirtualKeyCode: key.virtualKeyCode,
-  }
-  if (key.text !== undefined) {
-    base['text'] = key.text
-    base['unmodifiedText'] = key.text
-  }
-  const down: Record<string, unknown> = { ...base, type: key.text === undefined ? 'rawKeyDown' : 'keyDown' }
-  if (key.command !== undefined && isMac(deps)) down['commands'] = [key.command]
-  await paired(
-    () => deps.send('Input.dispatchKeyEvent', down),
-    () => deps.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' }),
-  )
-}
-
 /**
  * A press that is never left without its release.
  *
@@ -334,8 +332,7 @@ async function pressKey(deps: InputDeps, key: Key): Promise<void> {
  * and after the pair, never inside it; the release is sent whatever the press
  * did; and when both fail, the press's error is the one reported.
  *
- * One key is down at a time here — select-all is a single event carrying its
- * modifier — so a pair is the whole of the reference's held-keys stack.
+ * Keys are the same rule with more than one press in flight: see `dispatchKeys`.
  */
 async function paired(press: () => Promise<unknown>, release: () => Promise<unknown>): Promise<void> {
   let failure: { error: unknown } | undefined
@@ -353,35 +350,73 @@ async function paired(press: () => Promise<unknown>, release: () => Promise<unkn
 }
 
 /**
- * Select everything in the focused field.
+ * Presses a chord and lets it go, whatever happens in between.
  *
- * On macOS the modifier alone does nothing: Chromium maps `Meta+A` to the
- * `selectAll` editing command through the system key bindings, which CDP only
- * reaches through the `commands` field. Elsewhere `Ctrl+A` is the event itself.
+ * Keys go down in order, each carrying the modifiers held so far, and come up
+ * in reverse. A key counts as pressed from the moment its command is sent —
+ * a command that fails after the renderer saw it still left the key down — so
+ * every one of them is lifted even when the press, a cancellation, or another
+ * lift fails, and the first failure is the one reported.
+ *
+ * A key only types when no Control, Alt or Meta is held (Shift picks the
+ * character instead): `keyDown` with `text` inserts it, while `rawKeyDown`
+ * leaves the page to treat the chord as a shortcut.
  */
-async function selectAll(deps: InputDeps): Promise<void> {
+export async function dispatchKeys(deps: InputDeps, descriptions: readonly KeyDescription[]): Promise<void> {
   const mac = isMac(deps)
-  const event: Record<string, unknown> = {
-    type: 'rawKeyDown',
-    key: 'a',
-    code: 'KeyA',
-    windowsVirtualKeyCode: 65,
-    nativeVirtualKeyCode: 65,
-    modifiers: mac ? MOD_META : MOD_CTRL,
+  const pressed: Array<{ base: Record<string, unknown> }> = []
+  let modifiers = 0
+  let failure: { error: unknown } | undefined
+  try {
+    for (const description of descriptions) {
+      deps.check()
+      if (isModifier(description)) modifiers |= MODIFIER_BITS[description.key] as number
+      const base: Record<string, unknown> = {
+        key: description.key,
+        code: description.code,
+        windowsVirtualKeyCode: description.keyCode,
+        nativeVirtualKeyCode: description.keyCode,
+        modifiers,
+      }
+      if (description.location !== undefined) base['location'] = description.location
+      const types = description.text !== undefined && (modifiers & 7) === 0
+      const down: Record<string, unknown> = { ...base, type: types ? 'keyDown' : 'rawKeyDown' }
+      if (types) {
+        down['text'] = description.text
+        down['unmodifiedText'] = description.text
+      }
+      const command = mac && !isModifier(description) ? macCommand(description, modifiers) : undefined
+      if (command !== undefined) down['commands'] = [command]
+      pressed.push({ base })
+      await deps.send('Input.dispatchKeyEvent', down)
+    }
+  } catch (error) {
+    failure = { error }
   }
-  if (mac) event['commands'] = ['selectAll']
-  await paired(
-    () => deps.send('Input.dispatchKeyEvent', event),
-    () =>
-      deps.send('Input.dispatchKeyEvent', {
-        type: 'keyUp',
-        key: 'a',
-        code: 'KeyA',
-        windowsVirtualKeyCode: 65,
-        nativeVirtualKeyCode: 65,
-        modifiers: mac ? MOD_META : MOD_CTRL,
-      }),
-  )
+  for (const { base } of pressed.reverse()) {
+    try {
+      await deps.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' })
+    } catch (error) {
+      failure ??= { error }
+    }
+  }
+  if (failure !== undefined) throw failure.error
+  deps.check()
+}
+
+/** Whether any key in the chord inserts a character rather than acting as a shortcut. */
+function typesCharacters(descriptions: readonly KeyDescription[]): boolean {
+  let modifiers = 0
+  for (const description of descriptions) {
+    if (isModifier(description)) modifiers |= MODIFIER_BITS[description.key] as number
+    else if (description.text !== undefined && description.key !== 'Enter' && (modifiers & 7) === 0) return true
+  }
+  return false
+}
+
+function keyLabel(description: KeyDescription): string {
+  if (description.key === ' ') return 'Space'
+  return description.key.length === 1 ? description.key.toUpperCase() : description.key
 }
 
 function isMac(deps: InputDeps): boolean {

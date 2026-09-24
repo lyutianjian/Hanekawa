@@ -86,6 +86,12 @@ export interface BrowserTypeRequest extends BrowserTarget {
   signal?: AbortSignal
 }
 
+/** No target means the keys go to whatever has focus. */
+export interface BrowserPressKeyRequest extends BrowserTarget {
+  keys: string[]
+  signal?: AbortSignal
+}
+
 export interface BrowserScrollRequest extends BrowserTarget {
   direction?: 'up' | 'down' | 'top' | 'bottom'
   amount?: number
@@ -152,6 +158,7 @@ export interface BrowserHost {
   screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot>
   click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult>
   type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult>
+  pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult>
   scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult>
   /** Polls a condition about the page's contents, not about its load state. */
   waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult>

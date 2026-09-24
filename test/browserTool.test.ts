@@ -6,6 +6,7 @@ import { BROWSER_OPERATIONS } from '../src/tools/BrowserTool/constants.js'
 import { NO_TABS } from '../src/tools/BrowserTool/encode.js'
 import { browserApiInputSchema, browserInputSchema } from '../src/tools/BrowserTool/schema.js'
 import { fieldsFor, validateBrowserInput } from '../src/tools/BrowserTool/validate.js'
+import { normalizeToolInput } from '../src/tools/inputAliases.js'
 import type {
   BrowserHost,
   BrowserSnapshot,
@@ -54,6 +55,7 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     }),
     click: record('click', { text: 'clicked e3 (button "Sign in") at (120, 240).' }),
     type: record('type', { text: 'typed 7 characters into e4 (textbox).' }),
+    pressKey: record('pressKey', { text: 'pressed Escape on the focused element.' }),
     scroll: record('scroll', { text: 'scrolled down 648px: y=648 of 4000.' }),
     waitFor: record('waitFor', { text: '#done is visible.' }),
     ...overrides,
@@ -153,6 +155,24 @@ test('the input operations pass their own fields through, and carry the abort si
   // shorter question than a document arriving.
   assert.deepEqual(calls[3]?.args[2], { text: 'Done', timeoutMs: 10_000, signal: controller.signal })
   assert.equal(clicked.content, 'clicked e3 (button "Sign in") at (120, 240).')
+})
+
+test('press_key passes its chord through, and takes a single key or a snake-cased alias', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const pressed = await run(tool, { operation: 'page.press_key', tabId: 'tab-1', keys: ['Escape'] })
+  await run(tool, { operation: 'page.press_key', tabId: 'tab-1', ref: 'e4', keys: ['Control', 'a'] })
+  assert.equal(pressed.ok, true)
+  assert.deepEqual(calls.map((call) => call.args[2]), [{ keys: ['Escape'] }, { ref: 'e4', keys: ['Control', 'a'] }])
+
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'page.press_key', tab_id: 't', key: 'Enter' }), {
+    operation: 'page.press_key',
+    tabId: 't',
+    keys: ['Enter'],
+  })
+  assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't', keys: [] }).ok, false)
+  assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't' }).ok, false)
 })
 
 test('an action with no element, and a wait with no condition, are refused before the host', async () => {

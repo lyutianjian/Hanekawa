@@ -25,6 +25,7 @@ Every call names an \`operation\`. The fields each one takes:
 - \`page.screenshot\` — \`tabId\`. Attaches a picture of the visible area; use it for layout questions, not for reading text.
 - \`page.click\` — \`tabId\`, \`ref\` or \`selector\`, optional \`button\`, \`clickCount\`. A real press at the centre of the element's on-screen part, after scrolling it into view. Refused, naming the culprit, when something else (a cookie banner, a modal) covers that point — dismiss it first.
 - \`page.type\` — \`tabId\`, \`ref\` or \`selector\`, \`text\`, optional \`clear\`, \`submit\`. Focuses the field and types into it.
+- \`page.press_key\` — \`tabId\`, \`keys\`, optional \`ref\` or \`selector\`. Presses one chord of real keys: each key goes down in order and comes up in reverse, so \`["Control", "a"]\` is Ctrl+A and \`["Shift", "Tab"]\` moves focus back. Names: Enter, Tab, Escape, Backspace, Delete, Space, the arrows, Home, End, PageUp, PageDown, F1–F24, any single character, and the modifiers Control, Shift, Alt, Meta and ControlOrMeta (Meta on macOS, Control elsewhere — use it for copy/paste/select-all). With a target it focuses the element first; without one the keys go to whatever has focus. Use page.type for text, not this.
 - \`page.scroll\` — \`tabId\`, optional \`direction\` (up/down/top/bottom, default down), \`amount\`, or a \`ref\`/\`selector\` to bring into view.
 - \`page.wait_for\` — \`tabId\`, \`selector\` and/or \`text\`, optional \`state\` (visible/hidden), \`timeoutMs\` (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}).
 

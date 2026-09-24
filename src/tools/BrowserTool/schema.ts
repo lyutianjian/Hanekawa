@@ -17,6 +17,7 @@ import { z } from 'zod/v3'
 import type { JsonSchema } from '../../harness/toolValidation.js'
 import {
   BROWSER_OPERATIONS,
+  PRESS_KEYS_MAX,
   TYPE_TEXT_MAX,
   WAIT_FOR_DEFAULT_MS,
   WAIT_FOR_LOAD_DEFAULT_MS,
@@ -107,6 +108,18 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('page.press_key'),
+      tabId,
+      ...target,
+      keys: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(PRESS_KEYS_MAX)
+        .describe('One chord, pressed in order and released in reverse: ["Enter"], ["Control", "a"], ["Shift", "Tab"].'),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('page.scroll'),
       tabId,
       ...target,
@@ -158,10 +171,16 @@ export const browserApiInputSchema: JsonSchema = {
       description:
         'page.elements.snapshot: substring filter over name and text. page.type: the text to type. page.wait_for: the text to wait for.',
     },
-    ref: { type: 'string', description: 'page.click/type/scroll: a ref from the latest page.elements.snapshot.' },
+    ref: { type: 'string', description: 'page.click/type/press_key/scroll: a ref from the latest page.elements.snapshot.' },
     selector: {
       type: 'string',
-      description: 'page.click/type/scroll: a CSS selector for the element. page.wait_for: the selector to wait for.',
+      description:
+        'page.click/type/press_key/scroll: a CSS selector for the element. page.wait_for: the selector to wait for.',
+    },
+    keys: {
+      type: 'array',
+      items: { type: 'string' },
+      description: `page.press_key only: 1–${PRESS_KEYS_MAX} key names forming one chord, e.g. ["Escape"] or ["ControlOrMeta", "a"].`,
     },
     button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'page.click only. Default left.' },
     clickCount: { type: 'number', description: 'page.click only: 2 for a double click.' },

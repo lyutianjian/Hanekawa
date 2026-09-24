@@ -21,6 +21,7 @@ export const BROWSER_OPERATIONS = [
   'page.screenshot',
   'page.click',
   'page.type',
+  'page.press_key',
   'page.scroll',
   'page.wait_for',
 ] as const
@@ -40,6 +41,7 @@ export const OPERATIONS_NEEDING_TAB: ReadonlySet<string> = new Set<BrowserOperat
   'page.screenshot',
   'page.click',
   'page.type',
+  'page.press_key',
   'page.scroll',
   'page.wait_for',
 ])
@@ -78,3 +80,4 @@ export const WAIT_FOR_LOAD_MAX_MS = 120_000
 export const WAIT_FOR_DEFAULT_MS = 10_000
 export const WAIT_FOR_MAX_MS = 30_000
 export const TYPE_TEXT_MAX = 10_000
+export const PRESS_KEYS_MAX = 8

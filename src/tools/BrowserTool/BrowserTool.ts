@@ -141,6 +141,8 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return 'Clicking the page'
         case 'page.type':
           return 'Typing into the page'
+        case 'page.press_key':
+          return 'Pressing keys'
         case 'page.scroll':
           return 'Scrolling the page'
         case 'page.wait_for':
@@ -282,6 +284,14 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
         submit: input.submit,
       }, context))
       return actionResult(result, 'Typed')
+    }
+    case 'page.press_key': {
+      const result = await host.pressKey(session, input.tabId, action({
+        ref: input.ref,
+        selector: input.selector,
+        keys: input.keys,
+      }, context))
+      return actionResult(result, 'Pressed keys')
     }
     case 'page.scroll': {
       const result = await host.scroll(session, input.tabId, action({

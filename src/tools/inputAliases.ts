@@ -27,6 +27,8 @@ interface AliasSpec {
   numbers?: string[]
   /** canonical keys coerced from "true"/"false" */
   booleans?: string[]
+  /** canonical array keys that also accept a single bare value */
+  arrays?: string[]
   /** array-valued key whose items get their own spec */
   nested?: { key: string; spec: AliasSpec }
 }
@@ -118,7 +120,9 @@ const SPECS: Record<string, AliasSpec> = {
       element_ref: 'ref',
       click_count: 'clickCount',
       press_enter: 'submit',
+      key: 'keys',
     },
+    arrays: ['keys'],
     numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount'],
     booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit'],
   },
@@ -156,6 +160,9 @@ function applySpec(input: Record<string, unknown>, spec: AliasSpec): Record<stri
   }
   for (const key of spec.booleans ?? []) {
     if (key in next) next[key] = coerceBoolean(next[key])
+  }
+  for (const key of spec.arrays ?? []) {
+    if (key in next && typeof next[key] === 'string') next[key] = [next[key]]
   }
 
   const nested = spec.nested

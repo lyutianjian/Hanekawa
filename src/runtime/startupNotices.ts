@@ -32,6 +32,9 @@ export function buildStartupNotices(
   const notices: StartupNotice[] = []
   const diagnostics = summarizeDiagnosticsForTui(host.diagnostics)
   if (diagnostics) notices.push({ level: 'warning', content: diagnostics })
+  for (const diagnostic of host.diagnostics) {
+    if (diagnostic.code === 'project_data_migration_failed') notices.push({ level: 'warning', content: diagnostic.message })
+  }
   const mcp = formatMcpStatus(host.mcp)
   if (mcp) notices.push({ level: 'info', content: mcp })
   return notices

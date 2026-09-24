@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { readJsonFile } from '../utils/json.js'
-import { getSessionsDir } from '../utils/paths.js'
+import { getMyAgentDir, getSessionsDir } from '../utils/paths.js'
 import { projectRootKey } from '../runtime/projectDirectory.js'
 
 /**
@@ -125,11 +125,18 @@ interface IndexEntry {
  * registered project must not have. A missing or corrupt index simply means
  * "no sessions here".
  */
+/**
+ * A project not opened since runtime data moved out of `<root>/.myagent/` still
+ * has its index there; `SessionStore.init()` migrates it on the next open.
+ */
+async function readSessionIndex(root: string): Promise<{ sessions?: unknown }> {
+  const current = join(getSessionsDir(root), 'index.json')
+  const path = existsSync(current) ? current : join(getMyAgentDir(root), 'sessions', 'index.json')
+  return readJsonFile<{ sessions?: unknown }>(path, {})
+}
+
 export async function peekNewestSessionAt(root: string): Promise<number | undefined> {
-  const index = await readJsonFile<{ sessions?: unknown }>(
-    join(getSessionsDir(root), 'index.json'),
-    {},
-  )
+  const index = await readSessionIndex(root)
   if (!Array.isArray(index.sessions)) return undefined
   let newest: number | undefined
   for (const entry of index.sessions as IndexEntry[]) {
@@ -154,10 +161,7 @@ export interface PeekedSession {
  * `SessionStore.list()` shape for projects whose runtime is not open.
  */
 export async function peekSessions(root: string): Promise<PeekedSession[]> {
-  const index = await readJsonFile<{ sessions?: unknown }>(
-    join(getSessionsDir(root), 'index.json'),
-    {},
-  )
+  const index = await readSessionIndex(root)
   if (!Array.isArray(index.sessions)) return []
   const rows: PeekedSession[] = []
   for (const entry of index.sessions as Record<string, unknown>[]) {

@@ -184,6 +184,26 @@ async function run() {
   const scrolled = await host.scroll(caller, tab.tabId, { direction: 'top' })
   check('scrolling to the top reports where it landed', /y=0 of /.test(scrolled.text), scrolled.text)
 
+  // I: the debugger is attached for input, steps aside for DevTools, and the
+  // automation refuses — retryably, naming DevTools — until it is closed.
+  const contents = tabs.pageFor(tab.tabId).contents
+  check('input attached the debugger', contents.debugger.isAttached())
+  const opened = new Promise((resolve) => contents.once('devtools-opened', resolve))
+  contents.openDevTools({ mode: 'detach' })
+  await opened
+  check('opening DevTools detaches the automation', !contents.debugger.isAttached())
+  const devToolsRefusal = await host.click(caller, tab.tabId, { selector: '#far' }).catch((error) => error)
+  check(
+    'a click with DevTools open is refused, retryably, naming DevTools',
+    devToolsRefusal?.code === 'PAGE_NOT_READY' && devToolsRefusal.retryable === true && /DevTools/.test(devToolsRefusal.message),
+    devToolsRefusal?.message,
+  )
+  const closed = new Promise((resolve) => contents.once('devtools-closed', resolve))
+  contents.closeDevTools()
+  await closed
+  const after = await codeOf(host.click(caller, tab.tabId, { selector: '#far' }))
+  check('closing DevTools gives the automation its channel back', after === 'none' && contents.debugger.isAttached(), after)
+
   host.dispose()
   tabs.dispose()
   window.destroy()

@@ -45,6 +45,11 @@ export interface InputDeps {
   /** The tab's `WebContents`, used only as the queue's identity. */
   key: object
   send: InputSender
+  /**
+   * Holds the CDP attachment for the whole action, so a click's commands share
+   * one attachment and it is not detached mid-sequence. Returns the release.
+   */
+  lease?: () => () => void
   evaluate: InputEvaluator
   /** Throws when the action must stop. Called before and after every await. */
   check: () => void
@@ -143,9 +148,11 @@ export function enqueueInput<T>(key: object, task: () => Promise<T>): Promise<T>
 function exclusive<T>(deps: InputDeps, task: () => Promise<T>): Promise<T> {
   return enqueueInput(deps.key, async () => {
     active.add(deps.key)
+    const release = deps.lease?.()
     try {
       return await task()
     } finally {
+      release?.()
       active.delete(deps.key)
     }
   })

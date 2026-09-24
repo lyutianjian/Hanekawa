@@ -4,6 +4,7 @@ import { parseSearchResults, searchStats, type SearchResults } from '../model/se
 import {
   groupHeaderLabel,
   groupHeaderName,
+  groupRunningLabel,
   isGroupExpanded,
   isLooseThinkingExpanded,
   isStepCollapsible,
@@ -12,6 +13,7 @@ import {
   NO_DISCLOSURE,
   thinkingHeaderLabel,
   STEP_COMPLETION_FALLBACK_MS,
+  THINKING_DONE_FALLBACK,
   type DisclosureState,
 } from '../model/thinking.js'
 import {
@@ -31,10 +33,8 @@ import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 import { splitFileMentions } from '../model/userMessage.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import {
-  groupActivityLabel,
   turnActivity,
   waitingElapsedLabel,
-  WAITING_HINT,
   type WaitingInput,
   type WaitingRow,
 } from '../model/waiting.js'
@@ -99,8 +99,8 @@ export interface TranscriptView {
    * `disclosure` is the pane's absolute answer for every group and step (§5.2).
    * `activity` is what the pane knows about the turn in flight — whether one is
    * running, when it started and which turn it is — and `model/waiting.ts` turns
-   * that into 「which head is live」 or 「draw the standalone row」. `undefined` is
-   * an idle session: neither is drawn.
+   * that into 「which group is live」 and 「what the tail row reads」. `undefined`
+   * is an idle session: no row is drawn.
    */
   render(state: TranscriptState, disclosure: DisclosureState, activity?: WaitingInput): void
   /**
@@ -163,6 +163,7 @@ export function createTranscriptView(
     '回到最新',
     () => {
       stopViewportMotion()
+      following = true
       if (viewportPolicy({ event: 'return-latest', atBottom: false, streaming: false, measurable: true }) === 'follow-tail') {
         container.scrollTo({ top: container.scrollHeight, behavior: motionPolicy().scrollBehavior })
       }
@@ -195,6 +196,23 @@ export function createTranscriptView(
   let guardedPosition: ReadingPosition | undefined
   let viewportFrame: number | undefined
   let viewportTimer: ReturnType<typeof setTimeout> | undefined
+  /**
+   * Whether the reader is following the tail — an *intent*, not a measurement.
+   *
+   * It used to be re-measured on every paint (「is the scroller within 24px of
+   * its end」), and that broke on the turns that needed it most: a paint pins the
+   * scroller to the end, then a step's unfold animation — or a sibling folding
+   * away — moves the content by more than 24px *after* the paint, and the next
+   * paint read the reader as 「scrolled up, reading history」. From then on the
+   * tail was never followed again, the turn-end fold was withheld as 「being
+   * read」, and the final answer landed below the viewport.
+   *
+   * So it is cleared only by the reader: a wheel or key that scrolls up, or a
+   * drag of the scrollbar that leaves the end. Reaching the end again by any
+   * means sets it, as do 「回到最新」 and a new question.
+   */
+  let following = true
+  let dragging = false
 
   function positionOf(node: HTMLElement | undefined): ReadingPosition | undefined {
     const viewport = box(container)
@@ -248,20 +266,44 @@ export function createTranscriptView(
     viewportTimer = setTimeout(() => {
       keepReadingPosition(guardedPosition)
       stopViewportMotion()
+      // A step the reader opened by hand is being read: if holding its head
+      // still left the end, the tail stops pulling the viewport away from it.
+      if (node) following = isScrolledToBottom(container)
     }, motionDelay(PRESENCE_FALLBACK_MS.layout))
     ;(viewportTimer as unknown as { unref?: () => void }).unref?.()
   }
 
   // A wheel, scrollbar press or keyboard navigation immediately owns the view.
-  container.addEventListener('wheel', stopViewportMotion, { passive: true })
-  container.addEventListener('pointerdown', stopViewportMotion)
+  container.addEventListener('wheel', (event) => {
+    stopViewportMotion()
+    if (event.deltaY < 0) following = false
+  }, { passive: true })
+  container.addEventListener('pointerdown', (event) => {
+    stopViewportMotion()
+    // The scrollbar is the container's own box; a press on content is a click
+    // or a selection, not a scroll.
+    if (event.target === container) dragging = true
+  })
+  const endDrag = (): void => { dragging = false }
+  window.addEventListener('pointerup', endDrag)
+  window.addEventListener('pointercancel', endDrag)
   container.addEventListener('keydown', (event) => {
     if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown'].includes(event.key)) stopViewportMotion()
+    if (['PageUp', 'Home', 'ArrowUp'].includes(event.key)) following = false
   })
 
-  // The live status's clock. The span is kept rather than looked up: its carrier
-  // — the running group's head, or the standalone row — is a node reused by key
-  // like every other, so the element its fill built is still the one on screen,
+  function atTail(): boolean {
+    if (isScrolledToBottom(container)) following = true
+    return following
+  }
+
+  function followTail(): void {
+    container.scrollTop = container.scrollHeight
+  }
+
+  // The live status's clock. The span is kept rather than looked up: the tail
+  // row is a node reused by key like every other, so the element its fill built
+  // is still the one on screen,
   // and it is only refilled when the status itself changed, which is exactly
   // when this is reassigned.
   let clockNode: HTMLElement | undefined
@@ -305,7 +347,7 @@ export function createTranscriptView(
   }
 
   function syncJump(): void {
-    show(jump, !isScrolledToBottom(container))
+    show(jump, !atTail())
   }
 
   /**
@@ -343,8 +385,9 @@ export function createTranscriptView(
   // scroll event at all — a `turn-end` dropping a draft or a `transcript-reset`
   // shortens the scroller under a reader who is then already at the tail.
   container.addEventListener('scroll', () => {
+    if (dragging && !isScrolledToBottom(container)) following = false
     syncJump()
-    if (!guardedPosition) readingPosition = isScrolledToBottom(container) ? undefined : readingReference()
+    if (!guardedPosition) readingPosition = atTail() ? undefined : readingReference()
   })
 
   /**
@@ -364,16 +407,23 @@ export function createTranscriptView(
    * avoids everywhere else.
    */
   const resizeObserver = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
-      if (anchorNode === undefined) return
-      const policy = viewportPolicy({ event: 'resize', atBottom: isScrolledToBottom(container), streaming: !anchorSettled, measurable: true })
-      pad = liftAnchor(container, column, anchorNode, {
-        first: anchorFirst,
-        moved: false,
-        settled: anchorSettled,
-        pad,
-        holdPadding: anchorHoldPadding,
-      }).pad
-      if (policy === 'preserve-anchor') keepReadingPosition(guardedPosition ?? readingPosition)
+      if (document.hidden) return
+      const policy = viewportPolicy({ event: 'resize', atBottom: atTail(), streaming: !anchorSettled, measurable: true })
+      if (anchorNode !== undefined) {
+        pad = liftAnchor(container, column, anchorNode, {
+          first: anchorFirst,
+          moved: false,
+          settled: anchorSettled,
+          pad,
+          holdPadding: anchorHoldPadding,
+        }).pad
+      }
+      // The content is observed too: a step unfolding or folding runs for a few
+      // frames after the paint that started it, and a reader following the tail
+      // stays on it for every one of them.
+      if (following && !guardedPosition) {
+        if (!isScrolledToBottom(container)) followTail()
+      } else if (policy === 'preserve-anchor') keepReadingPosition(guardedPosition ?? readingPosition)
       syncJump()
     }) : undefined
   let observing = false
@@ -392,6 +442,8 @@ export function createTranscriptView(
     stopClock: stopMotion,
     dispose() {
       stopMotion()
+      window.removeEventListener('pointerup', endDrag)
+      window.removeEventListener('pointercancel', endDrag)
       for (const entry of disclosures.values()) entry.presence.dispose()
       disclosures.clear()
       cache.clear()
@@ -402,6 +454,7 @@ export function createTranscriptView(
     render(state, disclosure, activity) {
       if (!document.hidden && !observing) {
         resizeObserver?.observe(container)
+        resizeObserver?.observe(column)
         observing = true
       }
       if (generation !== state.generation) {
@@ -419,7 +472,7 @@ export function createTranscriptView(
         anchorId = undefined
         generation = state.generation
       }
-      const atBottom = isScrolledToBottom(container)
+      const atBottom = atTail()
       const before = guardedPosition ?? (!atBottom ? readingReference() : undefined)
       const wasSettled = anchorSettled
       const entries = groupTranscript(state.items)
@@ -457,14 +510,13 @@ export function createTranscriptView(
       })
       const nodes = entries.map((entry) => entryNode(painter, entry))
       // Built before `prune`, or its key would count as dead on the very paint
-      // that asked for it. `clockNode` is only cleared when *neither* carrier is
-      // on screen: a kept head or row keeps the span its fill handed over.
+      // that asked for it. A kept row keeps the span its fill handed over.
       if (live.row) nodes.push(waitingNode(painter, live.row))
-      else if (live.liveGroupId === undefined) clockNode = undefined
+      else clockNode = undefined
       painter.prune()
       reconcile(column, nodes)
       for (const run of afterPaint) run()
-      runClock(live.row || live.liveGroupId !== undefined ? activity?.startedAt : undefined)
+      runClock(live.row ? activity?.startedAt : undefined)
 
       // The turn the reader is looking at: the newest user message. Read off the
       // *entries* rather than off `state.items`, because what the lift needs is
@@ -473,7 +525,10 @@ export function createTranscriptView(
       const anchor = at === undefined ? undefined : entries[at]
       const next = anchor?.kind === 'item' ? anchor.item.id : undefined
       const moved = next !== undefined && next !== anchorId
-      if (moved) stopViewportMotion()
+      if (moved) {
+        stopViewportMotion()
+        following = true
+      }
       // The pane's own flag rather than anything `turnActivity` decided:
       // `model/waiting.ts` reports `IDLE` while a draft is arriving — it means
       // 「no waiting row to draw」 there — and a pad released mid-answer would
@@ -517,7 +572,7 @@ export function createTranscriptView(
         event: guardedPosition ? 'disclosure' : settled && !wasSettled ? 'turn-end' : 'stream',
         atBottom, streaming: !settled, measurable: box(container) !== undefined,
       })
-      if (!lifted && policy === 'follow-tail') container.scrollTop = container.scrollHeight
+      if (!lifted && policy === 'follow-tail') followTail()
       else if (!lifted && policy === 'preserve-anchor') keepReadingPosition(before)
       readingPosition = policy === 'preserve-anchor' ? readingReference() : undefined
       syncJump()
@@ -529,28 +584,26 @@ export function createTranscriptView(
 const IDLE: WaitingInput = { isStreaming: false, startedAt: undefined, turnId: undefined }
 
 /**
- * The standalone waiting row (§ the gap before the first step): a breathing
- * bead, the label, the elapsed time and the interrupt key, on one line at the
- * tail of the transcript. Once the turn produces a step it is the group's head
- * that carries all four — see `liveParts`, which builds the same pieces.
+ * The live status row: a breathing bead, the label, the elapsed time and the
+ * interrupt key, on one line at the tail of the transcript, for the whole turn.
  *
  * What is announced and what is not follows the rest of this file: `.transcript`
- * is `aria-live="polite"`, so the label — which changes once, when the row
- * appears — is the row's spoken content, and the counter is `aria-hidden` or a
+ * is `aria-live="polite"`, so the label is spoken only in the gap before the
+ * first step (`WaitingRow.announce`) — once it follows the turn from tool to
+ * tool, each step's own head says what is new — and the counter is `aria-hidden` or a
  * screen reader would read a new number ten times a second. The bead is
  * `aria-hidden` for the same reason the step beads are: it is decoration over a
  * state the label already says in words. The hint is hidden too — `Esc` is
  * discoverable to the keyboard user without being read out mid-answer.
  */
 function waitingNode(painter: Painter, row: WaitingRow): HTMLElement {
-  return painter.node('waiting', 'waiting', [row.label, row.hint, row.startedAt], () => [
-    ...liveParts(painter, 'waiting', row.label, row.hint),
+  return painter.node('waiting', 'waiting', [row.label, row.hint, row.startedAt, row.announce], () => [
+    ...liveParts(painter, 'waiting', row.label, row.hint, row.announce),
   ])
 }
 
 /**
- * The live status's four pieces, shared by the standalone row and the running
- * group's head so the two can never drift into two vocabularies.
+ * The live status's four pieces.
  *
  * The elapsed span starts empty rather than at 「0s」: the view's clock fills it
  * on the same tick it starts, and a hard-coded first value would be the one
@@ -568,9 +621,6 @@ function liveParts(painter: Painter, key: string, label: string, hint: string, a
   const bead = part('bead', '')
   const elapsed = part('elapsed', '')
   painter.keepClock(elapsed)
-  // Spoken on the standalone row, which appears once and then holds still; muted
-  // on the group's head, whose label follows the turn from tool to tool and
-  // whose accessible name is `groupHeaderName`'s stable one instead (§8).
   return [bead, part('label', label, !announce), elapsed, part('hint', hint)]
 }
 
@@ -831,25 +881,18 @@ function stepsNode(painter: Painter, group: ActivityGroup): HTMLElement {
 }
 
 /**
- * The turn's head — and, while the turn runs, the **only** place the live status
- * is written.
+ * The turn's head: 「工作中 · N 步」 while the turn runs, sealing to
+ * `groupHeaderLabel`'s 「已处理 …」 when it ends.
  *
- * It reads 「正在思考」 in the gaps and the running tool's own name while one is
- * running (`groupActivityLabel`), with the same bead, static label and counter the
- * standalone row has, and it seals to `groupHeaderLabel`'s 「已处理 …」 when the
- * turn ends. That is the whole point of the head being the carrier: the status
- * sits at the top of the turn where it was first read, instead of walking down
- * the page behind every step the turn takes.
- *
- * There is no bead strip any more. It coloured the head's right edge with one
- * dot per step, which on a finished turn was a second, wordless report of what
- * the steps below already say — and on 「已处理」 it read as a verdict on the
- * *turn*, which it never was.
+ * Deliberately quiet while live — no bead, no clock. The live status is the
+ * transcript's last row (`waitingNode`), where the reader following the tail can
+ * see it; a second copy up here scrolled out of view on every long turn and
+ * repeated 「正在思考」 right above the thinking step that already said it.
  */
 function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean, live: boolean): HTMLElement {
   const ref = painter.ref(`group:${group.turnId}`, expanded)
   const name = groupHeaderName(group, live)
-  const label = live ? groupActivityLabel(group) : groupHeaderLabel(group)
+  const label = live ? groupRunningLabel(group) : groupHeaderLabel(group)
   return painter.node(
     `head:${group.turnId}`,
     live ? 'group-head live' : 'group-head',
@@ -861,10 +904,9 @@ function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean, li
       head.setAttribute('aria-label', name)
       head.setAttribute('aria-expanded', expanded ? 'true' : 'false')
       // The label is a child rather than `button()`'s own so it can be
-      // `aria-hidden`: it tracks the turn as it works, and this subtree sits in
-      // an `aria-live` region (§8). The name is `groupHeaderName`'s stable one
-      // instead; what is new is announced by the current step's head.
-      if (live) return liveParts(painter, `live:${group.turnId}`, label, WAITING_HINT, false)
+      // `aria-hidden`: a live one's step count moves as the turn works, and this
+      // subtree sits in an `aria-live` region (§8). The name is
+      // `groupHeaderName`'s stable one instead.
       return [quiet('btn-label', label)]
     },
     () => button('group-head', '', name, () => painter.onToggle(group.turnId, ref.expanded)),
@@ -956,7 +998,9 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
   // so an object identity would mean 「always different」 and no reuse at all. The
   // strings it carries *are* the item's own, so `===` still settles in one compare.
   return painter.node(`step:${step.id}`, classes.join(' '), [step.text, step.summary, expanded], () => {
-    const label = thinkingHeaderLabel(step)
+    // Not 「正在思考」 while live: inside a group the tail row already says that,
+    // one line below, and the hairline is this head's own sign of life.
+    const label = live ? THINKING_DONE_FALLBACK : thinkingHeaderLabel(step)
     // The kept head outlives the paint that built it, so its click reads the
     // disclosure from the mutable ref rather than from a closed-over boolean.
     //

@@ -10,7 +10,7 @@ import {
 } from '../src/runtime/deleteSession.js'
 import { getSubagentTranscriptDir } from '../src/harness/sidechainRecordStream.js'
 import { sessionAttachmentsDir } from '../src/services/imageAttachments/imageAttachmentService.js'
-import { getMyAgentDir } from '../src/utils/paths.js'
+import { getProjectDataDir, getToolResultSpillDir } from '../src/utils/paths.js'
 
 /**
  * `deleteSessionArtifacts` — the one place that knows what a session leaves on
@@ -18,7 +18,8 @@ import { getMyAgentDir } from '../src/utils/paths.js'
  *
  * The reason it exists is the reason these cases matter: the list used to be
  * spelled inline in `ShellHost.deleteSession` with two of the four entries, so
- * `session-memory/<id>.json` and `sessions/subagents/<id>/` outlived every other
+ * `session-memory/<id>.json` and `sessions/subagents/<id>/` (and later
+ * `tool-results/<id>/`) outlived every other
  * trace of a deleted session. A test per artifact is what makes the fifth one
  * someone adds get noticed.
  */
@@ -31,7 +32,7 @@ async function makeCwd(): Promise<string> {
 }
 
 function memoryPath(cwd: string, sessionId: string): string {
-  return path.join(getMyAgentDir(cwd), 'session-memory', `${sessionId}.json`)
+  return path.join(getProjectDataDir(cwd), 'session-memory', `${sessionId}.json`)
 }
 
 /**
@@ -43,6 +44,7 @@ async function seed(cwd: string, sessionId: string): Promise<string[]> {
   const subagents = getSubagentTranscriptDir(cwd, sessionId)
   const memory = memoryPath(cwd, sessionId)
   const attachments = sessionAttachmentsDir(cwd, sessionId)
+  const spill = getToolResultSpillDir(cwd, sessionId)
 
   await mkdir(subagents, { recursive: true })
   await writeFile(path.join(subagents, 'agent-1.jsonl'), '{}\n', 'utf8')
@@ -50,8 +52,10 @@ async function seed(cwd: string, sessionId: string): Promise<string[]> {
   await writeFile(memory, '{}', 'utf8')
   await mkdir(path.join(attachments, 'img-1'), { recursive: true })
   await writeFile(path.join(attachments, 'img-1', 'metadata.json'), '{}', 'utf8')
+  await mkdir(spill, { recursive: true })
+  await writeFile(path.join(spill, 'toolu_1.txt'), 'long output', 'utf8')
 
-  return [subagents, memory, attachments]
+  return [subagents, memory, attachments, spill]
 }
 
 class RecordingStore {
@@ -137,8 +141,8 @@ test('a malformed id is refused before anything is deleted', async () => {
     await seed(cwd, SESSION)
     const store = new RecordingStore()
     const roots = [
-      path.join(getMyAgentDir(cwd), 'sessions', 'subagents'),
-      path.join(getMyAgentDir(cwd), 'session-memory'),
+      path.join(getProjectDataDir(cwd), 'sessions', 'subagents'),
+      path.join(getProjectDataDir(cwd), 'session-memory'),
     ]
 
     for (const bad of ['', '.', '..', 'a/b', 'a\\b', `${SESSION}/..`]) {

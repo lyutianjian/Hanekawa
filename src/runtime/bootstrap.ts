@@ -103,7 +103,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   )
 
   // One per project, like `backgroundTasks` above: attachments are addressed
-  // by `(sessionId, imageId)` inside `<cwd>/.myagent/attachments/`, so every
+  // by `(sessionId, imageId)` inside the project data dir's `attachments/`, so every
   // host and tool context over this project must share one service for the
   // same-session dedup and in-flight guards to mean anything.
   const attachments = new ImageAttachmentService(cwd)

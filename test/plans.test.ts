@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { getProjectPlansDir } from '../src/utils/paths.js'
 import {
   clearAllPlanSlugs,
   clearPlanSlug,
@@ -39,7 +40,7 @@ test('generateWordSlug emits adjective-verb-noun pattern', () => {
 test('getPlansDir creates the directory and returns its absolute path', async () => {
   await withTempCwd(async (cwd) => {
     const dir = getPlansDir(cwd)
-    assert.equal(dir, path.join(cwd, '.myagent', 'plans'))
+    assert.equal(dir, getProjectPlansDir(cwd))
     assert.ok(existsSync(dir))
   })
 })
@@ -84,7 +85,7 @@ test('getPlanFilePath returns <plansDir>/<slug>.md for main session', async () =
     const filePath = getPlanFilePath(cwd, sessionId)
     const slug = getPlanSlug(sessionId)
     assert.ok(slug)
-    assert.equal(filePath, path.join(cwd, '.myagent', 'plans', `${slug}.md`))
+    assert.equal(filePath, path.join(getProjectPlansDir(cwd), `${slug}.md`))
   })
 })
 
@@ -95,8 +96,8 @@ test('getPlanFilePath returns <plansDir>/<slug>-agent-<id>.md for sub-agents', a
     const subPath = getPlanFilePath(cwd, sessionId, 'agent-xyz')
     const slug = getPlanSlug(sessionId)
     assert.ok(slug)
-    assert.equal(mainPath, path.join(cwd, '.myagent', 'plans', `${slug}.md`))
-    assert.equal(subPath, path.join(cwd, '.myagent', 'plans', `${slug}-agent-agent-xyz.md`))
+    assert.equal(mainPath, path.join(getProjectPlansDir(cwd), `${slug}.md`))
+    assert.equal(subPath, path.join(getProjectPlansDir(cwd), `${slug}-agent-agent-xyz.md`))
   })
 })
 
@@ -112,7 +113,7 @@ test('writePlan + readPlan round-trip', async () => {
 
 test('readPlan returns null on ENOENT', async () => {
   await withTempCwd(async (cwd) => {
-    const missing = path.join(cwd, '.myagent', 'plans', 'no-such.md')
+    const missing = path.join(getProjectPlansDir(cwd), 'no-such.md')
     const content = await readPlan(missing)
     assert.equal(content, null)
   })

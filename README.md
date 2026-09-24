@@ -120,8 +120,11 @@ Everything defaults to `inherit`, so a one-model setup needs no `routing` block 
 > downgrades it. Set `routing.plan` / `routing.compact` (or the standalone `compactModel`) to get
 > either back.
 
-The `.myagent/` directory is also where sessions, skills, and local runtime state are stored. Those
-stay per-project: only `config.json` and `settings.json` have a `~/.myagent/` counterpart.
+A project's `.myagent/` holds only configuration you put there (settings, skills, agents, rules, MCP).
+Sessions and other runtime state — spilled tool output, image attachments, plan files — are kept per
+project under `~/.myagent/projects/<key>/`, where `<key>` is derived from the project's path, so
+opening a folder never creates anything inside it. Renaming or moving a project gives it a new key and
+an empty history; the old history stays under the old key.
 
 ### Thinking
 
@@ -231,8 +234,7 @@ the latest user message's images; compacted images can be re-read from the cache
 carries at most 100 images, dropping the oldest historical ones first; the current input's images are
 never dropped silently.
 
-Attachments live under `<project>/.myagent/attachments/<session-id>/`; the global workspace's sessions
-use `~/.myagent/attachments/`. Importing copies the image — your source file is never modified or
+Attachments live under `~/.myagent/projects/<key>/attachments/<session-id>/`. Importing copies the image — your source file is never modified or
 deleted, not by sending, by removing a draft attachment, nor by deleting the session. Deleting a
 session deletes its stored attachments; closing a pane or restarting keeps them; files nothing
 references any more are cleaned up once a 24-hour retention window has passed.
@@ -520,7 +522,7 @@ attachments are not supported there.
 
 ### Sessions
 
-Sessions are stored in `.myagent/sessions/` as metadata plus JSONL records. Records include messages, tool uses, tool results, approvals, and compact boundaries.
+Sessions are stored in `~/.myagent/projects/<key>/sessions/` as metadata plus JSONL records. Records include messages, tool uses, tool results, approvals, and compact boundaries.
 
 ### Rewind
 

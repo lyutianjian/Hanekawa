@@ -32,6 +32,7 @@ import { loadMergedSettings, type MyAgentSettings } from '../src/config/settings
 import type { ContextManagementConfig } from '../src/prompts/budget.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../src/tools/AgentTool/AgentTool.js'
 import type { McpConnectionStatus } from '../src/runtime/types.js'
+import { getSessionsDir } from '../src/utils/paths.js'
 
 /**
  * `ShellHost` — every lane/project decision the single-window shell makes, with
@@ -1149,17 +1150,17 @@ test('list-sessions covers the registry and the global workspace, not just open 
   // A real registered-but-never-opened project with a real index: the closed
   // half of the sidebar reads through the index peek, not a runtime.
   const closedDir = await mkdtemp(path.join(os.tmpdir(), 'myagent-closed-'))
-  await mkdir(path.join(closedDir, '.myagent', 'sessions'), { recursive: true })
+  await mkdir(getSessionsDir(closedDir), { recursive: true })
   await writeFile(
-    path.join(closedDir, '.myagent', 'sessions', 'index.json'),
+    path.join(getSessionsDir(closedDir), 'index.json'),
     JSON.stringify({ sessions: [{ id: 'c-1', shortId: 'c-1', createdAt: at(5), updatedAt: at(5), messageCount: 2, title: 'Closed history' }] }),
     'utf8',
   )
   // The scratch home the beforeEach installed, with one global session.
   const home = process.env.USERPROFILE!
-  await mkdir(path.join(home, '.myagent', 'sessions'), { recursive: true })
+  await mkdir(getSessionsDir(home), { recursive: true })
   await writeFile(
-    path.join(home, '.myagent', 'sessions', 'index.json'),
+    path.join(getSessionsDir(home), 'index.json'),
     JSON.stringify({ sessions: [{ id: 'g-1', shortId: 'g-1', createdAt: at(1), updatedAt: at(1), messageCount: 1, title: 'Global' }] }),
     'utf8',
   )
@@ -1230,7 +1231,7 @@ test('remove-project unregisters a closed project and deletes its history', asyn
     assert.deepEqual(result, { ok: true })
     assert.deepEqual(h.forgottenProjects, [dir], 'the real cwd, not the wire key')
     assert.deepEqual(await new SessionStore(dir).list(), [], 'every session is gone from disk')
-    assert.equal(existsSync(path.join(dir, '.myagent', 'sessions', `${first.id}.jsonl`)), false)
+    assert.equal(existsSync(path.join(getSessionsDir(dir), `${first.id}.jsonl`)), false)
     assert.deepEqual(h.allLanesClosed, [], 'a closed project holds no lanes to lose')
   } finally {
     await rm(dir, { recursive: true, force: true })

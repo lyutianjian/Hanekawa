@@ -96,7 +96,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 
 ## Renderer invariants
 
-- Project data lives under `<cwd>/.myagent/`; global settings/config under `~/.myagent/`. Sessions are append-only JSONL.
+- `<cwd>/.myagent/` holds only user-written project configuration; nothing at runtime creates it. Runtime data (sessions, tool-result spills, attachments, plans, session memory, diagnostics) lives under `getProjectDataDir(cwd)` = `~/.myagent/projects/<key>/`; global settings/config under `~/.myagent/`. Sessions are append-only JSONL. File tools resolve paths through `resolveToolPath`, which admits only the session's own spill dir and the plans dir outside `cwd`.
 - `/rewind` restores from per-session file history in `~/.myagent/file-history/`, never from the worktree: write tools call `trackFileEdit` *before* writing, `makeSnapshot` opens a snapshot per turn, and restores are addressed by `messageId`. Only files the agent's tools touched are captured. Keep backups deduplicated by version, collect a backup only once no surviving snapshot names it, and keep every per-file failure local — there is no session-wide disable.
 - Changes to `hasOverlay` or `isStreaming` call `onShellChanged`. Streaming turns post `session-event` and `snapshot`; keep frame/render-signature work bounded.
 - Every popover closes three ways: a press outside it (`dom/dismiss.ts`'s `onPressOutside`, scoped to the popover **and its trigger**, never to the bar around them), `focusout`, and Escape. A `focusout` with `relatedTarget === null` is the view's own repaint and must be ignored, and a `focus()` inside a paint goes last — it fires `focusout` synchronously, and a handler that repaints in answer re-enters the paint.

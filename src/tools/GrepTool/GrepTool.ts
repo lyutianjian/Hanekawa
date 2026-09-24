@@ -4,7 +4,7 @@ import path from 'node:path'
 import fg from 'fast-glob'
 import { z } from 'zod/v3'
 import type { Tool, ToolResult } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import {
   DEFAULT_HEAD_LIMIT,
   MAX_COLUMNS,
@@ -286,7 +286,7 @@ export const grepTool: Tool = {
   shouldDisplayResult: () => true,
   async execute(input, context) {
     const options = input as GrepInput
-    const target = assertInsideCwd(context.cwd, options.path ?? '.')
+    const target = resolveToolPath(context, options.path ?? '.')
     const outputMode = options.outputMode ?? 'content'
     const before = options.contextBefore ?? options.contextLines ?? 0
     const after = options.contextAfter ?? options.contextLines ?? 0

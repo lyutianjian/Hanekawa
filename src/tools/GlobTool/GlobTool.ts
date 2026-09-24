@@ -1,7 +1,7 @@
 import fg from 'fast-glob'
 import { z } from 'zod/v3'
 import type { Tool } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { DESCRIPTION } from './prompt.js'
 
 interface GlobInput {
@@ -41,7 +41,7 @@ export const globTool: Tool = {
   shouldDisplayResult: () => true,
   async execute(input, context) {
     const options = input as GlobInput
-    const cwd = options.path ? assertInsideCwd(context.cwd, options.path) : context.cwd
+    const cwd = options.path ? resolveToolPath(context, options.path) : context.cwd
     const entries = await fg(options.pattern, { cwd, dot: false })
     const count = entries.length
     return {

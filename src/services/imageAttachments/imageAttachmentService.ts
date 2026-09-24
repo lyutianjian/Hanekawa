@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { assertSafeSessionId } from '../../sessions/service.js'
-import { getMyAgentDir } from '../../utils/paths.js'
+import { getProjectDataDir } from '../../utils/paths.js'
 import {
   IMAGE_PROCESS_DEFAULTS,
   processImageBytes,
@@ -21,8 +21,8 @@ import type { ImagePresentableErrorReason } from '../../media/imageErrors.js'
 /**
  * Session image attachment storage (design doc §12.1, §12.2, §13).
  *
- * Layout under the project's `<cwd>/.myagent` (the global workspace's cwd is
- * the home directory, so its attachments land in `~/.myagent/attachments`):
+ * Layout under the project's data dir, `~/.myagent/projects/<key>/` (see
+ * `getProjectDataDir`; the global workspace is keyed by the home directory):
  *
  * ```text
  * attachments/<ownerSessionId>/<imageId>/
@@ -89,7 +89,7 @@ export interface CollectGarbageOptions {
 }
 
 export function attachmentsDirFor(cwd: string): string {
-  return path.join(getMyAgentDir(cwd), 'attachments')
+  return path.join(getProjectDataDir(cwd), 'attachments')
 }
 
 export function sessionAttachmentsDir(cwd: string, sessionId: string): string {

@@ -18,6 +18,7 @@ import { persistPermissionRule } from '../src/config/settings.js'
 import { analyzeShellCommand } from '../src/harness/commandAnalysis.js'
 import { bashTool } from '../src/tools/BashTool/BashTool.js'
 import type { Tool } from '../src/harness/types.js'
+import { getProjectPlansDir } from '../src/utils/paths.js'
 
 const fsWriteTool: Tool = {
   name: 'fsWrite',
@@ -1667,7 +1668,7 @@ test('PermissionGate plan mode allows session plan file writes despite protected
     { mode: 'plan', cwd },
   )
   gate.setPlanSlugProvider(() => 'draft-plan')
-  const planPath = path.join(cwd, '.myagent', 'plans', 'draft-plan.md')
+  const planPath = path.join(getProjectPlansDir(cwd), 'draft-plan.md')
 
   assert.equal(await gate.approve(writeFileTool, { path: planPath }), true)
   assert.equal(await gate.approve(editFileTool, { path: planPath }), true)
@@ -1689,7 +1690,7 @@ test('PermissionGate clearPlanSlugProvider only uninstalls the provider it was h
   )
   const provider = () => 'draft-plan'
   gate.setPlanSlugProvider(provider)
-  const planPath = path.join(cwd, '.myagent', 'plans', 'draft-plan.md')
+  const planPath = path.join(getProjectPlansDir(cwd), 'draft-plan.md')
 
   // A superseded runtime disposing after a newer one installed its own
   // provider must not uninstall the newer one.
@@ -1729,7 +1730,7 @@ test('PermissionGate plan mode ignores deny rules (bypass-equivalent)', async (t
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-plan-permission-'))
   t.after(() => rm(cwd, { recursive: true, force: true }))
   let prompted = false
-  const planPath = path.join(cwd, '.myagent', 'plans', 'draft-plan.md')
+  const planPath = path.join(getProjectPlansDir(cwd), 'draft-plan.md')
   const denyGate = new PermissionGate(
     async () => {
       prompted = true

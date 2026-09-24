@@ -378,7 +378,7 @@ test('SessionStore appends metrics next to session records', async () => {
       error: 'connection timed out',
     })
 
-    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metricsPath = path.join(getSessionsDir(dir), `${session.id}.metrics.jsonl`)
     const lines = readFileSync(metricsPath, 'utf-8').trim().split('\n')
     assert.equal(lines.length, 3)
     const metric = JSON.parse(lines[0] ?? '{}') as Record<string, unknown>
@@ -559,7 +559,7 @@ test('SessionStore summarizes cache break causes in metrics', async () => {
       drop_tokens: 2500,
     })
 
-    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metricsPath = path.join(getSessionsDir(dir), `${session.id}.metrics.jsonl`)
     const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
     const summary = [...metrics].reverse().find((metric) => metric.event === 'session_cache_summary')
     assert.equal(summary?.total_cache_hit_rate, 0.75)
@@ -611,7 +611,7 @@ test('SessionStore restores cache summary before first metric append', async () 
       duration_ms: 20,
     })
 
-    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metricsPath = path.join(getSessionsDir(dir), `${session.id}.metrics.jsonl`)
     const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
     const summary = [...metrics].reverse().find((metric) => metric.event === 'session_cache_summary')
     assert.equal(summary?.total_turns, 2)
@@ -719,7 +719,7 @@ test('SessionStore persists denial state metadata and emits metrics', async () =
       total: 5,
     })
 
-    const metricsPath = path.join(dir, '.myagent', 'sessions', `${session.id}.metrics.jsonl`)
+    const metricsPath = path.join(getSessionsDir(dir), `${session.id}.metrics.jsonl`)
     const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
     assert.equal(metrics.length, 1)
     assert.equal(metrics[0]?.event, 'permission_denial_state')

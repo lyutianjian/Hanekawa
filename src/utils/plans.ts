@@ -16,7 +16,7 @@ import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
-import { getMyAgentDir } from './paths.js'
+import { getProjectPlansDir } from './paths.js'
 
 /** Process-wide cache: sessionId → slug. Survives across plan mode entry/exit
  *  within the same session. Cleared by clearPlanSlug or clearAllPlanSlugs. */
@@ -74,11 +74,11 @@ export function generateWordSlug(): string {
 }
 
 /**
- * Resolve the plans directory under `<cwd>/.myagent/plans`. Creates it on
+ * Resolve the plans directory, `~/.myagent/projects/<key>/plans`. Creates it on
  * first call (mkdir recursive). Idempotent.
  */
 export function getPlansDir(cwd: string): string {
-  const dir = join(getMyAgentDir(cwd), 'plans')
+  const dir = getProjectPlansDir(cwd)
   try {
     mkdirSync(dir, { recursive: true })
   } catch {

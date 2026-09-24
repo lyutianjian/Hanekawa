@@ -1,6 +1,6 @@
 import { z } from 'zod/v3'
 import type { Tool } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { getReadFileContent, rememberReadFile, requireFreshRead, resolveTextFileMeta } from '../fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
 import { findStringMatches, multipleMatchFailure, noMatchFailure, replaceLiteralMatch, preserveQuoteStyle } from '../FileEditTool/FileEditTool.js'
@@ -47,7 +47,7 @@ export const multiEditTool: Tool = {
   },
   async execute(input, context) {
     const { filePath, edits } = input as { filePath: string; edits: MultiEditItem[] }
-    const absolute = assertInsideCwd(context.cwd, filePath)
+    const absolute = resolveToolPath(context, filePath)
     if (absolute.toLowerCase().endsWith('.ipynb')) {
       return {
         ok: false,

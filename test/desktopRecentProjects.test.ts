@@ -12,7 +12,7 @@ import {
   recordProjectOpen,
   resolveStartupRoot,
 } from '../src/desktop/recentProjects.js'
-import { normalizeCaseForComparison } from '../src/utils/paths.js'
+import { getSessionsDir, normalizeCaseForComparison } from '../src/utils/paths.js'
 
 /**
  * The "added projects" registry and the startup resolution over it — plain node
@@ -41,9 +41,9 @@ async function withProject(
   run: (cwd: string) => Promise<void>,
 ): Promise<void> {
   const cwd = await mkdtemp(path.join(os.tmpdir(), `myagent-project-${name}-`))
-  await mkdir(path.join(cwd, '.myagent', 'sessions'), { recursive: true })
+  await mkdir(getSessionsDir(cwd), { recursive: true })
   await writeFile(
-    path.join(cwd, '.myagent', 'sessions', 'index.json'),
+    path.join(getSessionsDir(cwd), 'index.json'),
     JSON.stringify({ sessions }),
     'utf8',
   )
@@ -192,11 +192,11 @@ test('peekNewestSessionAt reads the index without a store', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'myagent-peek-'))
   try {
     assert.equal(await peekNewestSessionAt(cwd), undefined)
-    await mkdir(path.join(cwd, '.myagent', 'sessions'), { recursive: true })
+    await mkdir(getSessionsDir(cwd), { recursive: true })
     assert.equal(await peekNewestSessionAt(cwd), undefined)
 
     await writeFile(
-      path.join(cwd, '.myagent', 'sessions', 'index.json'),
+      path.join(getSessionsDir(cwd), 'index.json'),
       JSON.stringify({
         sessions: [
           { id: 'old', updatedAt: at(30), messageCount: 2 },
@@ -256,9 +256,9 @@ test('startup resolves to the global workspace when the registry has nothing to 
 
     // The global workspace's own sessions make it win over a project whose
     // sessions are older.
-    await mkdir(path.join(home, '.myagent', 'sessions'), { recursive: true })
+    await mkdir(getSessionsDir(home), { recursive: true })
     await writeFile(
-      path.join(home, '.myagent', 'sessions', 'index.json'),
+      path.join(getSessionsDir(home), 'index.json'),
       JSON.stringify({ sessions: [{ id: 'g1', updatedAt: at(1), messageCount: 1 }] }),
       'utf8',
     )
@@ -273,9 +273,9 @@ test('startup resolves to the global workspace when the registry has nothing to 
 test('startup skips roots that vanished from disk', async () => {
   await withHome(async (home) => {
     const gone = await mkdtempSync(path.join(os.tmpdir(), 'myagent-vanished-'))
-    await mkdir(path.join(gone, '.myagent', 'sessions'), { recursive: true })
+    await mkdir(getSessionsDir(gone), { recursive: true })
     await writeFile(
-      path.join(gone, '.myagent', 'sessions', 'index.json'),
+      path.join(getSessionsDir(gone), 'index.json'),
       JSON.stringify({ sessions: [{ id: 'v1', updatedAt: at(1), messageCount: 1 }] }),
       'utf8',
     )

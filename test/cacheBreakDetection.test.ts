@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { getProjectDataDir } from '../src/utils/paths.js'
 import {
   agentCacheSource,
   checkResponseForCacheBreak,
@@ -162,7 +163,7 @@ test('debug cache break writes hash-only diagnostics', async () => {
     recordPromptState({ system: 'system-b', toolsJson: '[]', model: 'model-a' }, MAIN_SOURCE)
     assert.ok(checkResponseForCacheBreak(10_000, 1_000, MAIN_SOURCE))
 
-    const diagnosticsDir = path.join(dir, '.myagent', 'diagnostics')
+    const diagnosticsDir = path.join(getProjectDataDir(dir), 'diagnostics')
     assert.equal(existsSync(diagnosticsDir), true)
     const files = readdirSync(diagnosticsDir).filter((file) => file.includes('cache-break'))
     assert.equal(files.length, 1)
@@ -309,7 +310,7 @@ test('cache break diagnostics are written under the source\'s own project', asyn
     recordPromptState({ system: 'sys a changed', toolsJson: '[]', model: 'model-a' }, sourceA)
     assert.ok(checkResponseForCacheBreak(0, 1_000, sourceA))
 
-    const aDiagnostics = path.join(projectA, '.myagent', 'diagnostics')
+    const aDiagnostics = path.join(getProjectDataDir(projectA), 'diagnostics')
     assert.ok(existsSync(aDiagnostics), 'the break belongs to project A')
     const aFiles = readdirSync(aDiagnostics).filter((name) => name.includes('cache-break'))
     assert.equal(aFiles.length, 1)
@@ -319,7 +320,7 @@ test('cache break diagnostics are written under the source\'s own project', asyn
     const body = readFileSync(path.join(aDiagnostics, aFiles[0] ?? ''), 'utf-8')
     assert.equal(JSON.parse(body).source, 'agent:session-a')
 
-    const bDiagnostics = path.join(projectB, '.myagent', 'diagnostics')
+    const bDiagnostics = path.join(getProjectDataDir(projectB), 'diagnostics')
     const bFiles = existsSync(bDiagnostics) ? readdirSync(bDiagnostics) : []
     assert.deepEqual(bFiles, [], 'project B never broke, so it gets no file')
   } finally {
@@ -364,7 +365,7 @@ test('a rewritten history message is attributed to its index', async () => {
     assert.equal(result.messagesChangedAt, 1)
     assert.deepEqual(result.reasons, ['messages_changed_at=1'])
 
-    const diagnosticsDir = path.join(dir, '.myagent', 'diagnostics')
+    const diagnosticsDir = path.join(getProjectDataDir(dir), 'diagnostics')
     const files = readdirSync(diagnosticsDir).filter((file) => file.includes('cache-break'))
     const diagnostic = JSON.parse(readFileSync(path.join(diagnosticsDir, files[0] ?? ''), 'utf-8')) as Record<string, unknown>
     assert.equal(diagnostic.messages_changed_at, 1)

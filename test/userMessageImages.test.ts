@@ -53,7 +53,9 @@ test('a user message with images renders numbered attachment lines with copyable
 
   assert.match(frame, /what is in this picture/)
   assert.match(frame, /\[图片 1：screenshot\.png，1920×1080\]/)
-  assert.match(frame, new RegExp(escapeRegExp(attachmentSendVersionPath(CWD, ref))))
+  // The path sits under the home directory and is long enough to wrap.
+  const unwrapped = frame.replace(/\s*\n\s*/g, '')
+  assert.match(unwrapped, new RegExp(escapeRegExp(attachmentSendVersionPath(CWD, ref))))
 })
 
 test('a pure-image message gets a text fallback title', () => {

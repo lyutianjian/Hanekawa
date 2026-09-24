@@ -19,7 +19,7 @@
 import { createHash } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { getMyAgentDir } from '../utils/paths.js'
+import { getProjectDataDir } from '../utils/paths.js'
 import { cacheHitRate } from './usage.js'
 
 export type CacheBreakSource =
@@ -83,7 +83,7 @@ export function displayCacheSource(source: CacheBreakSource): string {
  * every project, so without a root two projects running at once share one
  * cache-read baseline: whichever one answers second is measured against the
  * other's `prevCacheReadTokens` and reports a break that never happened. The
- * root also decides which `.myagent/diagnostics/` the debug JSON lands in.
+ * root also decides which project's `diagnostics/` the debug JSON lands in.
  *
  * `root` stays optional so a caller with no cwd in reach still gets the bare
  * literal — the pre-existing behaviour, and the reason there is no process-wide
@@ -414,7 +414,7 @@ function writeCacheBreakDiagnostic(result: CacheBreakResult): string | null {
     // this lands in, and a full path makes for an unreadable filename.
     const display = displayCacheSource(result.source)
     const session = display.startsWith('agent:') ? display.slice('agent:'.length) : display
-    const diagnosticsDir = path.join(getMyAgentDir(rootFor(result.source)), 'diagnostics')
+    const diagnosticsDir = path.join(getProjectDataDir(rootFor(result.source)), 'diagnostics')
     mkdirSync(diagnosticsDir, { recursive: true, mode: 0o700 })
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
     const filePath = path.join(diagnosticsDir, `${sanitizeFilePart(session)}-cache-break-${timestamp}.json`)

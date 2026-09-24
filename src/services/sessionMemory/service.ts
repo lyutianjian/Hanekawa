@@ -2,7 +2,7 @@
  * Session memory service — storage, extraction, and lifecycle management.
  *
  * Session memory is stored as a JSON file per session under
- * `.myagent/session-memory/<sessionId>.json`. The extraction runs
+ * `~/.myagent/projects/<key>/session-memory/<sessionId>.json`. The extraction runs
  * asynchronously after each assistant response and produces a structured
  * summary of key conversation facts.
  */
@@ -15,7 +15,7 @@ import type { SessionRecord, ModelProvider, TokenUsage } from '../../harness/typ
 import { EMPTY_TOKEN_USAGE } from '../../harness/usage.js'
 import { compactCacheSource } from '../../harness/cacheBreakDetection.js'
 import { countTextTokens } from '../../prompts/budget.js'
-import { getMyAgentDir } from '../../utils/paths.js'
+import { getProjectDataDir } from '../../utils/paths.js'
 import type { SessionMemoryState, SessionMemoryConfig, ExtractionResult } from './types.js'
 import { DEFAULT_SESSION_MEMORY_CONFIG } from './types.js'
 import {
@@ -52,7 +52,7 @@ function getOrCreateSessionState(sessionId: string): PerSessionState {
 // --- Storage ---
 
 function getMemoryDir(cwd: string): string {
-  return path.join(getMyAgentDir(cwd), 'session-memory')
+  return path.join(getProjectDataDir(cwd), 'session-memory')
 }
 
 function getMemoryPath(sessionId: string, cwd: string = process.cwd()): string {

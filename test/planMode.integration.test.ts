@@ -14,6 +14,7 @@ import {
 import { SessionStore } from '../src/sessions/service.js'
 import { clearAllPlanSlugs, readPlan, writePlan } from '../src/utils/plans.js'
 import type { SessionRecord } from '../src/harness/types.js'
+import { getProjectPlansDir } from '../src/utils/paths.js'
 
 async function withTempCwd<T>(fn: (cwd: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'hanekawa-pm-int-'))
@@ -236,8 +237,8 @@ test('Integration G: plan-file prefix match allows main + sub-agent paths; non-m
     // Force slug generation so the gate has a slug to match against.
     const mainPath = h.manager.resolvePlanFilePathLazy()
     const slug = h.manager.getSlug()!
-    const subPath = path.join(cwd, '.myagent', 'plans', `${slug}-agent-x.md`)
-    const otherPath = path.join(cwd, '.myagent', 'plans', 'other-slug.md')
+    const subPath = path.join(getProjectPlansDir(cwd), `${slug}-agent-x.md`)
+    const otherPath = path.join(getProjectPlansDir(cwd), 'other-slug.md')
 
     let promptCount = 0
     const gateWithSpy = new PermissionGate(

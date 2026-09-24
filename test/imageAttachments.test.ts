@@ -12,6 +12,7 @@ import {
 } from '../src/services/imageAttachments/imageAttachmentService.js'
 import type { StoredAttachment } from '../src/services/imageAttachments/imageAttachmentService.js'
 import { loadFixtureBytes } from './helpers/imageFixtures.js'
+import { getProjectDataDir } from '../src/utils/paths.js'
 
 /**
  * S05: the session attachment store. Every test works on its own scratch
@@ -37,7 +38,7 @@ async function importOk(
 }
 
 function imageDir(sessionId: string, imageId: string): string {
-  return path.join(project, '.myagent', 'attachments', sessionId, imageId)
+  return path.join(getProjectDataDir(project), 'attachments', sessionId, imageId)
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -149,8 +150,9 @@ describe('ImageAttachmentService', () => {
   })
 
   it('returns store-write-failed and no usable ref when the disk rejects the write', async () => {
-    // A regular file where `.myagent` should be: every mkdir below it fails.
-    await writeFile(path.join(project, '.myagent'), 'not a directory')
+    // A regular file where the data dir should be: every mkdir below it fails.
+    await mkdir(path.dirname(getProjectDataDir(project)), { recursive: true })
+    await writeFile(getProjectDataDir(project), 'not a directory')
     const service = makeService()
     const result = await service.importImage(
       'session-a',
@@ -326,7 +328,7 @@ describe('ImageAttachmentService', () => {
     it('collects crashed-import leftovers (no metadata) after the window', async () => {
       const service = makeService(60_000)
       await importOk(service, 'session-a', 'transparent.png')
-      const orphan = path.join(project, '.myagent', 'attachments', 'session-a', 'orphan-dir')
+      const orphan = path.join(getProjectDataDir(project), 'attachments', 'session-a', 'orphan-dir')
       await mkdir(orphan)
 
       const fresh = await service.collectGarbage('session-a', [], { now: Date.now() })
@@ -409,15 +411,15 @@ describe('ImageAttachmentService', () => {
     await importOk(service, 'session-b', 'static.webp')
 
     await service.removeSessionAttachments('session-a')
-    assert.equal(await exists(path.join(project, '.myagent', 'attachments', 'session-a')), false)
-    assert.equal(await exists(path.join(project, '.myagent', 'attachments', 'session-b')), true)
+    assert.equal(await exists(path.join(getProjectDataDir(project), 'attachments', 'session-a')), false)
+    assert.equal(await exists(path.join(getProjectDataDir(project), 'attachments', 'session-b')), true)
   })
 
-  it('anchors the store under the project\'s .myagent directory', () => {
-    assert.equal(attachmentsDirFor(project), path.join(project, '.myagent', 'attachments'))
+  it('anchors the store under the project\'s data directory', () => {
+    assert.equal(attachmentsDirFor(project), path.join(getProjectDataDir(project), 'attachments'))
     assert.equal(
       sessionAttachmentsDir(project, 'session-a'),
-      path.join(project, '.myagent', 'attachments', 'session-a'),
+      path.join(getProjectDataDir(project), 'attachments', 'session-a'),
     )
   })
 })

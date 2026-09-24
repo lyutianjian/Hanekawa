@@ -174,6 +174,7 @@ export function applyTuiRecordToTranscriptState(
   options: ApplyRecordOptions = {},
 ): TuiTranscriptState {
   if (record.type === 'message') {
+    if (isSubagentSummaryRecord(record)) return state
     const item = messageRecordToDisplayItem(record, options.thinkingDurationMs)
     const hasPriorToolSegment = state.liveItems.some((liveItem) => liveItem.kind === 'tool_call')
     const boundaryState = markToolGroupBoundary(
@@ -422,6 +423,16 @@ function isSystemReminderBlock(text: string): boolean {
   return trimmed.startsWith('<system-reminder>') && trimmed.endsWith('</system-reminder>')
 }
 
+/** The `<subagent-summary>` the tool runner appends after an Agent result
+ * (`formatSubagentSummary` in `src/harness/toolRunner.ts`): context for the
+ * model, not a reply — the Agent call already shows the run. */
+function isSubagentSummaryRecord(record: Extract<SessionRecord, { type: 'message' }>): boolean {
+  if (record.role !== 'assistant' || typeof record.content !== 'string') return false
+  const trimmed = record.content.trim()
+  return trimmed.startsWith('<subagent-summary ')
+    && (trimmed.endsWith('/>') || trimmed.endsWith('</subagent-summary>'))
+}
+
 export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[] {
   const items: TUIDisplayItem[] = []
   const toolCalls = new Map<string, Extract<TUIDisplayItem, { kind: 'tool_call' }>>()
@@ -439,7 +450,7 @@ export function recordsToDisplayItems(records: SessionRecord[]): TUIDisplayItem[
       // A `<system-reminder>` user record is a model-facing nudge, not user input;
       // skip it so the tag never renders as a user bubble here either.
       const resolvedText = record.displayContent ?? (typeof record.content === 'string' ? record.content : '')
-      if (!(record.role === 'user' && isSystemReminderBlock(resolvedText))) {
+      if (!(record.role === 'user' && isSystemReminderBlock(resolvedText)) && !isSubagentSummaryRecord(record)) {
         items.push(messageRecordToDisplayItem(record))
       }
       groupSegmentId += 1

@@ -25,6 +25,7 @@ import {
   toolStatusLabel,
   type ActivityGroup,
   type ActivityStep,
+  type SubagentLive,
   type SubagentRun,
   type TranscriptEntry,
   type TranscriptItem,
@@ -1270,7 +1271,9 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
   const detail = step.kind === 'tool' ? step.tool : undefined
   return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded], () => {
     const family = familyData(step)
-    const stats = familyStats(family)
+    const live = subagentLive(step, status)
+    // A running sub-agent has no run record yet; its live count stands in.
+    const stats = familyStats(family) ?? (live === undefined ? undefined : `${live.toolCount} 工具`)
     const beadKey = `tool-bead:${step.id}`
     const statusBead = painter.node(beadKey, `step-bead ${status}`, [status], (node) => {
       node.setAttribute('aria-hidden', 'true')
@@ -1291,8 +1294,27 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
       const content = stepBody(step, family, painter)
       return content ? painter.node(bodyKey, 'step-body', [step.text, detail], () => [...content.childNodes]) : undefined
     })
-    return [head, body]
+    return [head, live === undefined ? undefined : liveLine(live), body]
   })
+}
+
+/** The latest tool of a running sub-agent, drawn under its step's head. */
+function subagentLive(step: ToolLike, status: string): SubagentLive | undefined {
+  if (step.kind !== 'tool' || step.toolName !== AGENT_TOOL || status !== 'running') return undefined
+  return step.tool.live
+}
+
+/** `↳ Read notes.txt` — outside the disclosure, so a folded step still says what it is doing. */
+function liveLine(live: SubagentLive): HTMLElement {
+  const node = el(
+    'div',
+    'step-live',
+    el('span', 'step-live-arrow', '↳'),
+    el('span', 'step-name', live.tool),
+    live.summary.length > 0 ? el('span', 'step-summary', live.summary) : undefined,
+  )
+  node.setAttribute('aria-live', 'off')
+  return node
 }
 
 /**
@@ -1309,8 +1331,10 @@ function headParts(step: ToolLike, stats: string | undefined): Child[] {
   // carries. While the unit stands, the generic suffix stands down; keeping
   // both would say `opus` twice on one row.
   const agentUnit = step.kind === 'tool' && step.toolName === AGENT_TOOL && stats !== undefined
+  const agentType = step.toolName === AGENT_TOOL ? step.tool.agentType : undefined
   return [
     el('span', 'step-name', displayName),
+    agentType === undefined ? undefined : el('span', 'step-tag', agentType),
     useSummary ? el('span', 'step-summary', useSummary) : undefined,
     stats === undefined ? undefined : el('span', 'step-suffix', stats),
     headerSuffix === undefined || agentUnit ? undefined : el('span', 'step-suffix', headerSuffix),

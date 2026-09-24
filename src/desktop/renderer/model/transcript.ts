@@ -1,5 +1,5 @@
-import type { SessionRecord, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
-import type { SessionEvent } from '../../../runtime/sessionController.js'
+import type { SessionRecord, SubagentTaskStatus, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
+import type { SessionEvent, SubagentActivity } from '../../../runtime/sessionController.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
 
@@ -108,6 +108,13 @@ export interface SubagentRun {
   readonly summary?: string
 }
 
+/** A running sub-agent's latest tool, from `tool-progress`'s `subagents`. */
+export interface SubagentLive {
+  readonly tool: string
+  readonly summary: string
+  readonly toolCount: number
+}
+
 /**
  * Everything a tool step's head and body need, gathered from both records.
  *
@@ -143,6 +150,10 @@ export interface ToolStepDetail {
   readonly task?: string
   /** The Agent family: the sub-agent run's own facts (§6.2 Agent). */
   readonly subagent?: SubagentRun
+  /** The Agent family: `input.subagent_type`, drawn as a quiet tag beside the name. */
+  readonly agentType?: string
+  /** The Agent family, while the run is going: the tool it started last and how many so far. */
+  readonly live?: SubagentLive
   /** `TodoWrite` only: the `3/6` the head shows (§4.4). */
   readonly progress?: { readonly completed: number; readonly total: number }
   /**
@@ -368,7 +379,11 @@ export function applySessionEvent(
       return { state: applyStream(state, event.event, now) }
 
     case 'tool-progress':
-      return { state: { ...state, toolProgress: event.listContent } }
+      return { state: {
+        ...state,
+        toolProgress: event.listContent,
+        items: withSubagentActivity(state.items, event.subagents ?? []),
+      } }
 
     case 'notice':
       return {
@@ -738,6 +753,13 @@ function isSystemReminderBlock(text: string): boolean {
   return trimmed.startsWith('<system-reminder>') && trimmed.endsWith('</system-reminder>')
 }
 
+/** Mirror of `formatSubagentSummary`'s output (`src/harness/toolRunner.ts`). */
+function isSubagentSummaryBlock(text: string): boolean {
+  const trimmed = text.trim()
+  return trimmed.startsWith('<subagent-summary ')
+    && (trimmed.endsWith('/>') || trimmed.endsWith('</subagent-summary>'))
+}
+
 interface ItemContext {
   readonly toolDisplays?: ToolDisplayLookup
   /** Replay only: `tool_use` ids an approval record has already answered. */
@@ -752,6 +774,9 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       // A `<system-reminder>` user record is a model-facing nudge, not user input;
       // it must not surface as a bubble, so it yields no item.
       if (record.role === 'user' && isSystemReminderBlock(messageText(record))) return []
+      // Likewise the `<subagent-summary>` the tool runner appends after an Agent
+      // result: context for the model, whose facts the Agent step already shows.
+      if (record.role === 'assistant' && isSubagentSummaryBlock(messageText(record))) return []
       const text: TranscriptItem = {
         id: record.id,
         kind: record.role === 'user' ? 'user' : 'assistant',
@@ -779,7 +804,8 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       const dto = context.toolDisplays?.(record.id)
       const search = searchCaption(record.tool, record.input)
       const tool: ToolStepDetail = {
-        displayName: search?.displayName ?? dto?.displayName ?? record.tool,
+        // The Agent family names the run in words; its type rides as a tag.
+        displayName: record.tool === AGENT_TOOL ? AGENT_LABEL : search?.displayName ?? dto?.displayName ?? record.tool,
         useSummary: search?.useSummary ?? dto?.useSummary ?? toolCallDetail(record.input),
         ...(record.createdAt === undefined ? {} : { startedAt: record.createdAt }),
         // Recorded, not yet approved. The approval record clears it; a call the
@@ -826,7 +852,9 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       return [{
         id: record.id,
         kind: 'subagent',
-        text: `${record.subagentType}: ${record.status}${record.description ? ` — ${record.description}` : ''}`,
+        text: [`后台子代理 · ${record.subagentType}`, SUBAGENT_STATUS_LABELS[record.status], record.description]
+          .filter((part) => part !== undefined && part.length > 0)
+          .join(' · '),
         ...stamp,
       }]
 
@@ -856,7 +884,7 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       return [{
         id: record.id,
         kind: 'subagent',
-        text: `${record.subagentType} finished${record.summary ? `: ${record.summary}` : ''}`,
+        text: `${AGENT_LABEL} · ${record.subagentType} 已完成${record.summary ? `：${record.summary}` : ''}`,
         ...stamp,
       }]
     }
@@ -1315,15 +1343,59 @@ function durationOf(duration: TranscriptItem | undefined, run: readonly Transcri
 
 const TASK_TOOL = 'TodoWrite'
 const AGENT_TOOL = 'Agent'
+const AGENT_LABEL = '子代理'
+
+const SUBAGENT_STATUS_LABELS: Readonly<Record<SubagentTaskStatus, string>> = {
+  running: '运行中',
+  completed: '已完成',
+  failed: '失败',
+  cancelled: '已取消',
+  interrupted: '已中断',
+}
 
 /**
  * `input.task` — the prompt the parent handed the sub-agent (§6.2 Agent).
  * Agent calls only: another tool whose input happens to carry a `task` key
  * must not pose as one.
  */
-function agentTask(input: unknown): { task?: string } {
-  const task = typeof input === 'object' && input !== null ? (input as { task?: unknown }).task : undefined
-  return typeof task === 'string' && task.length > 0 ? { task } : {}
+function agentTask(input: unknown): { task?: string; agentType?: string } {
+  if (typeof input !== 'object' || input === null) return {}
+  const { task, subagent_type: agentType } = input as { task?: unknown; subagent_type?: unknown }
+  return {
+    ...(typeof task === 'string' && task.length > 0 ? { task } : {}),
+    ...(typeof agentType === 'string' && agentType.length > 0 ? { agentType } : {}),
+  }
+}
+
+/**
+ * Lays each running `Agent` step's latest sub-agent tool onto it. The list is
+ * the controller's whole current set, so a step missing from it loses its line.
+ * Unchanged steps keep their identity, and so does the array when nothing moved:
+ * progress fires on every tool start and stop.
+ */
+function withSubagentActivity(
+  items: readonly TranscriptItem[],
+  activity: readonly SubagentActivity[],
+): readonly TranscriptItem[] {
+  const byCall = new Map(activity.map((entry) => [entry.toolUseId, entry]))
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'tool' || item.toolName !== AGENT_TOOL || item.tool === undefined) return item
+    const entry = item.pending === true ? byCall.get(item.id) : undefined
+    const current = item.tool.live
+    if (entry === undefined) {
+      if (current === undefined) return item
+      changed = true
+      const { live: _dropped, ...tool } = item.tool
+      return { ...item, tool }
+    }
+    if (current?.tool === entry.tool && current.summary === entry.summary && current.toolCount === entry.toolCount) {
+      return item
+    }
+    changed = true
+    return { ...item, tool: { ...item.tool, live: { tool: entry.tool, summary: entry.summary, toolCount: entry.toolCount } } }
+  })
+  return changed ? next : items
 }
 
 /**

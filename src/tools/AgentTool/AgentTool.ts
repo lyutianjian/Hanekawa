@@ -626,6 +626,7 @@ async function runSubagent({
             type: 'subagent',
             agentType: parsed.subagent_type,
             agentId: subAgentId,
+            ...(context.currentToolUseId ? { parentToolUseId: context.currentToolUseId } : {}),
           },
         })
       },

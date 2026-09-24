@@ -649,6 +649,28 @@ test('subagent progress is tracked per agent and attached to the matching task r
   assert.equal(emitted?.type === 'record' ? emitted.subagentProgress : undefined, expected)
 })
 
+test('a foreground run\'s latest tool rides tool-progress, keyed by its Agent call', async () => {
+  const harness = await createHarness()
+  const source = { type: 'subagent' as const, agentType: 'explore', agentId: 'agent-1', parentToolUseId: 'agent-call' }
+
+  harness.proxy.onProgress({ call: { id: 'c1', name: 'Grep', input: { pattern: 'needle' } }, phase: 'started', source })
+  harness.proxy.onProgress({ call: { id: 'c1', name: 'Grep', input: {} }, phase: 'finished', source })
+  harness.proxy.onProgress({ call: { id: 'c2', name: 'Bash', input: { command: 'ls' } }, phase: 'started', source })
+  const progress = harness.events.at(-1)
+  assert.deepEqual(progress?.type === 'tool-progress' ? progress.subagents : undefined, [
+    { toolUseId: 'agent-call', tool: 'Bash', summary: 'ls', toolCount: 2 },
+  ])
+
+  // The call's own result ends the run's line.
+  harness.proxy.onRecord({
+    id: randomUUID(), type: 'tool_result', toolUseId: 'agent-call', tool: 'Agent', ok: true, content: 'done',
+    createdAt: new Date().toISOString(),
+  } as SessionRecord)
+  harness.proxy.onProgress({ call: { id: 'c2', name: 'Bash', input: {} }, phase: 'finished', source })
+  const after = harness.events.at(-1)
+  assert.equal(after?.type === 'tool-progress' ? after.subagents : 'set', undefined)
+})
+
 test('an approval record carries the id of the tool_use it answers', async () => {
   const harness = await createHarness()
   const toolUseId = randomUUID()

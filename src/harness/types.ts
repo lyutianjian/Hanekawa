@@ -131,6 +131,8 @@ export interface ToolProgressEvent {
     type: 'subagent'
     agentType: string
     agentId?: string
+    /** The parent's `Agent` call this run answers, so a UI can draw progress on that step. */
+    parentToolUseId?: string
   }
 }
 

@@ -261,6 +261,34 @@ test('a cancel that lands mid-keystroke still lifts the key and the modifier', a
   assert.equal(sent[1]?.params['modifiers'], sent[0]?.params['modifiers'])
 })
 
+test('a press whose command fails is still released, and its error is the one reported', async () => {
+  const { deps, sent } = harness()
+  deps.send = async (method, params) => {
+    sent.push({ method, params: params ?? {} })
+    if (params?.['type'] === 'mousePressed') throw new Error('press failed')
+    if (params?.['type'] === 'mouseReleased') throw new Error('release failed')
+    return undefined
+  }
+
+  await assert.rejects(() => clickTarget(deps, { ref: 'e1' }), /press failed/)
+  assert.deepEqual(methods(sent).slice(-2), [
+    'Input.dispatchMouseEvent:mousePressed',
+    'Input.dispatchMouseEvent:mouseReleased',
+  ])
+})
+
+test('a key whose press fails is still lifted', async () => {
+  const { deps, sent } = harness()
+  deps.send = async (method, params) => {
+    sent.push({ method, params: params ?? {} })
+    if (params?.['type'] === 'keyDown') throw new Error('enter failed')
+    return undefined
+  }
+
+  await assert.rejects(() => typeText(deps, { ref: 'e1', text: '', submit: true }), /enter failed/)
+  assert.deepEqual(methods(sent), ['Input.dispatchKeyEvent:keyDown', 'Input.dispatchKeyEvent:keyUp'])
+})
+
 test('actions on one tab serialize, and one failure does not poison the queue', async () => {
   const key = {}
   const order: string[] = []

@@ -136,9 +136,10 @@ export function clickTarget(deps: InputDeps, request: ClickRequest): Promise<Act
     await deps.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none', buttons: 0 })
     deps.check()
     const buttons = BUTTON_MASK[button] ?? 1
-    // No `check()` between the press and its release: see `pressKey`.
-    await deps.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button, buttons, clickCount })
-    await deps.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button, buttons, clickCount })
+    await paired(
+      () => deps.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button, buttons, clickCount }),
+      () => deps.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button, buttons, clickCount }),
+    )
     deps.check()
 
     const how = clickCount > 1 ? `${clickCount}× ${button}-clicked` : button === 'left' ? 'clicked' : `${button}-clicked`
@@ -271,12 +272,39 @@ async function pressKey(deps: InputDeps, key: Key): Promise<void> {
   }
   const down: Record<string, unknown> = { ...base, type: key.text === undefined ? 'rawKeyDown' : 'keyDown' }
   if (key.command !== undefined && isMac(deps)) down['commands'] = [key.command]
-  // A press is never left without its release. Chromium keeps CDP input state
-  // per page, so stopping between the two — a cancel, a takeover — would leave
-  // the key (or the button, in a click) held down under the person who just
-  // took the tab back. Cancellation is observed after the pair instead.
-  await deps.send('Input.dispatchKeyEvent', down)
-  await deps.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' })
+  await paired(
+    () => deps.send('Input.dispatchKeyEvent', down),
+    () => deps.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' }),
+  )
+}
+
+/**
+ * A press that is never left without its release.
+ *
+ * Chromium keeps CDP input state per page, so a press whose release never goes
+ * out — a cancel or takeover observed between the two, or the press command
+ * itself failing after the renderer saw it — leaves the button or key held down
+ * under the person who just took the tab back: their next move becomes a drag,
+ * their next keystroke a shortcut. So cancellation is checked before the press
+ * and after the pair, never inside it; the release is sent whatever the press
+ * did; and when both fail, the press's error is the one reported.
+ *
+ * One key is down at a time here — select-all is a single event carrying its
+ * modifier — so a pair is the whole of the reference's held-keys stack.
+ */
+async function paired(press: () => Promise<unknown>, release: () => Promise<unknown>): Promise<void> {
+  let failure: { error: unknown } | undefined
+  try {
+    await press()
+  } catch (error) {
+    failure = { error }
+  }
+  try {
+    await release()
+  } catch (error) {
+    failure ??= { error }
+  }
+  if (failure !== undefined) throw failure.error
 }
 
 /**
@@ -297,17 +325,18 @@ async function selectAll(deps: InputDeps): Promise<void> {
     modifiers: mac ? MOD_META : MOD_CTRL,
   }
   if (mac) event['commands'] = ['selectAll']
-  // Paired without a `check()` between, for `pressKey`'s reason: a modifier
-  // left down would turn the user's next keystroke into a shortcut.
-  await deps.send('Input.dispatchKeyEvent', event)
-  await deps.send('Input.dispatchKeyEvent', {
-    type: 'keyUp',
-    key: 'a',
-    code: 'KeyA',
-    windowsVirtualKeyCode: 65,
-    nativeVirtualKeyCode: 65,
-    modifiers: mac ? MOD_META : MOD_CTRL,
-  })
+  await paired(
+    () => deps.send('Input.dispatchKeyEvent', event),
+    () =>
+      deps.send('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: 'a',
+        code: 'KeyA',
+        windowsVirtualKeyCode: 65,
+        nativeVirtualKeyCode: 65,
+        modifiers: mac ? MOD_META : MOD_CTRL,
+      }),
+  )
 }
 
 function isMac(deps: InputDeps): boolean {

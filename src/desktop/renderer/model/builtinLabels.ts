@@ -1,0 +1,77 @@
+import type { WireCommandInfo } from '../../../runtime/protocol/wire.js'
+import type { WireAgentDefinitionInfo } from '../../shellProtocol.js'
+
+/**
+ * Chinese captions for the built-in slash commands and sub-agents — display only.
+ *
+ * The English descriptions stay where they are: a sub-agent's description is part
+ * of the Agent tool's prompt, and the TUI speaks English. So this table is a
+ * mirror applied at the last step, keyed by name *and* the English it replaces.
+ * A skill or custom agent that reuses a built-in name carries its own
+ * description, which does not match and so shows as written; an English line
+ * edited at the source falls back to English rather than showing a stale
+ * translation. `test/builtinLabels.test.ts` pins every `en` to its source.
+ */
+interface Caption {
+  readonly en: string
+  readonly zh: string
+}
+
+export const COMMAND_DESCRIPTIONS: Readonly<Record<string, Caption>> = {
+  help: { en: 'Show available commands', zh: '列出可用命令' },
+  clear: { en: 'Clear conversation history', zh: '清空当前对话' },
+  cost: { en: 'Show token usage and cost', zh: '查看 token 用量和费用' },
+  model: { en: 'Show or set the current model', zh: '查看或切换当前模型' },
+  session: { en: 'Show current session info', zh: '查看当前会话信息' },
+  skills: { en: 'List available skills', zh: '列出可用技能' },
+  compact: { en: 'Manage auto-compact state', zh: '管理自动压缩' },
+  repair: { en: 'Repair session record invariants', zh: '修复会话记录' },
+  agents: { en: 'Manage custom agent definitions and subagent tasks', zh: '管理自定义子代理和子代理任务' },
+  provider: { en: 'Manage endpoints, models, and routing', zh: '管理接口、模型和路由' },
+  plan: { en: 'Enter plan mode or show the current plan', zh: '进入计划模式或查看当前计划' },
+  effort: { en: 'Show or set the thinking effort level', zh: '查看或设置思考强度' },
+  thinking: {
+    en: 'Show or set extended thinking (off sends no thinking parameter)',
+    zh: '查看或设置扩展思考（关闭时不发送思考参数）',
+  },
+  tasks: { en: 'Show background shell and agent tasks', zh: '查看后台命令和子代理任务' },
+  resume: { en: 'Resume a session from the current working directory', zh: '恢复当前目录下的会话' },
+  rewind: { en: 'Return to an earlier point in this session', zh: '回到本会话的较早位置' },
+  'paste-image': { en: 'Attach the image currently on the clipboard', zh: '附加剪贴板里的图片' },
+  attachments: { en: 'List or remove draft image attachments', zh: '查看或移除待发送的图片' },
+}
+
+export const AGENT_DESCRIPTIONS: Readonly<Record<string, Caption>> = {
+  general: { en: 'General-purpose read-only sub-agent for isolated research tasks.', zh: '通用只读子代理，用于独立的调研任务' },
+  fork: {
+    en: 'Read-only sub-agent fork that preloads the parent transcript and shares the parent fork prompt-cache stream.',
+    zh: '只读分叉子代理，预先载入主对话记录，并与主对话共用提示缓存',
+  },
+  explore: {
+    en: 'Fast read-only code exploration agent for broad search, navigation, and codebase questions.',
+    zh: '快速只读的代码探索子代理，用于大范围搜索、定位和解答代码库问题',
+  },
+  plan: {
+    en: 'Read-only software planning agent for implementation strategy and trade-off analysis.',
+    zh: '只读规划子代理，用于制定实现方案和权衡取舍',
+  },
+}
+
+function caption(table: Readonly<Record<string, Caption>>, name: string, text: string): string {
+  const entry = Object.hasOwn(table, name) ? table[name] : undefined
+  return entry?.en === text ? entry.zh : text
+}
+
+export function commandDescription(command: WireCommandInfo): string {
+  return caption(COMMAND_DESCRIPTIONS, command.name, command.description)
+}
+
+/** A custom definition never borrows a built-in's caption, even under the same name. */
+export function agentDescription(agent: Pick<WireAgentDefinitionInfo, 'type' | 'builtIn' | 'description'>): string {
+  return agent.builtIn ? caption(AGENT_DESCRIPTIONS, agent.type, agent.description) : agent.description
+}
+
+/** The command list the renderer keeps, captioned once on arrival. */
+export function localizeCommands(commands: readonly WireCommandInfo[]): WireCommandInfo[] {
+  return commands.map((command) => ({ ...command, description: commandDescription(command) }))
+}

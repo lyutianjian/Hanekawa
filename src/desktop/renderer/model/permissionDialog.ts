@@ -2,10 +2,11 @@ import {
   defaultPermissionIndex,
   destructiveWarningsForRequest,
   formatPermissionInputBlock,
+  formatPermissionPreviewMessage,
+  formatPermissionPreviewTitle,
   formatPermissionReason,
   formatPermissionRequestLabel,
   formatPermissionSubtitle,
-  formatPermissionTitle,
   nextPermissionIndex,
   permissionOptionsForRequest,
   permissionToneForRequest,
@@ -77,7 +78,7 @@ export function permissionViewModel(input: {
   const tone = permissionToneForRequest(request, warnings)
 
   return {
-    title: formatPermissionTitle(request, UI_LOCALE),
+    title: formatPermissionPreviewTitle(request, UI_LOCALE),
     // Already carries "n/m pending" when total > 1 — a view must not print a
     // second counter of its own.
     subtitle: formatPermissionSubtitle(request, activeIndex, total, UI_LOCALE),
@@ -88,7 +89,7 @@ export function permissionViewModel(input: {
     denialStreakNote: denialStreakNote(request.denialStreak),
     options,
     selectedIndex: clampIndex(input.selectedIndex, options.length),
-    preview: request.preview ? previewView(request.preview) : undefined,
+    preview: request.preview ? localizedPreview(previewView(request.preview)) : undefined,
     alsoWaiting: alsoWaitingLabels(input.others ?? []),
     actions: actionsFor(options, tone),
   }
@@ -172,6 +173,16 @@ export function permissionIndexToIntent(
 export function permissionResponseFor(action: PermissionAction): Extract<UiResponse, { kind: 'permission' }> {
   if (action === 'always') return { kind: 'permission', approved: true, alwaysAllow: true }
   return { kind: 'permission', approved: action === 'allow' }
+}
+
+/**
+ * The preview's own title and summary ("Edit file: a.txt", "a.txt will be
+ * edited") restate the card's title and input block, so the views draw only
+ * the diff or the message; the message is the one piece of prose left.
+ */
+function localizedPreview(view: PreviewView): PreviewView {
+  if (view.kind !== 'message') return view
+  return { ...view, message: formatPermissionPreviewMessage(view.message, UI_LOCALE) }
 }
 
 function alsoWaitingLabels(others: readonly PermissionRequestDto[]): string[] {

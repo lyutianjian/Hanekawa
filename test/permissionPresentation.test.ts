@@ -202,17 +202,34 @@ describe('permission dialog formatters', () => {
     assert.equal(formatPermissionTitle(request('TaskCreate', { subject: 'New task', description: 'Do something' })), 'Tool permission')
   })
 
-  it('formats subtitles with path, risk, source, and queue position', () => {
+  it('formats subtitles with risk, source, and queue position', () => {
     const subtitle = formatPermissionSubtitle(
-      request('Write', { filePath: 'src/app.ts' }, 'mode', 'confirm'),
+      request('Write', { filePath: 'src/app.ts' }, 'ask rule', 'confirm'),
       1,
       4,
     )
 
-    assert.match(subtitle, /src\/app\.ts/)
-    assert.match(subtitle, /confirm/)
-    assert.match(subtitle, /mode/)
-    assert.match(subtitle, /2\/4 pending/)
+    assert.equal(subtitle, 'confirm - ask rule - 2/4 pending')
+  })
+
+  it('leaves the path to the input block and the mode source to the reason', () => {
+    const dto = request('Edit', { filePath: 'notes.txt' }, 'mode', 'confirm')
+    assert.equal(formatPermissionSubtitle(dto, 0, 1, 'zh'), '需确认')
+  })
+
+  it('translates the gate\'s English reasons for a Chinese dialog', () => {
+    const reason = (text: string, source: 'mode' | 'bash safety' | 'protected path' = 'mode') =>
+      formatPermissionReason(request('Bash', { command: 'x' }, source, 'confirm', text), 'zh')
+    assert.equal(reason('This action changes local state and requires confirmation.'), '该操作会修改本地文件或状态，需要你确认。')
+    assert.equal(
+      reason('This shell command requires confirmation because it includes: complex shell command, unsafe shell syntax: contains shell redirection.', 'bash safety'),
+      '这条命令需要确认，因为它包含：复杂命令、不安全的写法（重定向）。',
+    )
+    assert.match(
+      reason('This action would normally be auto-denied (protected path or deny rule), but the model has now requested it 3 times in a row. Confirm explicitly to proceed, or deny to keep blocking it.', 'protected path'),
+      /连续请求 3 次/,
+    )
+    assert.equal(reason('something new'), 'something new。')
   })
 
   it('formats trigger reasons in natural language', () => {

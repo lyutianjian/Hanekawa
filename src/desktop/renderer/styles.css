@@ -3899,8 +3899,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 }
 #overlay-panel .feedback.focused { border-color: var(--focus-ring); }
 #overlay-panel .feedback::after { content: "▌"; color: var(--caret); }
-#overlay-panel .preview-title,
-#composer-request .preview-title { color: var(--text-tertiary); font-size: 12px; margin-top: 8px; }
 
 /*
   --- the dialog button bar ---

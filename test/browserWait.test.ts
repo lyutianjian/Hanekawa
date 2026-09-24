@@ -22,10 +22,13 @@ function harness(options: {
   observations: Array<Observation | Error>
   timeoutMs?: number
   generations?: Array<number | undefined>
+  /** Successive committed URLs, one per poll; the last one repeats. */
+  urls?: Array<string | undefined>
 }): { deps: WaitDeps; polls: () => number; elapsed: () => number } {
   let index = 0
   let clock = 0
   let generationIndex = 0
+  let urlIndex = 0
 
   const deps: WaitDeps = {
     timeoutMs: options.timeoutMs ?? 1000,
@@ -40,6 +43,12 @@ function harness(options: {
       if (list === undefined) return 1
       const value = list[Math.min(generationIndex, list.length - 1)]
       generationIndex += 1
+      return value
+    },
+    url: () => {
+      const list = options.urls ?? ['https://x.test/']
+      const value = list[Math.min(urlIndex, list.length - 1)]
+      urlIndex += 1
       return value
     },
     check: () => undefined,
@@ -155,4 +164,50 @@ test('an already aborted wait stops before it asks the page anything', async () 
     (error: unknown) => error instanceof BrowserHostError && error.code === 'OPERATION_ABORTED',
   )
   assert.equal(polls(), 0)
+})
+
+test('a URL condition holds once the committed address matches, and never asks the page', async () => {
+  const { deps, polls, elapsed } = harness({
+    observations: [new Error('the page must not be asked')],
+    urls: ['https://shop.test/cart', 'https://shop.test/checkout/step-1'],
+  })
+  const result = await waitForCondition(deps, { url: 'https://shop.test/checkout' })
+  assert.equal(polls(), 0)
+  assert.equal(elapsed(), 100, 'it matched on the second poll')
+  assert.match(result.text, /url starts with https:\/\/shop\.test\/checkout\. url=https:\/\/shop\.test\/checkout\/step-1/)
+
+  const exact = harness({ observations: [], urls: ['https://a.test/x?y=1'] })
+  await assert.rejects(() => waitForCondition({ ...exact.deps, timeoutMs: 0 }, { url: 'https://a.test/x', urlMatch: 'exact' }))
+  const contains = harness({ observations: [], urls: ['https://a.test/x?y=1'] })
+  await waitForCondition(contains.deps, { url: 'y=1', urlMatch: 'contains' })
+})
+
+test('a URL plus a text needs both, and a timeout says which URL it last saw', async () => {
+  const both = harness({
+    observations: [
+      { matched: true, observed: 'found "Thanks" in: Thanks!' },
+    ],
+    urls: [undefined, 'https://a.test/old', 'https://a.test/done'],
+  })
+  const result = await waitForCondition(both.deps, { url: 'https://a.test/done', text: 'Thanks' })
+  // The page is only asked once the address is right.
+  assert.equal(both.polls(), 1)
+  assert.match(result.text, /^url starts with https:\/\/a\.test\/done, and found "Thanks"/)
+
+  const stuck = harness({
+    observations: [{ matched: false, observed: '"Thanks" is not visible in the page' }],
+    urls: ['https://a.test/done'],
+    timeoutMs: 200,
+  })
+  await assert.rejects(
+    () => waitForCondition(stuck.deps, { url: 'https://a.test/done', text: 'Thanks' }),
+    /Last seen: url=https:\/\/a\.test\/done; "Thanks" is not visible/,
+  )
+
+  const elsewhere = harness({ observations: [], urls: ['https://a.test/login'], timeoutMs: 200 })
+  await assert.rejects(
+    () => waitForCondition(elsewhere.deps, { url: 'https://a.test/done' }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'WAIT_TIMEOUT' && /Last seen: url=https:\/\/a\.test\/login/.test(error.message),
+  )
 })

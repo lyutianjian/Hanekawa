@@ -330,6 +330,8 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
         selector: input.selector,
         text: input.text,
         state: input.state,
+        url: input.url,
+        urlMatch: input.urlMatch,
         timeoutMs: input.timeoutMs ?? WAIT_FOR_DEFAULT_MS,
       }, context))
       return actionResult(result, 'Waited for the page')

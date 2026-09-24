@@ -121,6 +121,7 @@ const SPECS: Record<string, AliasSpec> = {
       click_count: 'clickCount',
       press_enter: 'submit',
       key: 'keys',
+      url_match: 'urlMatch',
     },
     arrays: ['keys'],
     numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index'],

@@ -29,7 +29,7 @@ Every call names an \`operation\`. The fields each one takes:
 - \`page.select_option\` — \`tabId\`, \`ref\` or \`selector\`, and exactly one of \`value\`, \`label\` or \`index\`. Picks an option of a native \`<select>\` and fires input and change the way a user's pick does. A custom dropdown (a div that opens a list) is not a select: page.click it open, then page.click the option.
 - \`page.set_checked\` — \`tabId\`, \`ref\` or \`selector\`, \`checked\`. Leaves a checkbox, radio or switch in that state: clicks it only if it is not already there, through its label when the input itself is styled out of sight, and reports if the click did not take. A radio cannot be unchecked — select another one instead.
 - \`page.scroll\` — \`tabId\`, optional \`direction\` (up/down/top/bottom, default down), \`amount\`, or a \`ref\`/\`selector\` to bring into view.
-- \`page.wait_for\` — \`tabId\`, \`selector\` and/or \`text\`, optional \`state\` (visible/hidden), \`timeoutMs\` (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}).
+- \`page.wait_for\` — \`tabId\`, at least one of \`selector\`, \`text\` and \`url\` (every one given must hold), optional \`state\` (visible/hidden, for selector and text), \`urlMatch\` (exact/prefix/contains, default prefix), \`timeoutMs\` (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}). \`text\` matches within one block of the page's text, case-insensitively. \`url\` is compared with the committed address, so it keeps waiting while a navigation is still in flight — use it after a click that should land on another page.
 
 Usage:
 - Start with browser.create_tab, then tab.wait_for_load, then a snapshot. A snapshot of a page that has not loaded fails rather than describing a blank document.

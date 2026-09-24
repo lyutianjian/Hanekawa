@@ -74,8 +74,11 @@ function crossFieldRules(operation: string, input: Record<string, unknown>): Too
       )
     }
   }
-  if (operation === 'page.wait_for' && !has('selector') && !has('text')) {
-    return fail('page.wait_for needs something to wait for: a CSS "selector", a "text", or both.', 'selector')
+  if (operation === 'page.wait_for' && !has('selector') && !has('text') && !has('url')) {
+    return fail(
+      'page.wait_for needs something to wait for: a CSS "selector", a "text", a "url", or a combination (all must hold).',
+      'selector',
+    )
   }
   return { ok: true, errors: [] }
 }

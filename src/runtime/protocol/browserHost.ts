@@ -115,6 +115,9 @@ export interface BrowserWaitRequest {
   selector?: string
   text?: string
   state?: 'visible' | 'hidden'
+  /** The committed URL to wait for; `urlMatch` defaults to `prefix`. */
+  url?: string
+  urlMatch?: 'exact' | 'prefix' | 'contains'
   timeoutMs: number
   signal?: AbortSignal
 }

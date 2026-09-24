@@ -220,6 +220,11 @@ test('an action with no element, and a wait with no condition, are refused befor
   assert.deepEqual(calls, [], 'a call the model can fix must not reach the browser')
   assert.equal(validateBrowserInput({ operation: 'page.click', tabId: 't', selector: '#a' }).ok, true)
   assert.equal(validateBrowserInput({ operation: 'page.wait_for', tabId: 't', selector: '#a' }).ok, true)
+  assert.equal(validateBrowserInput({ operation: 'page.wait_for', tabId: 't', url: 'https://a.test/' }).ok, true)
+  assert.equal(
+    validateBrowserInput({ operation: 'page.wait_for', tabId: 't', url: 'https://a.test/', urlMatch: 'glob' }).ok,
+    false,
+  )
 })
 
 test('a cursor reads the snapshot already taken instead of scanning again', async () => {

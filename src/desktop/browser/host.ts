@@ -256,12 +256,25 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    // A wait for nothing but an address is about a navigation, and a navigation
+    // is exactly when there is no ready document to insist on.
+    const urlOnly = (request.selector ?? '') === '' && (request.text ?? '') === ''
+    if (urlOnly) this.requireTab(caller, tabId)
+    else this.requirePage(caller, tabId)
     const deps = {
-      evaluate: pageEvaluator(page),
+      // Resolved per poll, like everything below: the page a wait started on
+      // is not necessarily the one it ends on.
+      evaluate: (script: string) => {
+        const page = this.deps.tabs.pageFor(tabId)
+        if (page === undefined) {
+          return Promise.reject(new BrowserHostError('PAGE_NOT_READY', 'The tab has no page right now.', true))
+        }
+        return pageEvaluator(page)(script)
+      },
       // Re-read every poll rather than closing over `page.generation`: a
       // navigation that lands mid-wait is exactly what this has to notice.
       generation: () => this.deps.tabs.pageFor(tabId)?.generation,
+      url: () => this.deps.tabs.pageFor(tabId)?.contents.getURL(),
       check: this.guard(caller, revision, request.signal),
       timeoutMs: request.timeoutMs,
       ...(request.signal ? { signal: request.signal } : {}),

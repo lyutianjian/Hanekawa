@@ -154,7 +154,12 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
       tabId,
       selector: z.string().min(1).optional().describe('Wait for this CSS selector.'),
       text: z.string().min(1).optional().describe('Wait for this text. With a selector, waits for it inside that.'),
-      state: z.enum(['visible', 'hidden']).optional().describe('Default visible.'),
+      state: z.enum(['visible', 'hidden']).optional().describe('Default visible. Applies to selector and text, not url.'),
+      url: z.string().min(1).optional().describe('Wait until the tab’s committed URL matches this.'),
+      urlMatch: z
+        .enum(['exact', 'prefix', 'contains'])
+        .optional()
+        .describe('How url is compared. Default prefix.'),
       timeoutMs: z
         .number()
         .int()
@@ -177,7 +182,16 @@ export const browserApiInputSchema: JsonSchema = {
       description: 'Which browser action to run. See the tool description for the fields each one takes.',
     },
     tabId: { type: 'string', description: 'Tab handle. Required by every operation except get_state and create_tab.' },
-    url: { type: 'string', description: 'Absolute http(s) URL. Required by tab.navigate, optional on create_tab.' },
+    url: {
+      type: 'string',
+      description:
+        'Absolute http(s) URL. Required by tab.navigate, optional on create_tab. page.wait_for: wait until the tab’s committed URL matches this (see urlMatch).',
+    },
+    urlMatch: {
+      type: 'string',
+      enum: ['exact', 'prefix', 'contains'],
+      description: 'page.wait_for only: how url is compared. Default prefix.',
+    },
     timeoutMs: {
       type: 'number',
       description: `tab.wait_for_load (default ${WAIT_FOR_LOAD_DEFAULT_MS}, max ${WAIT_FOR_LOAD_MAX_MS}) and page.wait_for (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}).`,

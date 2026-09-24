@@ -111,9 +111,9 @@ test('the host\'s elided count is reported as the larger side, not the sum', () 
   assert.ok(view.kind === 'diff')
   const last = view.rows.at(-1)
   assert.equal(last?.kind, 'elided')
-  assert.match(last?.text ?? '', /more lines? not shown$/)
+  assert.match(last?.text ?? '', /^省略 \d+ 行$/)
   // Summary tells the same truth, so a user reading either number is not misled.
-  assert.match(view.summary, /more lines not shown/)
+  assert.match(view.summary, /（省略 \d+ 行）/)
 })
 
 test('a message preview is passed through, not rendered as an empty diff', () => {
@@ -141,7 +141,7 @@ test('rows are capped for display, with the overflow named', () => {
   assert.ok(view.kind === 'diff')
   assert.equal(view.rows.length, 11)
   assert.equal(view.rows.at(-1)?.kind, 'elided')
-  assert.equal(view.rows.at(-1)?.text, '40 more lines not shown')
+  assert.equal(view.rows.at(-1)?.text, '省略 40 行')
 })
 
 test('text ending in a newline does not produce a phantom trailing row', () => {
@@ -189,7 +189,7 @@ test('a patch that skips the file head names what it skipped', () => {
   assert.ok(parsed)
   // Context keeps 35–41 around the change at 38, so the patch opens at `-35`
   // and the 34 lines above it are the first hunk's own elision.
-  assert.deepEqual(parsed.rows[0], { kind: 'elided', text: '34 more lines not shown' })
+  assert.deepEqual(parsed.rows[0], { kind: 'elided', text: '省略 34 行' })
   assert.equal(parsed.rows[1]?.oldLine, 35)
 })
 
@@ -205,7 +205,7 @@ test('the gap between two hunks is one elided row, counted from the headers', ()
   const parsed = parseUnifiedPatch(patch)
   assert.ok(parsed)
   const gaps = parsed.rows.filter((row) => row.kind === 'elided')
-  assert.deepEqual(gaps.map((row) => row.text), ['4 more lines not shown', '25 more lines not shown'])
+  assert.deepEqual(gaps.map((row) => row.text), ['省略 4 行', '省略 25 行'])
   assert.equal(parsed.added, 2)
   assert.equal(parsed.deleted, 2)
 })
@@ -224,7 +224,7 @@ test("a capped patch keeps its rows and says it was capped, because the counts a
   assert.ok(parsed)
   assert.equal(parsed.capped, true)
   // The cap line is terminal: what it kept is rows, what it dropped is named.
-  assert.deepEqual(parsed.rows.at(-1), { kind: 'elided', text: '225 more lines not shown' })
+  assert.deepEqual(parsed.rows.at(-1), { kind: 'elided', text: '省略 225 行' })
   // The whole-file rewrite emits its removals first, so a head that trusted
   // these counts would read `+0 −17` for a 120-line rewrite.
   assert.equal(parsed.added, 0)

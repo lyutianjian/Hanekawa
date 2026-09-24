@@ -8,15 +8,16 @@
  * `apiInputSchema` is the flat JSON Schema the model is shown. A union cannot
  * survive that trip (the API's schema dialect has no discriminator), so the
  * properties are unioned and `required` keeps only what every branch shares,
- * which is `operation` alone. The cost is real: the published schema no longer
+ * which is `operation` alone. It is generated from the union below, so a field
+ * added to a branch is published without a second edit. The cost is real: the published schema no longer
  * says which fields a given operation needs. `validate.ts` pays it back by
  * turning a failure into an instruction the next turn can act on.
  */
 
-import { z } from 'zod/v3'
+import { z, type ZodTypeAny } from 'zod/v3'
+import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { JsonSchema } from '../../harness/toolValidation.js'
 import {
-  BROWSER_OPERATIONS,
   PRESS_KEYS_MAX,
   TYPE_TEXT_MAX,
   WAIT_FOR_DEFAULT_MS,
@@ -123,7 +124,7 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
       operation: z.literal('page.select_option'),
       tabId,
       ...target,
-      value: z.string().optional().describe('Pick the option whose value attribute is exactly this.'),
+      value: z.string().optional().describe('Pick the option whose value attribute is exactly this. (page.type takes "text", not "value".)'),
       label: z.string().min(1).optional().describe('Pick the option whose visible label is this (surrounding spaces ignored).'),
       index: z.number().int().min(0).optional().describe('Pick the option at this 0-based position.'),
     })
@@ -173,74 +174,65 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
 
 export type BrowserInput = z.infer<typeof browserInputSchema>
 
-export const browserApiInputSchema: JsonSchema = {
-  type: 'object',
-  properties: {
+/** A field's JSON Schema without its description, which `mergeField` composes separately. */
+function fieldJsonSchema(field: ZodTypeAny): JsonSchema {
+  const inner = field instanceof z.ZodOptional ? (field.unwrap() as ZodTypeAny) : field
+  const { $schema: _schema, description: _description, ...schema } = zodToJsonSchema(inner, { $refStrategy: 'none' }) as JsonSchema & { $schema?: string }
+  return schema
+}
+
+/**
+ * One published property from every branch that declares it. Identical
+ * schemas pass through; differing ones keep their shared type (and the union
+ * of their enums) and drop the constraints the union still enforces. A
+ * description shared by every declaring branch is used once; otherwise each
+ * distinct one is labelled with the operations it belongs to.
+ */
+function mergeField(name: string, uses: Array<{ operation: string; field: ZodTypeAny }>): JsonSchema {
+  const schemas = uses.map(({ field }) => fieldJsonSchema(field))
+  let merged: JsonSchema = schemas[0]!
+  if (schemas.some((schema) => JSON.stringify(schema) !== JSON.stringify(merged))) {
+    const types = new Set(schemas.map((schema) => JSON.stringify(schema.type)))
+    if (types.size !== 1) throw new Error(`Browser field "${name}" has conflicting types across operations`)
+    merged = { type: merged.type }
+    if (schemas.every((schema) => schema.enum)) merged.enum = [...new Set(schemas.flatMap((schema) => schema.enum!))]
+    if (schemas.every((schema) => schema.items)) merged.items = schemas[0]!.items
+  }
+
+  const byDescription = new Map<string, string[]>()
+  for (const { operation, field } of uses) {
+    const description = field.description ?? ''
+    byDescription.set(description, [...(byDescription.get(description) ?? []), operation])
+  }
+  const described = [...byDescription].filter(([description]) => description !== '')
+  let description: string
+  if (uses.length === 1) description = `${uses[0]!.operation} only: ${described[0]?.[0] ?? ''}`.trim()
+  else if (byDescription.size === 1) description = described[0]?.[0] ?? ''
+  else description = described.map(([text, operations]) => `${operations.join(', ')}: ${text}`).join(' ')
+  return description === '' ? merged : { ...merged, description }
+}
+
+/** The flat schema, derived from the union so a new operation cannot miss it. */
+function flattenBrowserInputSchema(): JsonSchema {
+  const operations: string[] = []
+  const uses = new Map<string, Array<{ operation: string; field: ZodTypeAny }>>()
+  for (const option of browserInputSchema.options) {
+    const operation = (option.shape.operation as z.ZodLiteral<string>).value
+    operations.push(operation)
+    for (const [name, field] of Object.entries(option.shape as Record<string, ZodTypeAny>)) {
+      if (name === 'operation') continue
+      uses.set(name, [...(uses.get(name) ?? []), { operation, field }])
+    }
+  }
+  const properties: Record<string, JsonSchema> = {
     operation: {
       type: 'string',
-      enum: [...BROWSER_OPERATIONS],
+      enum: operations,
       description: 'Which browser action to run. See the tool description for the fields each one takes.',
     },
-    tabId: { type: 'string', description: 'Tab handle. Required by every operation except get_state and create_tab.' },
-    url: {
-      type: 'string',
-      description:
-        'Absolute http(s) URL. Required by tab.navigate, optional on create_tab. page.wait_for: wait until the tab’s committed URL matches this (see urlMatch).',
-    },
-    urlMatch: {
-      type: 'string',
-      enum: ['exact', 'prefix', 'contains'],
-      description: 'page.wait_for only: how url is compared. Default prefix.',
-    },
-    timeoutMs: {
-      type: 'number',
-      description: `tab.wait_for_load (default ${WAIT_FOR_LOAD_DEFAULT_MS}, max ${WAIT_FOR_LOAD_MAX_MS}) and page.wait_for (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}).`,
-    },
-    scope: { type: 'string', description: 'Snapshots only: CSS selector to restrict the scan to one subtree.' },
-    role: { type: 'string', description: 'page.elements.snapshot only: keep one ARIA role.' },
-    text: {
-      type: 'string',
-      description:
-        'page.elements.snapshot: substring filter over name and text. page.type: the text to type. page.wait_for: the text to wait for.',
-    },
-    ref: {
-      type: 'string',
-      description: 'page.click/type/press_key/select_option/set_checked/scroll: a ref from the latest page.elements.snapshot.',
-    },
-    selector: {
-      type: 'string',
-      description:
-        'page.click/type/press_key/select_option/set_checked/scroll: a CSS selector for the element. page.wait_for: the selector to wait for.',
-    },
-    keys: {
-      type: 'array',
-      items: { type: 'string' },
-      description: `page.press_key only: 1–${PRESS_KEYS_MAX} key names forming one chord, e.g. ["Escape"] or ["ControlOrMeta", "a"].`,
-    },
-    value: {
-      type: 'string',
-      description: 'page.select_option only: the option\'s value attribute. (page.type takes "text", not "value".)',
-    },
-    label: { type: 'string', description: 'page.select_option only: the option\'s visible label.' },
-    index: { type: 'number', description: 'page.select_option only: the option\'s 0-based position.' },
-    checked: { type: 'boolean', description: 'page.set_checked only: the state to leave the control in.' },
-    button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'page.click only. Default left.' },
-    clickCount: { type: 'number', description: 'page.click only: 2 for a double click.' },
-    clear: { type: 'boolean', description: 'page.type only: empty the field before typing.' },
-    submit: { type: 'boolean', description: 'page.type only: press Enter afterwards.' },
-    direction: {
-      type: 'string',
-      enum: ['up', 'down', 'top', 'bottom'],
-      description: 'page.scroll only. Default down.',
-    },
-    amount: { type: 'number', description: 'page.scroll only: pixels for up/down.' },
-    state: { type: 'string', enum: ['visible', 'hidden'], description: 'page.wait_for only. Default visible.' },
-    interactiveOnly: { type: 'boolean', description: 'page.elements.snapshot only. Default true.' },
-    visibleOnly: { type: 'boolean', description: 'Snapshots only. Default true.' },
-    limit: { type: 'number', description: 'Snapshots only: rows per page, the rest reachable through the cursor. Elements default 100.' },
-    maxChars: { type: 'number', description: 'Snapshots only: output budget, 2048–24000.' },
-    cursor: { type: 'string', description: 'Snapshots only: page through the previous snapshot instead of rescanning.' },
-  },
-  required: ['operation'],
-  additionalProperties: false,
+  }
+  for (const [name, fieldUses] of uses) properties[name] = mergeField(name, fieldUses)
+  return { type: 'object', properties, required: ['operation'], additionalProperties: false }
 }
+
+export const browserApiInputSchema: JsonSchema = flattenBrowserInputSchema()

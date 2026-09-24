@@ -89,3 +89,10 @@ export const SENSITIVE_AUTOCOMPLETE = [
  */
 export const INTERACTIVE_SELECTOR =
   'a[href],button,input,select,textarea,summary,[role],[contenteditable],[tabindex],[onclick]'
+
+/**
+ * How long a tab's debugger stays attached after its last lease is returned.
+ * Long enough that a run of actions reuses one attachment, short enough that an
+ * idle tab hands the channel back before the user reaches for DevTools.
+ */
+export const CDP_IDLE_DETACH_MS = 30_000

@@ -12,6 +12,7 @@
  * no host capability to reach, and the automation has no page script to trip over.
  */
 
+import { cdpSessionFor } from './cdpSession.js'
 import { BrowserHostError } from './errors.js'
 import { AUTOMATION_WORLD_ID, type BrowserPage } from './tabs.js'
 
@@ -47,7 +48,7 @@ export function pageEvaluator(page: BrowserPage): PageEvaluator {
 }
 
 /**
- * The input channel: raw CDP, attached on first use.
+ * The input channel: raw CDP, through the tab's counted attachment.
  *
  * Input is the one thing that cannot be done from the automation world. A
  * synthesized `click()` or `KeyboardEvent` carries `isTrusted: false`, skips the
@@ -55,33 +56,15 @@ export function pageEvaluator(page: BrowserPage): PageEvaluator {
  * that checks — so presses and keystrokes go in through the debugger instead,
  * where Chromium treats them as it treats the user's.
  *
- * The attachment is lazy and never undone here: the only other client for a
- * tab's debugger is DevTools, and a tab the user has DevTools open on is a tab
- * whose automation refuses rather than fights over the channel.
+ * Attaching, detaching and stepping aside for DevTools are `cdpSession.ts`'s.
  */
 export function cdpSender(page: BrowserPage): CdpSender {
-  return async (method: string, params?: Record<string, unknown>) => {
-    const contents = page.contents
-    if (contents.isDestroyed()) {
-      throw new BrowserHostError('PAGE_NOT_READY', 'The page is gone. Reload the tab and try again.', true)
-    }
-    try {
-      if (!contents.debugger.isAttached()) contents.debugger.attach('1.3')
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new BrowserHostError(
-        'PAGE_NOT_READY',
-        `The browser could not open its input channel: ${detail}. If DevTools is open on this tab, close it and try again.`,
-        true,
-      )
-    }
-    try {
-      return await contents.debugger.sendCommand(method, params ?? {})
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error)
-      throw new BrowserHostError('PAGE_NOT_READY', `The input command ${method} failed: ${detail}`, true)
-    }
-  }
+  return cdpSessionFor(page.contents).send
+}
+
+/** A lease on the tab's attachment, held for the length of one action. */
+export function cdpLease(page: BrowserPage): () => () => void {
+  return () => cdpSessionFor(page.contents).acquire()
 }
 
 /**

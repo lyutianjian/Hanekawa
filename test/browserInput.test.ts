@@ -183,6 +183,32 @@ test('an element removed between the resolve and the press is never pressed', as
   assert.deepEqual(methods(sent), ['Input.dispatchMouseEvent:mouseMoved'])
 })
 
+test('an action holds one CDP lease for its whole length, and returns it on failure too', async () => {
+  const log: string[] = []
+  const lease = (): (() => void) => {
+    log.push('acquire')
+    return () => log.push('release')
+  }
+  const ok = harness({})
+  const sendOk = ok.deps.send
+  ok.deps.lease = lease
+  ok.deps.send = async (method, params) => {
+    log.push('send')
+    return sendOk(method, params)
+  }
+  await clickTarget(ok.deps, { ref: 'e1' })
+  assert.equal(log[0], 'acquire')
+  assert.equal(log.at(-1), 'release')
+  assert.equal(log.filter((entry) => entry === 'acquire').length, 1)
+  assert.equal(log.filter((entry) => entry === 'release').length, 1)
+
+  log.length = 0
+  const failing = harness({ guard: () => 'STALE_ELEMENT: gone.' })
+  failing.deps.lease = lease
+  await assert.rejects(() => clickTarget(failing.deps, { ref: 'e1' }))
+  assert.deepEqual(log, ['acquire', 'release'])
+})
+
 test('typing re-checks focus before the text and before Enter, and stops at the first refusal', async () => {
   let guards = 0
   const { deps, sent, scripts } = harness({

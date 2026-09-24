@@ -1820,8 +1820,8 @@ body.settings-open #browser-resizer { display: none; }
 .file-chip .icon { width: 12px; height: 12px; }
 .file-chip-label { font-family: var(--font-mono); }
 /* --- thinking ---
-   One disclosure per turn: 「正在思考」 while it streams, 「已处理 Xm Xs」 once the turn
-   ends. The header is the only control in the stream, so it carries no fill — it
+   One disclosure per block: 「正在思考」 while it streams, 「思考过程」 and the time
+   the model spent once it seals. The header is the only control in the stream, so it carries no fill — it
    has to read as the metadata line `design_guidance.md` 三.3 describes. */
 .transcript .item.thinking { color: var(--text-tertiary); }
 .thinking-header {
@@ -1846,11 +1846,36 @@ body.settings-open #browser-resizer { display: none; }
 /* No `opacity` here any more: `--text-tertiary` already states the rung, and
    dimming a colour that was chosen against the page produces a value the palette
    never agreed to — one that fails the ladder in light mode (design_guidance
-   六.3). The italic and the colour carry the whole distinction. */
+   六.3). The colour and the size carry the distinction. */
 .thinking-body {
   margin-top: var(--space-1);
   color: var(--text-tertiary);
-  font-style: italic;
+}
+.thinking-duration { margin-left: var(--space-1); }
+/* The thought's text, in a step or loose. Upright: the italic was a synthesized
+   slant on CJK glyphs, which have none, and it read as smudged small print. The
+   text keeps its own line breaks.
+
+   Folded, it is a two-line preview of the opening, clamped with an ellipsis and
+   clickable to open; open, it is the whole thought, capped and scrolling inside
+   itself like a terminal block, so a long one never turns the turn into a wall. */
+.thinking-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+.thinking-text.preview {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  cursor: pointer;
+}
+.thinking-text.preview:hover { color: var(--text-secondary); }
+.thinking-text:not(.preview) {
+  max-height: 320px;
+  overflow-y: auto;
 }
 /* Text stays still; only status beads breathe. Reduced-motion lives at the end
    of the sheet: the token parser allows no other nested rule here except
@@ -2079,42 +2104,34 @@ body.settings-open #browser-resizer { display: none; }
 @keyframes sheen { from { background-position: 200% 0; } to { background-position: -20% 0; } }
 /* --- the thinking row's head ---
    Not the turn's head and not a tool's: nothing ran, so the row is set apart by
-   size and shape rather than by dimming — the micro rung, italic like the thought
-   it opens, and read at `--text-secondary`. 「已处理 Xm Xs」 is a finished result
-   and reads as one; the live state is carried by the sheen on the hairline, not
-   by a colour the sealed row then has to climb back out of.
+   size rather than by dimming — the micro rung, read at `--text-secondary`. The
+   sealed row's time sits at the right end like a tool's; the live state is
+   carried by the sheen on the hairline, not by a colour the sealed row then has
+   to climb back out of.
 
    It is also the one head that does not light a whole row on hover. A fill that
    wide, on a row nobody has to act on, was the loudest thing on a quiet turn; the
-   hover lights the *text* instead — all the way to the primary rung — and brings
-   the chevron out beside it. The glyph points right while the thought is folded
-   and down once it is open, which is the disclosure said in a shape rather than
-   in a bar of colour.
+   hover lights the *text* instead — all the way to the primary rung. The chevron
+   stays beside the label, since the preview under it is only part of the
+   thought: it points right while the thought is folded and down once it is open,
+   which is the disclosure said in a shape rather than in a bar of colour.
 
-   The chevron's reveal is a transition and its rotation is not: the head is
-   refilled when `expanded` changes (its signature carries it), so a transition on
-   the rotation would never run, while hover leaves the children untouched. */
+   The rotation has no transition: the head is refilled when `expanded` changes
+   (its signature carries it), so a transition on it would never run. */
 .thinking-step-head {
   gap: var(--space-2);
   color: var(--text-secondary);
   font-size: var(--type-micro);
-  font-style: italic;
 }
 /* All the way up, not one rung: the row is quiet at rest, and under the pointer
    it is the thing being read. A half-lit hover is the worst of both. */
 .thinking-step-head:hover { background: none; color: var(--text-primary); }
 /* Beside the label, not out at the panel's edge: the glyph belongs to the words
-   it opens. While the thought is live the hairline runs between them and carries
-   it right; the moment the line goes, the chevron comes back to the text. */
+   it opens. While the thought is live the hairline runs on from it. */
 .thinking-step-head .icon {
   width: 12px;
   height: 12px;
-  opacity: 0;
-  transition: opacity var(--motion-micro) var(--ease-standard);
 }
-.thinking-step-head:hover .icon,
-.thinking-step-head:focus-visible .icon,
-.step.thinking:not(.collapsed) .thinking-step-head .icon { opacity: 1; }
 .step.thinking:not(.collapsed) .thinking-step-head .icon { transform: rotate(90deg); }
 /* The tool's own name, and the task/system row's text. Both are flex items on a
    wrapping head, so both may fold under themselves rather than set a floor: a
@@ -2165,7 +2182,9 @@ body.settings-open #browser-resizer { display: none; }
   color: var(--text-tertiary);
   font-size: var(--type-code);
 }
-.step.thinking .step-body { font-style: italic; }
+/* The thought is prose, not a tool's output: the body's padding stays, and the
+   fold is the preview's clamp rather than the disclosure grid. */
+.step.thinking .step-body { padding-bottom: var(--space-1); }
 .step-body-head { margin-bottom: var(--space-1); overflow-wrap: anywhere; }
 /* The edit family's body (T13) is the same diff block the permission dialog
    paints — one diff look everywhere — but a group is not a dialog: the cap

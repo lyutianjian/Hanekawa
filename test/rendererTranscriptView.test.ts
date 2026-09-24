@@ -72,13 +72,13 @@ test('M04 keeps the thinking head through an unchanged streaming snapshot', (t) 
   }
   assert.equal(starts.starts, 0)
   const items: TranscriptItem[] = [{ id: 'th', kind: 'thinking', text: 'ABC', turnId: 't1', pending: true }]
-  view.render(transcript(items), new Map([['th', false]]), RUNNING_T1)
+  view.render(transcript(items), new Map([['th', true]]), RUNNING_T1)
   view.stub.click(identity.sample() as HTMLElement)
-  assert.deepEqual(view.toggled, [['th', false]], 'the surviving head reads the current ref')
+  assert.deepEqual(view.toggled, [['th', true]], 'the surviving head reads the current ref')
   view.render(transcript(items, { generation: 1 }), NO_DISCLOSURE, RUNNING_T1)
   assert.notEqual(identity.sample(), head, 'a reset with reused ids clears the nested cache')
   view.stub.click(identity.sample() as HTMLElement)
-  assert.deepEqual(view.toggled.at(-1), ['th', true], 'reset does not inherit the previous disclosure ref')
+  assert.deepEqual(view.toggled.at(-1), ['th', false], 'reset does not inherit the previous disclosure ref')
 })
 
 test('M05 keeps the thinking body and settled assistant blocks across deltas', (t) => {
@@ -166,7 +166,9 @@ test('M09 completion plays once on the live edge and never on historical disclos
   assert.equal(view.stub.inspect(statusBead as HTMLElement).classes.includes('completing'), false, 'hidden panes cancel feedback')
 })
 
-for (const kind of ['thinking', 'tool', 'subagent'] as const) {
+// A thinking step is not here: its fold is the preview's clamp, a class change
+// on a body that never leaves (see `a thinking step folds to a preview`).
+for (const kind of ['tool', 'subagent'] as const) {
   test(`M13 ${kind} collapse returns focus immediately and reverses with the same body`, (t) => {
     const view = mount(t)
     const item: TranscriptItem = { id: 's', kind, text: 'body', turnId: 't1',
@@ -215,16 +217,53 @@ for (const reason of ['focus', 'selection', 'reading'] as const) {
   })
 }
 
-test('M14 advancing the current step keeps earlier thinking open without replay', (t) => {
+test('M14 advancing the current step keeps an opened thought open without replay', (t) => {
   const view = mount(t)
   const first: TranscriptItem = { id: 'a', kind: 'thinking', text: 'first', turnId: 't1', pending: true }
-  view.render(transcript([first]), NO_DISCLOSURE, RUNNING_T1)
+  const opened = new Map([['a', true]])
+  view.render(transcript([first]), opened, RUNNING_T1)
   const body = groupOf(view).children[1]!.children[0]!.children[1]!.node
-  view.render(transcript([{ ...first, pending: false }, { ...first, id: 'b', text: 'next' }]), NO_DISCLOSURE, RUNNING_T1)
+  view.render(transcript([{ ...first, pending: false }, { ...first, id: 'b', text: 'next' }]), opened, RUNNING_T1)
   const earlier = groupOf(view).children[1]!.children[0]!
   assert.equal(earlier.classes.includes('collapsed'), false)
   assert.equal(earlier.children[1]!.node, body)
-  assert.equal(view.stub.inspect(body).classes.includes('presence-open'), true)
+  assert.equal(view.stub.inspect(body).classes.includes('preview'), false)
+})
+
+test('a thinking step folds to a two-line preview, the same node either way, and its preview opens it', (t) => {
+  const view = mount(t)
+  const item: TranscriptItem = { id: 's', kind: 'thinking', text: '第一行\n第二行\n第三行', turnId: 't1', pending: true }
+  // The running turn's current step, and still folded: a thought is never
+  // unfolded for the reader.
+  view.render(transcript([item]), NO_DISCLOSURE, RUNNING_T1)
+  const step = groupOf(view).children[1]!.children[0]!
+  assert.equal(step.classes.includes('collapsed'), true)
+  const body = step.children[1]!
+  assert.deepEqual(body.classes, ['step-body', 'thinking-text', 'preview'])
+  assert.equal(body.text, '第一行\n第二行\n第三行', 'the clamp is CSS; the text is whole')
+
+  view.stub.click(body.node)
+  assert.deepEqual(view.toggled, [['s', false]])
+
+  view.render(transcript([item]), new Map([['s', true]]), RUNNING_T1)
+  const open = groupOf(view).children[1]!.children[0]!.children[1]!
+  assert.equal(open.node, body.node, 'the fold is a class change, not a rebuild')
+  assert.deepEqual(open.classes, ['step-body', 'thinking-text'])
+  view.stub.click(open.node)
+  assert.equal(view.toggled.length, 1, 'clicking open text (to select it) does not fold it')
+})
+
+test('a sealed thought puts its measured time at the head’s right, and a replayed one shows none', (t) => {
+  const view = mount(t)
+  const head = (): StubView => groupOf(view).children[1]!.children[0]!.children[0]!
+  view.render(transcript([{ id: 's', kind: 'thinking', text: 'why', turnId: 't1', durationMs: 12_000 }]), new Map([['t1', true]]))
+  assert.deepEqual(head().children.map((child) => child.className || child.tagName), ['btn-label', 'icon', 'step-duration'])
+  assert.equal(head().children.at(-1)?.text, '12s')
+  assert.equal(head().attributes.get('aria-label'), '思考过程 · 用时 12s')
+
+  view.render(transcript([{ id: 's', kind: 'thinking', text: 'why', turnId: 't1' }]), new Map([['t1', true]]))
+  assert.deepEqual(head().children.map((child) => child.className || child.tagName), ['btn-label', 'icon'])
+  assert.equal(head().attributes.get('aria-label'), '思考过程')
 })
 
 function transcript(items: readonly TranscriptItem[] = [], overrides: Partial<TranscriptState> = {}): TranscriptState {
@@ -455,7 +494,7 @@ test('loose items paint the way they always did', (t) => {
 
 const liveThinking: TranscriptItem = { id: 'thinking-0', kind: 'thinking', text: '推理', pending: true }
 const sealedThinking: TranscriptItem = {
-  id: 'thinking-0', kind: 'thinking', text: '推理', summary: '已处理 7m 38s',
+  id: 'thinking-0', kind: 'thinking', text: '推理', durationMs: 458_000,
 }
 
 const thinking = (items: readonly StubView[]): StubView => {
@@ -464,51 +503,47 @@ const thinking = (items: readonly StubView[]): StubView => {
   return found
 }
 
-test('a streaming block is open and shows the live label', (t) => {
+test('a streaming block shows the live label over a preview of the thought', (t) => {
   const { render, items } = mount(t)
   render(transcript([liveThinking]))
   const block = thinking(items())
 
-  assert.deepEqual(block.classes, ['item', 'thinking', 'pending', 'live'])
+  assert.deepEqual(block.classes, ['item', 'thinking', 'pending', 'collapsed', 'live'])
   const header = block.children[0]
   assert.equal(header?.tagName, 'BUTTON')
   assert.equal(header?.text, '正在思考')
-  assert.equal(header?.attributes.get('aria-expanded'), 'true')
-  assert.equal(block.children[1]?.classes.includes('thinking-body'), true)
+  assert.equal(header?.attributes.get('aria-expanded'), 'false')
+  assert.deepEqual(block.children[1]?.classes, ['thinking-body', 'thinking-text', 'preview'])
   assert.equal(block.children[1]?.text, '推理')
 })
 
-test('a sealed block is collapsed, shows the elapsed time, and drops its body', (t) => {
+test('a sealed block names itself, shows the measured time, and keeps its preview', (t) => {
   const { render, items } = mount(t)
   render(transcript([sealedThinking]))
   const block = thinking(items())
 
   assert.deepEqual(block.classes, ['item', 'thinking', 'collapsed'])
-  assert.equal(block.children[0]?.text, '已处理 7m 38s')
+  assert.equal(block.children[0]?.attributes.get('aria-label'), '思考过程 · 用时 7m 38s')
   assert.equal(block.children[0]?.attributes.get('aria-expanded'), 'false')
-  // 「已处理 Xm Xs `⌵`」 (design_guidance 四.3): the caret trails the label. The
-  // rule that flips it while the block is open matches on the class, so the
-  // position is free to be the spec's. Verified by mutation: `trailingIcon` back
-  // to `icon` reds this.
-  assert.equal(block.children[0]?.children[0]?.className, 'btn-label')
-  assert.equal(block.children[0]?.children.at(-1)?.tagName, 'svg')
-  // Absent, not hidden: the transcript is an `aria-live` region, and a collapsed
-  // block must not be read out.
-  assert.equal(block.children.length, 1)
-  assert.equal(block.text.includes('推理'), false)
+  // The caret follows the label (design_guidance 四.3) and the time trails both.
+  assert.deepEqual(
+    block.children[0]?.children.map((child) => child.className || child.tagName),
+    ['btn-label', 'icon', 'thinking-duration'],
+  )
+  assert.equal(block.children[0]?.children.at(-1)?.text, '7m 38s')
+  assert.deepEqual(block.children[1]?.classes, ['thinking-body', 'thinking-text', 'preview'])
 })
 
 test('the pane is absolute answer outranks the default, both ways', (t) => {
-  const { render, items, stub } = mount(t)
+  const { render, items } = mount(t)
 
   render(transcript([sealedThinking]), new Map([['thinking-0', true]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), false)
-  assert.equal(thinking(items()).children[1]?.classes.includes('thinking-body'), true)
+  assert.deepEqual(thinking(items()).children[1]?.classes, ['thinking-body', 'thinking-text'])
 
   render(transcript([liveThinking]), new Map([['thinking-0', false]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), true)
-  stub.dispatch(thinking(items()).children[1]!.node, 'transitionend', { propertyName: 'height' })
-  assert.equal(thinking(items()).children.length, 1)
+  assert.equal(thinking(items()).children[1]?.classes.includes('preview'), true)
 })
 
 test('clicking the header reports the block id and what it showed', (t) => {
@@ -546,7 +581,7 @@ function turnItems(overrides: { pending?: boolean } = {}): TranscriptItem[] {
   }
   return [
     { id: 'm1', kind: 'user', text: 'hi', turnId: 't1' },
-    { id: 'th1', kind: 'thinking', text: '先看看这个文件', summary: '思考 2s', turnId: 't1' },
+    { id: 'th1', kind: 'thinking', text: '先看看这个文件', durationMs: 2000, turnId: 't1' },
     tool,
   ]
 }
@@ -590,27 +625,28 @@ test('the thinking step’s head keeps its hairline only while the thought is li
   // with the thought still arriving in the first paint and sealed in the second.
   const sealedTurn = turnItems({ pending: true })
   const liveTurn = sealedTurn.map((item) =>
-    item.id === 'th1' ? { ...item, pending: true, summary: undefined } : item)
+    item.id === 'th1' ? { ...item, pending: true, durationMs: undefined } : item)
 
   view.render(transcript(liveTurn), NO_DISCLOSURE, RUNNING_T1)
   const head = thinkingStepOf().children[0]
   assert.deepEqual(head?.classes, ['step-head', 'thinking-step-head'])
   // Its own head class is what the sheet hangs the quiet resting state, the
   // text-only hover and the chevron's reveal on — a tool's head keeps the fill.
-  // The hairline runs between the label and the chevron, and carries the sheen.
+  // The hairline runs on from the chevron, and carries the sheen.
   assert.deepEqual(
     head?.children.map((child) => child.className || child.tagName),
-    ['btn-label', 'step-rule', 'icon'],
+    ['btn-label', 'icon', 'step-rule'],
   )
 
-  // Sealed: the line was the waiting, so it goes. The head node itself stays —
-  // that is what lets the sheen run instead of restarting once per token.
+  // Sealed: the line was the waiting, so it goes, and the measured time takes
+  // its place. The head node itself stays — that is what lets the sheen run
+  // instead of restarting once per token.
   view.render(transcript(sealedTurn), NO_DISCLOSURE, RUNNING_T1)
   const sealed = thinkingStepOf().children[0]
   assert.equal(sealed?.node, head?.node, 'the head is kept across the seal')
   assert.deepEqual(
     sealed?.children.map((child) => child.className || child.tagName),
-    ['btn-label', 'icon'],
+    ['btn-label', 'icon', 'step-duration'],
   )
 
   view.stub.click(sealed?.node)
@@ -787,7 +823,7 @@ test('a streaming paint detaches nothing, so the open step keeps its fold and it
   const group = groupOf(view)
   const steps = group.children[1]
   const step = steps?.children[0]
-  assert.deepEqual(step?.classes, ['step', 'thinking', 'live'], 'the running turn opens its last step')
+  assert.deepEqual(step?.classes, ['step', 'thinking', 'live', 'collapsed'], 'a thought streams as its preview')
 
   const detached = {
     column: countDetaches(view.column().node),
@@ -803,7 +839,7 @@ test('a streaming paint detaches nothing, so the open step keeps its fold and it
 
   assert.equal(detached.column(), 1, 'the column re-orders in place; only the status row leaves, as the answer starts')
   assert.equal(detached.group(), 0, 'a refill of the group leaves the children it hands back where they are')
-  assert.equal(detached.steps(), 0, 'and the open step never leaves its box')
+  assert.equal(detached.steps(), 0, 'and the streaming step never leaves its box')
   assert.equal(groupOf(view).children[1]?.children[0]?.node, step?.node, 'still the same step')
   assert.deepEqual(
     view.items().map((entry) => entry.classes[0]),

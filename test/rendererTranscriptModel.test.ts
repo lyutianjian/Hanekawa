@@ -242,7 +242,7 @@ test('turn-end closes the segment and the elapsed time rides on a duration item'
   // request happened to reason last — under §4.2 that is one segment among many.
   const { state } = fold([thinkingDelta('why'), turnEnd(458_000)])
 
-  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.summary]), [[undefined, undefined]])
+  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.durationMs]), [[undefined, undefined]])
   assert.deepEqual(
     state.items.filter((item) => item.kind === 'duration').map((item) => [item.text, item.durationMs]),
     [['已处理 7m 38s', 458_000]],
@@ -323,10 +323,28 @@ test('a zero-step turn still draws the single elapsed line, under the answer', (
   assert.deepEqual([itemAt(entries, 1).text, itemAt(entries, 2).text], ['hi', '已处理 1s'])
 })
 
+test('a live thought is timed from its first delta to its last stop, and keeps the time through its commit', () => {
+  let state = createTranscriptState()
+  const at = (event: SessionEvent, now: number): void => { state = applySessionEvent(state, event, undefined, now).state }
+  at({ type: 'stream', event: { type: 'message_start' } }, 0)
+  at(thinkingDelta('a'), 1_000)
+  at({ type: 'stream', event: { type: 'thinking_stop' } }, 3_000)
+  at(thinkingDelta('b'), 4_000)
+  at({ type: 'stream', event: { type: 'thinking_stop' } }, 13_000)
+  assert.deepEqual(thinkingItems(state).map((item) => item.durationMs), [12_000])
+  at({ type: 'record', record: { type: 'message', id: 'a1', role: 'assistant', content: 'hi',
+    thinkingBlocks: [{ type: 'thinking', thinking: 'ab' }], createdAt: 'now' } }, 14_000)
+  assert.deepEqual(thinkingItems(state).map((item) => [item.text, item.durationMs, item.startedAt]), [['ab', 12_000, undefined]])
+
+  // Without a clock (a replay, a test) nothing is measured.
+  const { state: untimed } = fold([thinkingDelta('why'), { type: 'stream', event: { type: 'thinking_stop' } }])
+  assert.deepEqual(thinkingItems(untimed).map((item) => item.durationMs), [undefined])
+})
+
 test('an aborted turn seals the block without a summary', () => {
   const { state } = fold([thinkingDelta('why'), turnEnd(900, true)])
 
-  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.summary]), [[undefined, undefined]])
+  assert.deepEqual(thinkingItems(state).map((item) => [item.pending, item.durationMs]), [[undefined, undefined]])
   assert.equal(state.items.some((item) => item.kind === 'duration'), false)
 })
 

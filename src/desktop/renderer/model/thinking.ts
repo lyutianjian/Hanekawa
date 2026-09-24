@@ -24,7 +24,7 @@ import type { ActivityGroup, ActivityStep, TranscriptEntry, TranscriptItem } fro
 
 /** While the block is still arriving. */
 export const THINKING_LIVE_LABEL = '正在思考'
-/** A sealed block with no elapsed time — an aborted turn never produced one. */
+/** A sealed block's name; its elapsed time, when measured, sits beside it. */
 export const THINKING_DONE_FALLBACK = '思考过程'
 /** Completion feedback's base duration plus event-delivery slack; retimed with motion tokens. */
 export const STEP_COMPLETION_FALLBACK_MS = 240
@@ -32,12 +32,29 @@ export const STEP_COMPLETION_FALLBACK_MS = 240
 /**
  * The header of a thinking block, whether it arrived as a loose item or as a step.
  *
- * Both shapes carry the same two fields, so the label takes the fields rather than
+ * Both shapes carry the same fields, so the label takes the fields rather than
  * either type — a thinking `ActivityStep` is a projection of the item it came from.
  */
-export function thinkingHeaderLabel(block: { readonly pending?: boolean; readonly summary?: string }): string {
-  if (block.pending === true) return THINKING_LIVE_LABEL
-  return block.summary ?? THINKING_DONE_FALLBACK
+export function thinkingHeaderLabel(block: { readonly pending?: boolean }): string {
+  return block.pending === true ? THINKING_LIVE_LABEL : THINKING_DONE_FALLBACK
+}
+
+/**
+ * 「12s」 beside a sealed block's name, or nothing: a block still arriving has no
+ * total yet, and a replayed one was never timed (only the live stream sees the
+ * clock), so a guess would be a number nobody measured.
+ */
+export function thinkingDurationLabel(block: { readonly pending?: boolean; readonly durationMs?: number }): string | undefined {
+  if (block.pending === true || block.durationMs === undefined) return undefined
+  return formatWorkedDuration(block.durationMs)
+}
+
+/**
+ * The accessible name of a thinking head: its label plus the time, in words, since
+ * the time itself is drawn `aria-hidden` beside it.
+ */
+export function thinkingHeaderName(label: string, duration: string | undefined): string {
+  return duration === undefined ? label : `${label} · 用时 ${duration}`
 }
 
 /**
@@ -94,6 +111,10 @@ function defaultStepExpanded(group: ActivityGroup, index: number, step: Activity
   // opens itself — in a running turn just as much as in a sealed one, because a
   // failed step scrolling past unopened is the case this whole screen exists for.
   if (isStepFailed(step)) return true
+  // A thought is never unfolded for the reader: its collapsed state is a
+  // two-line preview rather than nothing, and a long one streaming open is the
+  // wall of text this rule exists to prevent. Only a click shows it whole.
+  if (step.kind === 'thinking') return false
   if (live && group.status !== 'aborted' && retained) return true
   // The permission request is drawn in the composer and that is where the user is
   // looking; unfolding a diff up here would take the focus back (§5.1).
@@ -195,12 +216,12 @@ export function pruneDisclosure(entries: readonly TranscriptEntry[], state: Disc
 /**
  * A thinking block that never joined a group — a record with no `turnId`.
  *
- * There is no 「current step」 for it to be, so the default is the static one this
- * file started with: open while it streams, closed once it is sealed. The answer
- * is still absolute, and it is stored in the same map under the block's own id.
+ * Folded to its preview by default, streaming or sealed, like a thinking step.
+ * The answer is still absolute, and it is stored in the same map under the
+ * block's own id.
  */
 export function isLooseThinkingExpanded(item: TranscriptItem, state: DisclosureState = NO_DISCLOSURE): boolean {
-  return state.get(item.id) ?? item.pending === true
+  return state.get(item.id) ?? false
 }
 
 /**

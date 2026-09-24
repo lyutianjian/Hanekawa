@@ -23,9 +23,9 @@
  * inside that home, including when the driver is interrupted.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { createTestEnvironment } from '../test-environment.mjs'
 
 export function globalConfigPath(home = homedir()) {
@@ -42,16 +42,31 @@ export function createSmokeEnvironment({ keep = false, copyConfig = true, source
 }
 
 /**
+ * Mirrors `projectDataKey` in `src/utils/paths.ts`: where the app keeps a
+ * project's sessions, under the home it runs with.
+ */
+export function projectDataDir(home, root) {
+  const caseless = process.platform === 'win32' || process.platform === 'darwin'
+  const key = caseless ? resolve(root).toLowerCase() : resolve(root)
+  const hash = createHash('sha256').update(key).digest('hex').slice(0, 8)
+  const readable = key.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(-80)
+  return join(home, '.myagent', 'projects', readable ? `${readable}-${hash}` : hash)
+}
+
+/**
  * A scratch project directory.
  *
  * Config belongs in the disposable home; a project `config.json` would only be
- * migrated aside on first load. This directory holds sessions and local settings.
+ * migrated aside on first load. `myagent` is the project's own `.myagent/`
+ * (local settings); `data` is where its sessions live, under `home`.
  */
-export function makeProject(runDir, name) {
+export function makeProject(runDir, name, home) {
   const root = join(runDir, name)
+  mkdirSync(root, { recursive: true })
   const myagent = join(root, '.myagent')
-  mkdirSync(join(myagent, 'sessions'), { recursive: true })
-  return { name, root, myagent }
+  const data = projectDataDir(home, root)
+  mkdirSync(join(data, 'sessions'), { recursive: true })
+  return { name, root, myagent, data }
 }
 
 /**
@@ -65,25 +80,25 @@ export function seedSession(project, { marker, ageMinutes = 0 }) {
   const id = randomUUID()
   const createdAt = new Date(Date.now() - ageMinutes * 60_000).toISOString()
   const record = { type: 'message', id: randomUUID(), role: 'user', content: marker, createdAt }
-  writeFileSync(join(project.myagent, 'sessions', `${id}.jsonl`), `${JSON.stringify(record)}\n`, { mode: 0o600 })
-  writeFileSync(join(project.myagent, 'sessions', `${id}.metrics.jsonl`), '', { mode: 0o600 })
+  writeFileSync(join(project.data, 'sessions', `${id}.jsonl`), `${JSON.stringify(record)}\n`, { mode: 0o600 })
+  writeFileSync(join(project.data, 'sessions', `${id}.metrics.jsonl`), '', { mode: 0o600 })
   return { id, marker, shortId: id.slice(0, 12) }
 }
 
 /**
- * The project-local artifacts a *ran* session leaves outside its own log.
+ * The per-project artifacts a *ran* session leaves outside its own log.
  *
  * Seeded by hand because a fixture session never ran: without them, "delete
  * removes the session memory" would pass against a session that never had any,
  * which is exactly the vacuous assertion stage 4b's leak hid behind.
  *
- * The file history is not among them: it lives under the global
- * `~/.myagent/file-history/`, not in the project.
+ * The file history is not among them: it lives under
+ * `~/.myagent/file-history/`, not the project's data dir.
  */
 export function seedArtifacts(project, sessionId) {
-  mkdirSync(join(project.myagent, 'session-memory'), { recursive: true })
-  writeFileSync(join(project.myagent, 'session-memory', `${sessionId}.json`), '{"entries":[]}\n')
-  const subagents = join(project.myagent, 'sessions', 'subagents', sessionId)
+  mkdirSync(join(project.data, 'session-memory'), { recursive: true })
+  writeFileSync(join(project.data, 'session-memory', `${sessionId}.json`), '{"entries":[]}\n')
+  const subagents = join(project.data, 'sessions', 'subagents', sessionId)
   mkdirSync(subagents, { recursive: true })
   writeFileSync(join(subagents, 'agent-1.jsonl'), '')
 }
@@ -97,15 +112,15 @@ export function seedArtifacts(project, sessionId) {
  * before-the-delete assertion must count.
  */
 export function artifactPaths(project, sessionId) {
-  return [join(project.myagent, 'sessions', `${sessionId}.json`), ...seededArtifactPaths(project, sessionId)]
+  return [join(project.data, 'sessions', `${sessionId}.json`), ...seededArtifactPaths(project, sessionId)]
 }
 
 export function seededArtifactPaths(project, sessionId) {
   return [
-    join(project.myagent, 'sessions', `${sessionId}.jsonl`),
-    join(project.myagent, 'sessions', `${sessionId}.metrics.jsonl`),
-    join(project.myagent, 'session-memory', `${sessionId}.json`),
-    join(project.myagent, 'sessions', 'subagents', sessionId),
+    join(project.data, 'sessions', `${sessionId}.jsonl`),
+    join(project.data, 'sessions', `${sessionId}.metrics.jsonl`),
+    join(project.data, 'session-memory', `${sessionId}.json`),
+    join(project.data, 'sessions', 'subagents', sessionId),
   ]
 }
 
@@ -115,7 +130,7 @@ export function existingArtifacts(project, sessionId) {
 }
 
 export function indexEntries(project) {
-  const path = join(project.myagent, 'sessions', 'index.json')
+  const path = join(project.data, 'sessions', 'index.json')
   if (!existsSync(path)) return []
   try {
     return JSON.parse(readFileSync(path, 'utf8')).sessions ?? []
@@ -134,6 +149,7 @@ export function assertArtifactsGone(project, sessionId) {
 }
 
 export function seedLocalSettings(project, settings) {
+  mkdirSync(project.myagent, { recursive: true })
   writeFileSync(join(project.myagent, 'settings.local.json'), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
 }
 
@@ -154,7 +170,7 @@ export function readGlobalConfig(home) {
  */
 export function captureTripwires(repoRoot) {
   const stamp = (path) => (existsSync(path) ? statSync(path).mtimeMs : undefined)
-  const repoSessions = join(repoRoot, '.myagent', 'sessions')
+  const repoSessions = join(projectDataDir(homedir(), repoRoot), 'sessions')
   return {
     repoSessionIndex: stamp(join(repoSessions, 'index.json')),
     repoSessionFiles: existsSync(repoSessions) ? readdirSync(repoSessions).sort().join(',') : '',

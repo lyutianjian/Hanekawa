@@ -449,7 +449,7 @@ try {
   assertBuild()
   app.preflightProcesses({ port, pidFile, killStale: false })
   console.log('scratch: ' + runDir)
-  const project = fixtures.makeProject(runDir, 'motion-acceptance')
+  const project = fixtures.makeProject(runDir, 'motion-acceptance', environment.home)
   fixtures.seedLocalSettings(project, { permissions: { ask: ['Write'], allow: ['Read', 'Glob', 'TaskCreate', 'TaskUpdate'] } })
   fixture = await startMotionFixture(project)
   writeFileSync(fixtures.globalConfigPath(environment.home), JSON.stringify(fixture.config, null, 2) + '\n', { mode: 0o600 })

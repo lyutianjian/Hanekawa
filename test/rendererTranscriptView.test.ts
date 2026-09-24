@@ -1348,7 +1348,10 @@ function agentStep(): TranscriptItem {
       displayName: 'explore agent',
       useSummary: '扫一遍 tools/',
       task: '找到 display 的**所有**用法',
-      content: '22 个工具返回了 **display.summary**，其中 6 个带 detail。',
+      // As the tool writes it for the model: the report, then its notices.
+      content: '22 个工具返回了 **display.summary**，其中 6 个带 detail。'
+        + '\n\n[Sub-agent output may be incomplete.]'
+        + '\n\nAgent ID: explore-1. Use SendMessage with this agent_id to continue the same sub-agent.',
       resultSummary: 'Done (12 tool uses · 34k tokens · 5s)',
       headerSuffix: 'opus',
       durationMs: 41_000,
@@ -1443,6 +1446,10 @@ test('an Agent step opens into its task and the sub-agent answer, with the run i
   // content, not the run's capped summary.
   assert.equal(response?.children[1]?.children[0]?.tagName, 'P')
   assert.equal(response?.children[1]?.children[0]?.children[0]?.tagName, 'STRONG')
+  // The notices the model reads are not the reader's: the continuation id is
+  // gone, the truncation warning is a quiet Chinese note under the reply.
+  assert.equal(response?.children[2]?.className, 'step-agent-notes')
+  assert.equal(response?.children[2]?.text, '输出可能不完整')
 })
 
 function webStep(overrides: { failed?: boolean; errorCode?: ToolErrorCode } = {}): TranscriptItem {

@@ -314,6 +314,7 @@ test('a patch rewrites the keys it names and nothing else', async () => {
     // A local layer with a key the patch type cannot even express: hand-written
     // files are the normal case, and a read-modify-write that forgets them is a
     // silent truncation.
+    await mkdir(path.dirname(localSettingsPath(cwd)), { recursive: true })
     await writeFile(
       localSettingsPath(cwd),
       JSON.stringify({ models: { hand: { provider: 'anthropic', model: 'by-hand' } } }),

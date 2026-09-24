@@ -20,21 +20,26 @@ import { withFileLock } from './fileLock.js'
  * run, or sessions created since, are safe. `sessions/index.json` is the one
  * file both sides legitimately have; the two indexes are merged by id.
  *
- * Once everything moved, an emptied `<cwd>/.myagent/` is removed. One that
- * still holds configuration (settings, skills, rules) stays.
+ * Personal settings (`settings.local.json`, `agents.local/`) move too: they
+ * belong to this user, not the project. Once everything moved, an emptied
+ * `<cwd>/.myagent/` is removed. One that still holds shared configuration
+ * (settings, skills, rules) stays.
  *
  * Reports rather than throws, like `migrateProjectConfig`: a failure is a
  * startup warning naming what stayed behind, never a project that won't open.
  */
 
-/** The runtime entries `<cwd>/.myagent/` used to hold. Configuration is not among them. */
-export const LEGACY_RUNTIME_ENTRIES = [
+/** What `<cwd>/.myagent/` used to hold that is not the project's to keep. Shared configuration is not among them. */
+export const LEGACY_ENTRIES = [
   'sessions',
   'tool-results',
   'attachments',
   'plans',
   'session-memory',
   'diagnostics',
+  // Personal, not project, configuration: nothing to commit, so not the project's.
+  'settings.local.json',
+  'agents.local',
 ] as const
 
 export interface LegacyDataFinding {
@@ -45,7 +50,7 @@ export interface LegacyDataFinding {
 
 export async function migrateLegacyProjectData(cwd: string): Promise<LegacyDataFinding[]> {
   const legacyDir = getMyAgentDir(cwd)
-  const pending = LEGACY_RUNTIME_ENTRIES.filter((entry) => existsSync(path.join(legacyDir, entry)))
+  const pending = LEGACY_ENTRIES.filter((entry) => existsSync(path.join(legacyDir, entry)))
   if (pending.length === 0) return []
 
   const dataDir = getProjectDataDir(cwd)
@@ -64,7 +69,9 @@ export async function migrateLegacyProjectData(cwd: string): Promise<LegacyDataF
       const source = path.join(legacyDir, entry)
       if (!existsSync(source)) continue
       try {
-        const problems = await copyTree(source, path.join(dataDir, entry))
+        const problems = (await stat(source)).isDirectory()
+          ? await copyTree(source, path.join(dataDir, entry))
+          : await copyOne(source, path.join(dataDir, entry))
         if (problems.length > 0) {
           failures.push(...problems)
           continue
@@ -108,25 +115,35 @@ async function copyTree(source: string, target: string): Promise<string[]> {
     // A lock belongs to whichever process held it, and that process wrote the
     // old location. Nothing to carry over.
     if (entry.name.endsWith('.lock')) continue
-    try {
-      if (entry.name === 'index.json' && path.basename(source) === 'sessions' && existsSync(to)) {
+    if (entry.name === 'index.json' && path.basename(source) === 'sessions' && existsSync(to)) {
+      try {
         await mergeSessionIndex(from, to)
-        continue
+      } catch (error) {
+        problems.push(`${from}: ${describe(error)}`)
       }
-      if (existsSync(to)) {
-        if (!await sameContent(from, to)) problems.push(`${from} differs from the existing ${to}`)
-        continue
-      }
-      await copyFile(from, to)
-      if (!await sameContent(from, to)) {
-        await rm(to, { force: true })
-        problems.push(`${from} did not copy intact`)
-      }
-    } catch (error) {
-      problems.push(`${from}: ${describe(error)}`)
+      continue
     }
+    problems.push(...await copyOne(from, to))
   }
   return problems
+}
+
+/** One file, never over an existing different one, verified after the copy. */
+async function copyOne(from: string, to: string): Promise<string[]> {
+  try {
+    if (existsSync(to)) {
+      return await sameContent(from, to) ? [] : [`${from} differs from the existing ${to}`]
+    }
+    await mkdir(path.dirname(to), { recursive: true })
+    await copyFile(from, to)
+    if (!await sameContent(from, to)) {
+      await rm(to, { force: true })
+      return [`${from} did not copy intact`]
+    }
+    return []
+  } catch (error) {
+    return [`${from}: ${describe(error)}`]
+  }
 }
 
 interface IndexFile {

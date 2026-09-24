@@ -4,11 +4,7 @@ import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildAnthropicPayload } from '../src/config/providers/anthropicPayload.js'
-import {
-  loadMergedSettings,
-  setLocalThinking,
-  validateSettings,
-} from '../src/config/settings.js'
+import { loadMergedSettings, localSettingsPath, setLocalThinking, validateSettings } from '../src/config/settings.js'
 import { thinkingCommand, parseThinkingArgument } from '../src/commands/thinking.js'
 import type { CommandContext } from '../src/commands/types.js'
 import type { ModelRequest } from '../src/harness/types.js'
@@ -69,7 +65,7 @@ test('thinking is a boolean setting that merges and validates', async () => {
 
   // The local layer wins over the project layer, and the write is a real
   // boolean rather than a deleted key.
-  const local = JSON.parse(await readFile(join(cwd, '.myagent', 'settings.local.json'), 'utf-8'))
+  const local = JSON.parse(await readFile(localSettingsPath(cwd), 'utf-8'))
   assert.equal(local.thinking, false)
   const merged = await loadMergedSettings(cwd)
   assert.equal(merged.thinking, false)

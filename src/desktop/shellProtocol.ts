@@ -354,7 +354,7 @@ export interface WirePermissionGroup {
 }
 
 export interface WirePermissionsInfo {
-  /** `<cwd>/.myagent/settings.local.json` — the screen says what it writes. */
+  /** `localSettingsPath(cwd)`, `~/.myagent/projects/<key>/settings.local.json` — the screen says what it writes. */
   localPath: string
   /**
    * The startup mode as merged. Editable whatever layer set it: unlike the
@@ -456,7 +456,7 @@ export type WireContextManagementField = (typeof CONTEXT_MANAGEMENT_FIELDS)[numb
 export type WireContextManagementInfo = Record<WireContextManagementField, number>
 
 export interface WireGeneralInfo {
-  /** `<cwd>/.myagent/settings.local.json`, same file the permission groups use. */
+  /** `localSettingsPath(cwd)`, `~/.myagent/projects/<key>/settings.local.json`, same file the permission groups use. */
   localPath: string
   /**
    * `cache.ttl1h`. Absent is not `false`: unset means the 1h TTL is on, which

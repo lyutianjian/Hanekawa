@@ -11,6 +11,7 @@ import { PermissionGate, type DenialStateStore } from '../src/harness/permission
 import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
 import type { ImageAttachmentImporter, ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
 import type { ImageAttachmentRef } from '../src/media/types.js'
+import { getLocalAgentsDir } from '../src/utils/paths.js'
 
 const testCwd = await mkdtemp(path.join(tmpdir(), 'hanekawa-agent-tool-'))
 after(() => rm(testCwd, { recursive: true, force: true }))
@@ -1809,7 +1810,7 @@ test('AgentDefinitionLoader merges global, project, and local agent definitions 
   try {
     await mkdir(path.join(home, '.myagent', 'agents'), { recursive: true })
     await mkdir(path.join(cwd, '.myagent', 'agents'), { recursive: true })
-    await mkdir(path.join(cwd, '.myagent', 'agents.local'), { recursive: true })
+    await mkdir(getLocalAgentsDir(cwd), { recursive: true })
     await writeFile(path.join(home, '.myagent', 'agents', 'review.md'), agentFile({
       name: 'reviewer',
       description: 'global definition',
@@ -1820,7 +1821,7 @@ test('AgentDefinitionLoader merges global, project, and local agent definitions 
       description: 'project definition',
       body: 'project prompt',
     }))
-    await writeFile(path.join(cwd, '.myagent', 'agents.local', 'review.md'), agentFile({
+    await writeFile(path.join(getLocalAgentsDir(cwd), 'review.md'), agentFile({
       name: 'reviewer',
       description: 'local definition',
       body: 'local prompt',
@@ -1932,7 +1933,7 @@ test('AgentDefinitionLoader overrides v2 fields when later directories override 
   const cwd = path.join(root, 'project')
   try {
     await mkdir(path.join(home, '.myagent', 'agents'), { recursive: true })
-    await mkdir(path.join(cwd, '.myagent', 'agents.local'), { recursive: true })
+    await mkdir(getLocalAgentsDir(cwd), { recursive: true })
     await writeFile(path.join(home, '.myagent', 'agents', 'review.md'), agentFile({
       name: 'reviewer',
       description: 'global definition',
@@ -1940,7 +1941,7 @@ test('AgentDefinitionLoader overrides v2 fields when later directories override 
       background: false,
       body: 'global prompt',
     }))
-    await writeFile(path.join(cwd, '.myagent', 'agents.local', 'review.md'), agentFile({
+    await writeFile(path.join(getLocalAgentsDir(cwd), 'review.md'), agentFile({
       name: 'reviewer',
       description: 'local definition',
       model: 'fast',

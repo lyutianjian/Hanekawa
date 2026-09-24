@@ -4,10 +4,11 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { loadMergedSettings } from '../src/config/settings.js'
 import { buildStartupNotices } from '../src/runtime/startupNotices.js'
 import { migrateLegacyProjectData } from '../src/sessions/legacyProjectData.js'
 import { SessionStore } from '../src/sessions/service.js'
-import { getProjectDataDir, getProjectPlansDir, getSessionsDir } from '../src/utils/paths.js'
+import { getLocalAgentsDir, getProjectDataDir, getProjectPlansDir, getSessionsDir } from '../src/utils/paths.js'
 
 const OLD = '00000000-0000-4000-8000-000000000001'
 const NEW = '00000000-0000-4000-8000-000000000002'
@@ -52,6 +53,24 @@ test('opening a legacy project moves its data out and removes the emptied .myage
     assert.equal(await readFile(path.join(getProjectPlansDir(cwd), 'calm-plan.md'), 'utf8'), '# plan\n')
     assert.deepEqual(store.takeMigrationFindings().map((f) => f.kind), ['moved'])
     assert.deepEqual(store.takeMigrationFindings(), [])
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('personal settings move with the data and still apply', async () => {
+  const cwd = await makeProject()
+  try {
+    const legacy = path.join(cwd, '.myagent')
+    await mkdir(path.join(legacy, 'agents.local'), { recursive: true })
+    await writeFile(path.join(legacy, 'agents.local', 'mine.md'), '---\nname: mine\n---\n')
+    await writeFile(path.join(legacy, 'settings.local.json'), JSON.stringify({ permissions: { allow: ['Bash(ls:*)'] } }))
+
+    await new SessionStore(cwd).init()
+
+    assert.equal(existsSync(legacy), false)
+    assert.equal(existsSync(path.join(getLocalAgentsDir(cwd), 'mine.md')), true)
+    assert.deepEqual((await loadMergedSettings(cwd)).permissions?.allow, ['Bash(ls:*)'])
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

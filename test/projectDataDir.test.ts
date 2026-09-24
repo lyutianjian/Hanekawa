@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { localSettingsPath, trustMcpServerLocally, updateLocalSettings } from '../src/config/settings.js'
 import { SessionStore } from '../src/sessions/service.js'
 import {
   getProjectDataDir,
@@ -45,6 +46,19 @@ test('a session with records leaves no .myagent in the project', async () => {
 
     assert.equal(existsSync(path.join(cwd, '.myagent')), false)
     assert.equal(existsSync(path.join(getSessionsDir(cwd), `${session.id}.jsonl`)), true)
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+  }
+})
+
+test('an "always allow" or an MCP trust decision leaves no .myagent in the project', async () => {
+  const cwd = await makeProject()
+  try {
+    await updateLocalSettings(cwd, { permissions: { allow: ['Bash(ls:*)'] } })
+    await trustMcpServerLocally(cwd, 'filesystem')
+
+    assert.equal(existsSync(path.join(cwd, '.myagent')), false)
+    assert.equal(existsSync(localSettingsPath(cwd)), true)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

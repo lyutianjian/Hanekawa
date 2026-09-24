@@ -206,6 +206,7 @@ export function getAgentsDir(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'agents')
 }
 
+/** Personal agent definitions: this user's, not the project's, so not in the project. */
 export function getLocalAgentsDir(cwd: string): string {
-  return path.join(getMyAgentDir(cwd), 'agents.local')
+  return path.join(getProjectDataDir(cwd), 'agents.local')
 }

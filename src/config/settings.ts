@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import { isGlobalWorkspaceRoot } from '../utils/paths.js'
+import { getProjectDataDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Routing } from './routing.js'
 import type { EffortLevel } from './effort.js'
@@ -316,7 +316,7 @@ export async function loadSettingsLayers(cwd: string): Promise<SettingsLayers> {
     ? {}
     : await loadSettingsFile(join(cwd, '.myagent', 'settings.json'))
   const legacyMcp = await loadLegacyMcpSettings(cwd)
-  const local = await loadSettingsFile(join(cwd, '.myagent', 'settings.local.json'))
+  const local = await loadSettingsFile(localSettingsPath(cwd))
   return { user, project, legacyMcp, local }
 }
 
@@ -335,9 +335,13 @@ async function writeSettingsAtomic(filePath: string, settings: MyAgentSettings):
  * The layer every in-app write lands in: an "always allow", an MCP trust
  * decision, and everything the desktop settings screen edits outside
  * `config.json`.
+ *
+ * Per project but personal, so it lives in the project's data dir under
+ * `~/.myagent/projects/`, not in the project: clicking "always allow" must not
+ * make a `.myagent/` appear in someone's repository.
  */
 export function localSettingsPath(cwd: string): string {
-  return join(cwd, '.myagent', 'settings.local.json')
+  return join(getProjectDataDir(cwd), 'settings.local.json')
 }
 
 /**

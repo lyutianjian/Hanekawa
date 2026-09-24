@@ -21,6 +21,7 @@ import type {
   BrowserCaller,
   BrowserClickRequest,
   BrowserElementsRequest,
+  BrowserHistoryAction,
   BrowserHost,
   BrowserScreenshot,
   BrowserScrollRequest,
@@ -112,6 +113,25 @@ export class DesktopBrowserHost implements BrowserHost {
     this.deps.tabs.navigate(tabId, url)
     // Cursors are keyed on the navigation generation and would be refused
     // anyway; dropping them here just frees the bytes a turn earlier.
+    this.projection.dropTab(tabId)
+    return this.stateOf(tabId)
+  }
+
+  async history(caller: BrowserCaller, tabId: string, action: BrowserHistoryAction): Promise<BrowserTabState> {
+    this.enter(caller)
+    this.requireTab(caller, tabId)
+    if (action === 'reload') {
+      this.deps.tabs.reload(tabId)
+    } else {
+      const moved = action === 'back' ? this.deps.tabs.goBack(tabId) : this.deps.tabs.goForward(tabId)
+      if (!moved) {
+        throw new BrowserHostError(
+          'INVALID_REQUEST',
+          `This tab has no page to go ${action} to. Use tab.navigate with a URL instead.`,
+        )
+      }
+    }
+    // Same reason as `navigate`: the document is on its way out.
     this.projection.dropTab(tabId)
     return this.stateOf(tabId)
   }

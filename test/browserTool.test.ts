@@ -41,6 +41,7 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     createTab: record('createTab', tab),
     closeTab: record('closeTab', undefined),
     navigate: record('navigate', tab),
+    history: record('history', tab),
     waitForLoad: record('waitForLoad', tab),
     elements: record('elements', snapshot),
     text: record('text', snapshot),
@@ -97,6 +98,40 @@ test('each operation reaches its own host call', async () => {
     'text',
   ])
   assert.deepEqual(calls[3]?.args[2], { timeoutMs: 15_000 })
+})
+
+test('back, forward and reload reach the host as one history call', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const back = await run(tool, { operation: 'tab.go_back', tabId: 'tab-1' })
+  await run(tool, { operation: 'tab.go_forward', tabId: 'tab-1' })
+  await run(tool, { operation: 'tab.reload', tabId: 'tab-1' })
+
+  assert.deepEqual(
+    calls.map((call) => [call.method, call.args[1], call.args[2]]),
+    [
+      ['history', 'tab-1', 'back'],
+      ['history', 'tab-1', 'forward'],
+      ['history', 'tab-1', 'reload'],
+    ],
+  )
+  assert.equal(back.ok, true)
+  assert.match(back.content, /tab-1/)
+  assert.equal(tool.isConcurrencySafeInput?.({ operation: 'tab.reload', tabId: 'tab-1' }), false)
+
+  const missing = validateBrowserInput({ operation: 'tab.go_back' })
+  assert.equal(missing.ok, false)
+  assert.match(missing.errors[0]?.message ?? '', /tab\.go_back requires "tabId"/)
+})
+
+test('a back with nowhere to go comes back as the host’s refusal', async () => {
+  const refusal = Object.assign(new Error('This tab has no page to go back to.'), { code: 'INVALID_REQUEST' })
+  const tool = createBrowserTool(stubHost({ history: async () => { throw refusal } }).host)
+  const result = await run(tool, { operation: 'tab.go_back', tabId: 'tab-1' })
+  assert.equal(result.ok, false)
+  assert.equal(result.errorCode, 'invalid_input')
+  assert.match(result.content, /no page to go back to/)
 })
 
 test('the input operations pass their own fields through, and carry the abort signal', async () => {

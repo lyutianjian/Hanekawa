@@ -68,6 +68,8 @@ interface ElementSpec {
   shadow?: StubElement[]
   style?: Partial<StubStyle>
   size?: { width: number; height: number }
+  /** Viewport position of the box. Absent means the top-left corner. */
+  at?: { top: number; left: number }
 }
 
 class StubElement {
@@ -86,6 +88,7 @@ class StubElement {
   scrolledIntoView = false
   owner: { activeElement: StubElement | null } | undefined
   private readonly size: { width: number; height: number }
+  private readonly at: { top: number; left: number }
   private root: { host?: StubElement } = {}
 
   constructor(tag: string, spec: ElementSpec = {}) {
@@ -93,6 +96,7 @@ class StubElement {
     this.attrs = { ...spec.attrs }
     this.style = { display: 'block', visibility: 'visible', opacity: '1', cursor: 'auto', ...spec.style }
     this.size = spec.size ?? { width: 100, height: 20 }
+    this.at = spec.at ?? { top: 0, left: 0 }
     Object.assign(this, spec.props ?? {})
     if (spec.text !== undefined) this.childNodes.push({ nodeType: 3, textContent: spec.text })
     for (const child of spec.children ?? []) {
@@ -130,7 +134,7 @@ class StubElement {
   }
 
   getBoundingClientRect(): { width: number; height: number; top: number; left: number } {
-    return { ...this.size, top: 0, left: 0 }
+    return { ...this.size, ...this.at }
   }
 
   scrollIntoView(): void {
@@ -322,6 +326,35 @@ test('a transparent ancestor hides a descendant across the shadow boundary', () 
   const relaxed = runElements(body, { visibleOnly: false }).result
   assert.equal(relaxed.rows.length, 1)
   assert.equal(relaxed.rows[0]?.visible, undefined)
+})
+
+test('a rendered element outside the viewport is marked offscreen, one inside is not', () => {
+  // The stub window is 1280×720.
+  const body = el('body', {
+    children: [
+      el('button', { text: 'In view', at: { top: 700, left: 0 } }),
+      el('button', { text: 'Below the fold', at: { top: 720, left: 0 } }),
+      el('button', { text: 'Scrolled past', at: { top: -20, left: 0 } }),
+      el('button', { text: 'Off to the right', at: { top: 10, left: 1280 } }),
+    ],
+  })
+  const rows = runElements(body).result.rows
+  assert.deepEqual(
+    rows.map((row) => [row.name, row.offscreen === true]),
+    [
+      ['In view', false],
+      ['Below the fold', true],
+      ['Scrolled past', true],
+      ['Off to the right', true],
+    ],
+  )
+  // Offscreen is a kind of visible, never a substitute for it.
+  assert.ok(rows.every((row) => row.visible === true))
+
+  const hidden = el('body', {
+    children: [el('button', { text: 'Hidden', style: { display: 'none' }, at: { top: 5000, left: 0 } })],
+  })
+  assert.equal(runElements(hidden, { visibleOnly: false }).result.rows[0]?.offscreen, undefined)
 })
 
 test('a password field projects neither its text nor its value', () => {

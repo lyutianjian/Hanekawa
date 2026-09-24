@@ -125,11 +125,16 @@ export interface BrowserCaller {
   turnId?: string
 }
 
+/** The tab's own history buttons: the three navigations that need no URL. */
+export type BrowserHistoryAction = 'back' | 'forward' | 'reload'
+
 export interface BrowserHost {
   listTabs(caller: BrowserCaller): Promise<BrowserTabState[]>
   createTab(caller: BrowserCaller, url?: string): Promise<BrowserTabState>
   closeTab(caller: BrowserCaller, tabId: string): Promise<void>
   navigate(caller: BrowserCaller, tabId: string, url: string): Promise<BrowserTabState>
+  /** Refuses a back or forward with nowhere to go rather than doing nothing. */
+  history(caller: BrowserCaller, tabId: string, action: BrowserHistoryAction): Promise<BrowserTabState>
   /**
    * Resolves once the tab's *current* navigation finished loading. A navigation
    * that starts while this is waiting replaces what it is waiting for — the

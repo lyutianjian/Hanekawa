@@ -37,6 +37,7 @@ import {
   hkInputRole,
   hkInteractive,
   hkName,
+  hkOffscreen,
   hkParent,
   hkProp,
   hkRole,
@@ -69,7 +70,7 @@ const SHARED = [
 
 export function elementsScript(options: ElementScanOptions): string {
   const call = `${hkCollectElements.name}(document, window, globalThis, ${literal(options)})`
-  return wrap([...SHARED, hkFlag, hkValue, hkCollectElements], call)
+  return wrap([...SHARED, hkFlag, hkValue, hkOffscreen, hkCollectElements], call)
 }
 
 export function textScript(options: TextScanOptions): string {

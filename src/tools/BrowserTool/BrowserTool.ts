@@ -1,5 +1,5 @@
 /**
- * The agent's half of the browser: one tool, twelve operations, no Electron.
+ * The agent's half of the browser: one tool, fifteen operations, no Electron.
  *
  * Everything that touches a real tab is behind {@link BrowserHost}, which is a
  * type and nothing else — the TUI never constructs one, so the tool simply does
@@ -129,6 +129,12 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return parsed.url === undefined ? 'Opening a browser tab' : `Opening ${hostOf(parsed.url)}`
         case 'page.screenshot':
           return 'Taking a screenshot'
+        case 'tab.go_back':
+          return 'Going back'
+        case 'tab.go_forward':
+          return 'Going forward'
+        case 'tab.reload':
+          return 'Reloading the page'
         case 'tab.wait_for_load':
           return 'Waiting for the page to load'
         case 'page.click':
@@ -216,6 +222,13 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       const tab = await host.navigate(session, input.tabId, input.url)
       return tabResult(tab, `Navigating to ${hostOf(input.url)}`)
     }
+    case 'tab.go_back':
+    case 'tab.go_forward':
+    case 'tab.reload': {
+      const action = HISTORY_ACTIONS[input.operation]
+      const tab = await host.history(session, input.tabId, action.action)
+      return tabResult(tab, action.summary)
+    }
     case 'tab.wait_for_load': {
       const options: { timeoutMs: number; signal?: AbortSignal } = {
         timeoutMs: input.timeoutMs ?? WAIT_FOR_LOAD_DEFAULT_MS,
@@ -290,6 +303,12 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
     }
   }
 }
+
+const HISTORY_ACTIONS = {
+  'tab.go_back': { action: 'back', summary: 'Went back' },
+  'tab.go_forward': { action: 'forward', summary: 'Went forward' },
+  'tab.reload': { action: 'reload', summary: 'Reloading' },
+} as const
 
 /** A request with its absent fields dropped and the turn's abort signal added. */
 function action<T extends object>(value: T, context: ToolContext): T & { signal?: AbortSignal } {

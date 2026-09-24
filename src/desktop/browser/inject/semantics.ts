@@ -78,6 +78,23 @@ export function hkVisible(el: InjElement, win: InjWindow): boolean {
   return true
 }
 
+/**
+ * Rendered, but outside the viewport the user and a screenshot see.
+ *
+ * Only the element's own box against the window: a node clipped by a scrolling
+ * ancestor still counts as on screen, which is the cheap answer and the one a
+ * scroll of the page itself can act on.
+ */
+export function hkOffscreen(el: InjElement, win: InjWindow): boolean {
+  const rect = el.getBoundingClientRect()
+  return (
+    rect.top + rect.height <= 0 ||
+    rect.left + rect.width <= 0 ||
+    rect.top >= win.innerHeight ||
+    rect.left >= win.innerWidth
+  )
+}
+
 export function hkInputRole(el: InjElement): string {
   const type = hkString(el.getAttribute('type')).toLowerCase()
   if (type === 'checkbox') return 'checkbox'

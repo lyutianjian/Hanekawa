@@ -20,6 +20,7 @@ export const ELEMENT_COLUMNS = ['ref', 'role', 'name', 'text', 'value', 'href', 
 /** Flag name by row key, in the order they are emitted. */
 const ELEMENT_FLAGS: ReadonlyArray<[keyof ElementRow, string]> = [
   ['visible', 'visible'],
+  ['offscreen', 'offscreen'],
   ['disabled', 'disabled'],
   ['checked', 'checked'],
   ['focused', 'focused'],

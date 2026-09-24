@@ -67,6 +67,9 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('browser.create_tab'), url: url.optional() }).strict(),
   z.object({ operation: z.literal('browser.close_tab'), tabId }).strict(),
   z.object({ operation: z.literal('tab.navigate'), tabId, url }).strict(),
+  z.object({ operation: z.literal('tab.go_back'), tabId }).strict(),
+  z.object({ operation: z.literal('tab.go_forward'), tabId }).strict(),
+  z.object({ operation: z.literal('tab.reload'), tabId }).strict(),
   z
     .object({
       operation: z.literal('tab.wait_for_load'),

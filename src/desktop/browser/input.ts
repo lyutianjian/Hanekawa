@@ -13,8 +13,10 @@
  *   rejection so one failure does not poison everything queued behind it.
  * - **`check()` at every boundary.** Cancellation is checked before dispatch and
  *   again after each await, which puts the granularity at one CDP command rather
- *   than at one operation. Phase 5's takeover arbitration hangs off the same
- *   hook — it is the one place a "stop now" can be observed mid-burst.
+ *   than at one operation — except inside a press/release pair, which always
+ *   completes so nothing is left held down. Phase 5's takeover arbitration
+ *   hangs off the same hook — it is the one place a "stop now" can be observed
+ *   mid-burst.
  * - **Nothing echoes what was typed.** The evidence line counts characters. A
  *   password typed into a field the projection refuses to read must not come
  *   back through the transcript instead.
@@ -134,8 +136,8 @@ export function clickTarget(deps: InputDeps, request: ClickRequest): Promise<Act
     await deps.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none', buttons: 0 })
     deps.check()
     const buttons = BUTTON_MASK[button] ?? 1
+    // No `check()` between the press and its release: see `pressKey`.
     await deps.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button, buttons, clickCount })
-    deps.check()
     await deps.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button, buttons, clickCount })
     deps.check()
 
@@ -269,8 +271,11 @@ async function pressKey(deps: InputDeps, key: Key): Promise<void> {
   }
   const down: Record<string, unknown> = { ...base, type: key.text === undefined ? 'rawKeyDown' : 'keyDown' }
   if (key.command !== undefined && isMac(deps)) down['commands'] = [key.command]
+  // A press is never left without its release. Chromium keeps CDP input state
+  // per page, so stopping between the two — a cancel, a takeover — would leave
+  // the key (or the button, in a click) held down under the person who just
+  // took the tab back. Cancellation is observed after the pair instead.
   await deps.send('Input.dispatchKeyEvent', down)
-  deps.check()
   await deps.send('Input.dispatchKeyEvent', { ...base, type: 'keyUp' })
 }
 
@@ -292,8 +297,9 @@ async function selectAll(deps: InputDeps): Promise<void> {
     modifiers: mac ? MOD_META : MOD_CTRL,
   }
   if (mac) event['commands'] = ['selectAll']
+  // Paired without a `check()` between, for `pressKey`'s reason: a modifier
+  // left down would turn the user's next keystroke into a shortcut.
   await deps.send('Input.dispatchKeyEvent', event)
-  deps.check()
   await deps.send('Input.dispatchKeyEvent', {
     type: 'keyUp',
     key: 'a',

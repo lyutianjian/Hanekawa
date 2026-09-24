@@ -18,8 +18,9 @@ Every call names an \`operation\`. The fields each one takes:
 - \`browser.create_tab\` — optional \`url\`. Opens a tab and returns its tabId. With a url it also starts loading it.
 - \`browser.close_tab\` — \`tabId\`.
 - \`tab.navigate\` — \`tabId\`, \`url\`. Returns as soon as the navigation starts; follow it with tab.wait_for_load.
+- \`tab.go_back\`, \`tab.go_forward\`, \`tab.reload\` — \`tabId\`. The tab's own history buttons; like tab.navigate, follow them with tab.wait_for_load. Going back or forward fails when the history has no page in that direction.
 - \`tab.wait_for_load\` — \`tabId\`, optional \`timeoutMs\` (default ${WAIT_FOR_LOAD_DEFAULT_MS}, max ${WAIT_FOR_LOAD_MAX_MS}).
-- \`page.elements.snapshot\` — \`tabId\`, optional \`scope\`, \`role\`, \`text\`, \`interactiveOnly\`, \`visibleOnly\`, \`limit\`, \`maxChars\`, \`cursor\`. A table of the operable elements: ref, role, name, text, value, href, flags.
+- \`page.elements.snapshot\` — \`tabId\`, optional \`scope\`, \`role\`, \`text\`, \`interactiveOnly\`, \`visibleOnly\`, \`limit\`, \`maxChars\`, \`cursor\`. A table of the operable elements: ref, role, name, text, value, href, flags. The \`offscreen\` flag marks an element that is rendered but scrolled out of the viewport: page.click and page.type still reach it, but page.screenshot will not show it.
 - \`page.text.snapshot\` — \`tabId\`, optional \`scope\`, \`visibleOnly\`, \`limit\`, \`maxChars\`, \`cursor\`. The page's readable text.
 - \`page.screenshot\` — \`tabId\`. Attaches a picture of the visible area; use it for layout questions, not for reading text.
 - \`page.click\` — \`tabId\`, \`ref\` or \`selector\`, optional \`button\`, \`clickCount\`. A real press at the element's centre, after scrolling it into view.

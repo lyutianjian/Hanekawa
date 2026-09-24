@@ -36,6 +36,11 @@ test('flags fold into one space-separated field, in a fixed order', () => {
   assert.equal(line.split('\t').at(-1), 'visible checked required')
 })
 
+test('an element scrolled out of view is flagged offscreen, after visible', () => {
+  const line = renderElementRow({ ref: 'e3', role: 'button', name: 'Buy', visible: true, offscreen: true })
+  assert.equal(line.split('\t').at(-1), 'visible offscreen')
+})
+
 test('the header names every column once and flags a truncated scan', () => {
   const header = elementsHeader({ url: 'https://x.test/', title: 'X', scanTruncated: true }, 12)
   const [meta, columns] = header.split('\n')

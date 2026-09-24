@@ -3,15 +3,18 @@ export const BROWSER_TOOL_NAME = 'Browser'
 /**
  * Every operation, in the order the description lists them.
  *
- * One tool with an `operation` discriminator rather than twelve tools: they
- * share a tab handle and are useless apart, and twelve entries would cost
- * twelve schemas in every request's tool list.
+ * One tool with an `operation` discriminator rather than one tool each: they
+ * share a tab handle and are useless apart, and fifteen entries would cost
+ * fifteen schemas in every request's tool list.
  */
 export const BROWSER_OPERATIONS = [
   'browser.get_state',
   'browser.create_tab',
   'browser.close_tab',
   'tab.navigate',
+  'tab.go_back',
+  'tab.go_forward',
+  'tab.reload',
   'tab.wait_for_load',
   'page.elements.snapshot',
   'page.text.snapshot',
@@ -28,6 +31,9 @@ export type BrowserOperation = (typeof BROWSER_OPERATIONS)[number]
 export const OPERATIONS_NEEDING_TAB: ReadonlySet<string> = new Set<BrowserOperation>([
   'browser.close_tab',
   'tab.navigate',
+  'tab.go_back',
+  'tab.go_forward',
+  'tab.reload',
   'tab.wait_for_load',
   'page.elements.snapshot',
   'page.text.snapshot',

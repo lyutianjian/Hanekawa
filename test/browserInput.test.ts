@@ -219,6 +219,48 @@ test('a cancel is observed at the next boundary, not after the burst', async () 
   assert.deepEqual(sent, [], 'no input may be dispatched once the action is cancelled')
 })
 
+test('a cancel that lands mid-press still releases the button', async () => {
+  const { deps, sent } = harness()
+  let pressed = false
+  const send = deps.send
+  deps.send = async (method, params) => {
+    if (params?.['type'] === 'mousePressed') pressed = true
+    return send(method, params)
+  }
+  deps.check = () => {
+    if (pressed) throw new BrowserHostError('OPERATION_ABORTED', 'The browser action was cancelled.')
+  }
+
+  await assert.rejects(
+    () => clickTarget(deps, { ref: 'e1' }),
+    (error: unknown) => error instanceof BrowserHostError && error.code === 'OPERATION_ABORTED',
+  )
+  assert.deepEqual(methods(sent), [
+    'Input.dispatchMouseEvent:mouseMoved',
+    'Input.dispatchMouseEvent:mousePressed',
+    'Input.dispatchMouseEvent:mouseReleased',
+  ])
+})
+
+test('a cancel that lands mid-keystroke still lifts the key and the modifier', async () => {
+  const { deps, sent } = harness()
+  let down = false
+  const send = deps.send
+  deps.send = async (method, params) => {
+    const type = params?.['type']
+    if (type === 'rawKeyDown' || type === 'keyDown') down = true
+    return send(method, params)
+  }
+  deps.check = () => {
+    if (down) throw new BrowserHostError('OPERATION_ABORTED', 'The browser action was cancelled.')
+  }
+
+  await assert.rejects(() => typeText(deps, { ref: 'e1', text: 'x', clear: true }))
+  // Select-all went down and came back up; nothing after the pair was sent.
+  assert.deepEqual(methods(sent), ['Input.dispatchKeyEvent:rawKeyDown', 'Input.dispatchKeyEvent:keyUp'])
+  assert.equal(sent[1]?.params['modifiers'], sent[0]?.params['modifiers'])
+})
+
 test('actions on one tab serialize, and one failure does not poison the queue', async () => {
   const key = {}
   const order: string[] = []

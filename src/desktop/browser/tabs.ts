@@ -201,14 +201,19 @@ export class BrowserTabHost {
     void view.webContents.loadURL(target).catch(() => {})
   }
 
-  goBack(tabId: string): void {
-    const contents = this.liveContents(tabId)
-    if (contents.navigationHistory.canGoBack()) contents.navigationHistory.goBack()
+  /** Whether there was a page to go back to. The panel ignores it; the agent is told. */
+  goBack(tabId: string): boolean {
+    const history = this.liveContents(tabId).navigationHistory
+    if (!history.canGoBack()) return false
+    history.goBack()
+    return true
   }
 
-  goForward(tabId: string): void {
-    const contents = this.liveContents(tabId)
-    if (contents.navigationHistory.canGoForward()) contents.navigationHistory.goForward()
+  goForward(tabId: string): boolean {
+    const history = this.liveContents(tabId).navigationHistory
+    if (!history.canGoForward()) return false
+    history.goForward()
+    return true
   }
 
   reload(tabId: string): void {

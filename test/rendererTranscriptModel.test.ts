@@ -1087,7 +1087,7 @@ test('a sub-agent run merges into the call it belongs to, live and on replay', (
   assert.equal(step.toolName, 'Agent')
   assert.equal(step.tool.task, '找到 display 的所有用法', 'the prompt rides the call it came in on')
   assert.deepEqual(step.tool.subagent, {
-    subagentType: 'explore', model: 'opus', toolUseCount: 12, summary: '22 个工具返回了 display.summary。',
+    subagentType: 'explore', agentId: 'ag-1', model: 'opus', toolUseCount: 12, summary: '22 个工具返回了 display.summary。',
   })
   assert.equal(step.tool.headerSuffix, 'opus')
   assert.equal(step.tool.content, '22 个工具返回了 display.summary，其中 6 个带 detail。')

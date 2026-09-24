@@ -294,6 +294,11 @@ export type HostCommand =
    */
   | { type: 'get-attachment-view'; id: string; imageId: string }
   /**
+   * One sub-agent run's own records, read from this session's transcript file
+   * for it. The id is the run's `agentId`; the host builds the path itself.
+   */
+  | { type: 'get-subagent-transcript'; id: string; agentId: string }
+  /**
    * Opens an attachment's cached original. The host resolves the file from the
    * registered `(session, imageId)` pair and hands the path to the shell — no
    * arbitrary `file://` path crosses this wire, and an unregistered or
@@ -656,6 +661,12 @@ export type WireImportAttachmentResult = WireAttachmentFailure | {
 export type WireAttachmentPreviewResult = WireAttachmentFailure | {
   ok: true
   dataUrl: string
+}
+
+/** `records` is empty when the run has written nothing yet, or never wrote a file. */
+export interface WireSubagentTranscriptResult {
+  ok: true
+  records: SessionRecord[]
 }
 
 /** Same shape as the preview's; the difference is which tier of bytes it carries. */

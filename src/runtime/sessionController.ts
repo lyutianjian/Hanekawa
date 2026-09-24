@@ -137,6 +137,8 @@ export interface SubagentActivity {
   summary: string
   /** Tool calls the run has started so far. */
   toolCount: number
+  /** The run's own id, which names its transcript file. */
+  agentId?: string
 }
 
 /**
@@ -678,6 +680,7 @@ export class SessionController {
           tool: event.call.name,
           summary: subagentStepSummary(event.call.name, event.call.input),
           toolCount: (this.subagentActivity.get(parentToolUseId)?.toolCount ?? 0) + 1,
+          ...(event.source?.agentId ? { agentId: event.source.agentId } : {}),
         })
       }
     } else {

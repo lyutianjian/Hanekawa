@@ -61,3 +61,16 @@ test('a running entry shows its latest tool and live count; a background start n
   })])
   assert.equal(background?.reply, '后台跑完的完整报告：扫描了全部工具目录，列出了每一处调用和对应的文件路径。')
 })
+
+test('an entry finds its run id from the run, the live progress, or the result notice, and knows when the run is over', () => {
+  const [fromRun, fromLive, fromNotice, failed] = subagentEntries([
+    agent('a', {}, { subagent: { subagentType: 'explore', agentId: 'explore-1' } }),
+    agent('b', { pending: true }, { live: { tool: 'Read', summary: '', toolCount: 1, agentId: 'explore-2' } }),
+    agent('c', {}, { content: 'Started explore sub-agent "scan" in the background.\n\nAgent ID: explore-3. Use SendMessage with this agent_id to continue the same sub-agent.' }),
+    agent('d', { failed: true }),
+  ]).sort((x, y) => x.id.localeCompare(y.id))
+  assert.equal(fromRun?.agentId, 'explore-1')
+  assert.equal(fromLive?.agentId, 'explore-2')
+  assert.equal(fromNotice?.agentId, 'explore-3')
+  assert.deepEqual([fromRun, fromLive, fromNotice, failed].map((entry) => entry?.finished), [true, false, false, true])
+})

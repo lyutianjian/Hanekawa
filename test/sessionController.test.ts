@@ -658,7 +658,7 @@ test('a foreground run\'s latest tool rides tool-progress, keyed by its Agent ca
   harness.proxy.onProgress({ call: { id: 'c2', name: 'Bash', input: { command: 'ls' } }, phase: 'started', source })
   const progress = harness.events.at(-1)
   assert.deepEqual(progress?.type === 'tool-progress' ? progress.subagents : undefined, [
-    { toolUseId: 'agent-call', tool: 'Bash', summary: 'ls', toolCount: 2 },
+    { toolUseId: 'agent-call', tool: 'Bash', summary: 'ls', toolCount: 2, agentId: 'agent-1' },
   ])
 
   // The call's own result ends the run's line.

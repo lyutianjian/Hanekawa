@@ -100,6 +100,8 @@ export type ToolStepStatus = 'awaiting-approval' | 'running' | 'done' | 'failed'
  */
 export interface SubagentRun {
   readonly subagentType: string
+  /** The run's own id, which names its transcript file. */
+  readonly agentId?: string
   /** The model the run used — the same string the result's `headerSuffix` carries. */
   readonly model?: string
   /** How many tool calls the sub-agent made. */
@@ -113,6 +115,7 @@ export interface SubagentLive {
   readonly tool: string
   readonly summary: string
   readonly toolCount: number
+  readonly agentId?: string
 }
 
 /**
@@ -867,6 +870,7 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       // into (a truncated log) keeps a row of its own.
       const run: SubagentRun = {
         subagentType: record.subagentType,
+        agentId: record.agentId,
         ...(record.model === undefined ? {} : { model: record.model }),
         ...(record.toolUseCount === undefined ? {} : { toolUseCount: record.toolUseCount }),
         ...(record.summary === undefined ? {} : { summary: record.summary }),
@@ -1389,11 +1393,13 @@ function withSubagentActivity(
       const { live: _dropped, ...tool } = item.tool
       return { ...item, tool }
     }
-    if (current?.tool === entry.tool && current.summary === entry.summary && current.toolCount === entry.toolCount) {
+    if (current?.tool === entry.tool && current.summary === entry.summary && current.toolCount === entry.toolCount
+      && current.agentId === entry.agentId) {
       return item
     }
     changed = true
-    return { ...item, tool: { ...item.tool, live: { tool: entry.tool, summary: entry.summary, toolCount: entry.toolCount } } }
+    const live = { tool: entry.tool, summary: entry.summary, toolCount: entry.toolCount, ...(entry.agentId ? { agentId: entry.agentId } : {}) }
+    return { ...item, tool: { ...item.tool, live } }
   })
   return changed ? next : items
 }

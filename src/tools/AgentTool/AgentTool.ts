@@ -11,7 +11,7 @@ import {
   type PermissionRule,
   type SessionRuleStore,
 } from '../../harness/permissions.js'
-import { MemoryRecordStream, type RecordStream } from '../../harness/recordStream.js'
+import type { RecordStream } from '../../harness/recordStream.js'
 import { getSubagentTranscriptPath, SidechainRecordStream } from '../../harness/sidechainRecordStream.js'
 import { ToolRunner } from '../../harness/toolRunner.js'
 import type { ContextManagementConfig } from '../../prompts/budget.js'
@@ -442,15 +442,18 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         }
 
         const startedAtMs = Date.now()
-        const recordStream = new MemoryRecordStream()
+        // On disk like a background run's, so the desktop can show what the
+        // sub-agent did while it runs and after.
+        const transcriptPath = getSubagentTranscriptPath(options.cwd, context.sessionId, subAgentId)
         const run = await runSubagent({
           options,
           parsed,
           agentDefinition,
           context,
           subAgentId,
-          recordStream,
+          recordStream: new SidechainRecordStream(transcriptPath),
           linkParentAbort: true,
+          transcriptPath,
         })
         options.backgroundTasks?.registerAgent({
           sessionId: context.sessionId,

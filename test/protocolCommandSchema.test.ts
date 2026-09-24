@@ -57,6 +57,7 @@ const SAMPLES = {
   'remove-attachment': { type: 'remove-attachment', id: '1', imageId: 'img-1' },
   'get-attachment-preview': { type: 'get-attachment-preview', id: '1', imageId: 'img-1' },
   'get-attachment-view': { type: 'get-attachment-view', id: '1', imageId: 'img-1' },
+  'get-subagent-transcript': { type: 'get-subagent-transcript', id: '1', agentId: 'explore-1' },
   'open-attachment': { type: 'open-attachment', id: '1', imageId: 'img-1' },
   shutdown: { type: 'shutdown', id: '1', reason: 'bye' },
 } as const satisfies Record<HostCommand['type'], HostCommand>
@@ -269,6 +270,13 @@ test('import-attachment accepts both sources and rejects oversized bytes at the 
     parseHostCommand({ type: 'import-attachment', id: '1', source: { kind: 'bytes', name: 'x', bytes: small, path: 'C:/x' } }).ok,
     false,
   )
+})
+
+test('a sub-agent transcript is asked for by an id that cannot be a path', () => {
+  assert.equal(parseHostCommand({ type: 'get-subagent-transcript', id: '1', agentId: 'explore-1' }).ok, true)
+  for (const agentId of ['../x', 'a/b', '', 'a.b']) {
+    assert.equal(parseHostCommand({ type: 'get-subagent-transcript', id: '1', agentId }).ok, false)
+  }
 })
 
 test('the id-addressed attachment commands take an imageId and nothing else', () => {

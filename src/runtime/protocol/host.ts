@@ -8,6 +8,7 @@ import { resolveImageCapability } from '../../config/providers.js'
 import type { PermissionRequest } from '../../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../../harness/diagnostics.js'
 import type { SessionRecord } from '../../harness/types.js'
+import { getSubagentTranscriptPath, SidechainRecordStream } from '../../harness/sidechainRecordStream.js'
 import { resolveUsageWithCost } from '../../harness/usage.js'
 import type { SessionMeta } from '../../sessions/service.js'
 import type { ImageAttachmentRef } from '../../media/types.js'
@@ -68,6 +69,7 @@ import {
   type WireImportAttachmentResult,
   type WireAttachmentPreviewResult,
   type WireAttachmentViewResult,
+  type WireSubagentTranscriptResult,
   type WireOpenAttachmentResult,
   type WireListPanesResult,
   type WireModelInfo,
@@ -1102,6 +1104,11 @@ export class SessionHost {
         )
         if (!view.ok) return { ok: false, reason: view.reason, message: view.message }
         return { ok: true, dataUrl: view.value } satisfies WireAttachmentViewResult
+      }
+
+      case 'get-subagent-transcript': {
+        const path = getSubagentTranscriptPath(this.project.cwd, this.session.id, command.agentId)
+        return { ok: true, records: await new SidechainRecordStream(path).load() } satisfies WireSubagentTranscriptResult
       }
 
       case 'open-attachment': {

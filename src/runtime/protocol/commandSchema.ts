@@ -262,6 +262,10 @@ const COMMAND_SCHEMAS = {
   'get-attachment-view': z
     .object({ type: z.literal('get-attachment-view'), id: commandId, imageId: z.string() })
     .strict(),
+  // The id becomes a file name host-side, so it may not carry a path.
+  'get-subagent-transcript': z
+    .object({ type: z.literal('get-subagent-transcript'), id: commandId, agentId: z.string().regex(/^[A-Za-z0-9_-]{1,200}$/) })
+    .strict(),
   'open-attachment': z
     .object({ type: z.literal('open-attachment'), id: commandId, imageId: z.string() })
     .strict(),

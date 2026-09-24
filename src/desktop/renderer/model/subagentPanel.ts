@@ -10,14 +10,24 @@ import { toolStepStatus, type SubagentLive, type ToolStepStatus, type Transcript
 
 export const AGENT_TOOL = 'Agent'
 
+/** The continuation notice the result carries for the model — a background run's only id until it ends. */
+const AGENT_ID = /Agent ID: ([A-Za-z0-9_-]+)\. Use SendMessage/
+
 export interface SubagentEntry {
   /** The `Agent` call's tool-use id — the same id its transcript step carries. */
   readonly id: string
+  /** The run's own id, which names its transcript file; unknown until it starts a tool. */
+  readonly agentId?: string
   readonly name: string
   readonly agentType?: string
   /** What the parent called the job — the call's own summary line. */
   readonly description: string
   readonly status: ToolStepStatus
+  /**
+   * The run itself is over: its own record arrived, or the call failed. Not
+   * `status`, which a background run's call reaches the moment it starts.
+   */
+  readonly finished: boolean
   readonly model?: string
   readonly toolCount?: number
   /** While running: the tool it started last. */
@@ -50,12 +60,15 @@ function toEntry(item: TranscriptItem): SubagentEntry {
   const startedAt = tool.startedAt === undefined ? Number.NaN : Date.parse(tool.startedAt)
   const toolCount = tool.subagent?.toolUseCount ?? tool.live?.toolCount
   const response = fullerReply(reply?.text, tool.subagent?.summary)
+  const agentId = tool.subagent?.agentId ?? tool.live?.agentId ?? (tool.content === undefined ? undefined : AGENT_ID.exec(tool.content)?.[1])
   return {
     id: item.id,
     name: tool.displayName,
     description: tool.useSummary,
     status,
+    finished: status === 'failed' || tool.subagent !== undefined,
     notes: reply?.notes ?? [],
+    ...(agentId === undefined ? {} : { agentId }),
     ...(tool.agentType === undefined ? {} : { agentType: tool.agentType }),
     ...(tool.subagent?.model === undefined ? {} : { model: tool.subagent.model }),
     ...(toolCount === undefined ? {} : { toolCount }),

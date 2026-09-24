@@ -1199,6 +1199,19 @@ body.settings-open #browser-resizer { display: none; }
   font-size: var(--type-micro);
 }
 .subagent-empty { margin: var(--space-3) 0; color: var(--text-tertiary); font-size: var(--type-meta); }
+/* The run's own conversation, drawn by the main transcript's renderer: here it
+   is one more block in the panel's scroller, not a scroller of its own, and it
+   has no question to lift to the top or a tail to jump to. */
+#subagent-view .transcript {
+  flex: none;
+  overflow: visible;
+  margin-top: var(--space-3);
+  padding: 0;
+  font-size: var(--type-ui);
+}
+#subagent-view .transcript[hidden] { display: none; }
+#subagent-view .transcript-column { padding-bottom: 0; }
+.subagent-float { display: none; }
 /* The session search box, the sidebar's first region. It carries the column's
    top inset now that the workspace header above it is gone — the workspaces are
    headings inside the list, not a dropdown over it. */

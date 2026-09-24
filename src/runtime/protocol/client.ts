@@ -33,6 +33,7 @@ import {
   type WireEnqueueResult,
   type WireAttachmentPreviewResult,
   type WireAttachmentViewResult,
+  type WireSubagentTranscriptResult,
   type WireAttachmentSource,
   type WireFileSuggestionsResult,
   type WireFocusPaneResult,
@@ -658,6 +659,15 @@ export class SessionClient {
       id: randomUUID(),
       imageId,
     }) as Promise<WireAttachmentPreviewResult>
+  }
+
+  /** One sub-agent run's own records, for the desktop's side panel. */
+  async getSubagentTranscript(agentId: string): Promise<WireSubagentTranscriptResult> {
+    return this.send({
+      type: 'get-subagent-transcript',
+      id: randomUUID(),
+      agentId,
+    }) as Promise<WireSubagentTranscriptResult>
   }
 
   /**

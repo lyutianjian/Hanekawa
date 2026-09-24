@@ -325,13 +325,7 @@ function attachPaneSession(lane: string): void {
     // not installed" has to reach the transcript, not vanish. The path stays
     // cwd-relative — the shell bounds it to the project's real cwd, which only
     // the host knows.
-    onOpenFile: (path, line) => {
-      const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
-      if (root === undefined) return
-      void shellClient
-        .openInEditor(root, { path, ...(line === undefined ? {} : { line }) })
-        .catch((error) => activePane()?.note(describe(error), 'error'))
-    },
+    onOpenFile: (path, line) => openInEditor(lane, path, line),
     onOpenSubagent: (id) => openSubagent(id),
     onSubagentsChanged: () => renderSubagents(),
     onExit: () => {
@@ -1170,9 +1164,15 @@ function renderBrowser(): void {
 const sidePanel = required('browser-panel')
 const sideTabs = required('side-tabs')
 const sideResizer = required('browser-resizer')
-const subagentPanel = createSubagentPanelView(required('subagent-view'), (id) => {
-  selectedSubagent = id
-  renderSubagents()
+const subagentPanel = createSubagentPanelView(required('subagent-view'), {
+  onSelect: (id) => {
+    selectedSubagent = id
+    renderSubagents()
+  },
+  loadTranscript: async (agentId) => (await activePane()?.client.getSubagentTranscript(agentId))?.records ?? [],
+  onOpenPath: (path, line) => {
+    if (activeLane !== undefined) openInEditor(activeLane, path, line)
+  },
 })
 /** The strip's last paint, so a stream delta does not rebuild buttons under the pointer. */
 let sideTabsDrawn: string | undefined
@@ -1703,6 +1703,15 @@ void (async () => {
 })().catch((error) => {
   document.body.textContent = `Failed to start: ${describe(error)}`
 })
+
+/** A path a tool printed, relative to the lane's project, opened in the user's editor. */
+function openInEditor(lane: string, path: string, line: number | undefined): void {
+  const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
+  if (root === undefined) return
+  void shellClient
+    .openInEditor(root, { path, ...(line === undefined ? {} : { line }) })
+    .catch((error) => activePane()?.note(describe(error), 'error'))
+}
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)

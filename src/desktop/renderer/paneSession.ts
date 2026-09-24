@@ -87,6 +87,7 @@ import {
 } from './model/completion.js'
 import { completionAcceptMode, type ShellState } from './model/keymap.js'
 import { NO_DISCLOSURE, pruneDisclosure, toggleDisclosure, type DisclosureState } from './model/thinking.js'
+import { subagentEntries, type SubagentEntry } from './model/subagentPanel.js'
 import {
   applySessionEvent,
   createTranscriptState,
@@ -280,6 +281,10 @@ export interface PaneSessionDeps {
    * for something is asking it to drive again.
    */
   onUserMessage?: () => void
+  /** An `Agent` row was clicked: show that run in the window's side panel. */
+  onOpenSubagent?: (id: string) => void
+  /** The active pane repainted its transcript, so the side panel's list may have moved. */
+  onSubagentsChanged?: () => void
 }
 
 export interface PaneSession {
@@ -314,6 +319,10 @@ export interface PaneSession {
    * cached per pane, and nothing else would notice a skill being switched off.
    */
   refreshCommands(): void
+  /** Every `Agent` call in this pane's transcript, for the side panel. */
+  subagents(): readonly SubagentEntry[]
+  /** The run the side panel is showing, highlighted on its row; `undefined` for none. */
+  setSelectedSubagent(id: string | undefined): void
   // --- keyboard entry points (routed here by the app's global handler) ---
   handleOverlayKey(event: KeyboardEvent): void
   handleRewindIntent(intent: RewindIntent): void
@@ -397,6 +406,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   // the bottom of the content instead of the viewport.
   const transcriptView: TranscriptView = createTranscriptView(transcriptEl, paneEl, {
     onToggle: (id, expanded) => toggleDisclosureAt(id, expanded),
+    onOpenSubagent: (id) => deps.onOpenSubagent?.(id),
     // The panel is a singleton the active pane drives, so a background pane
     // cannot reach it — and cannot be clicked either, since it does not paint.
     onTaskStep: () => {
@@ -726,7 +736,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       isStreaming,
       startedAt: turnStartedAt,
       turnId: transcript.turnId,
-    })
+    }, selectedSubagent)
+    subagentList = undefined
     // The one place that decides whether this pane has a conversation, so the
     // transcript and the welcome screen cannot disagree about it.
     welcome.render(welcomeView({
@@ -746,6 +757,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // paint draws the boxes, then each uncached id asks once. Streaming makes
     // this run per chunk; `beginPreviewLoad` is what keeps that one request.
     void loadTranscriptThumbnails()
+    deps.onSubagentsChanged?.()
   }
 
   /**
@@ -802,6 +814,16 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   }
 
   /** `expanded` is what that row shows right now, so the click inverts what is seen. */
+  let selectedSubagent: string | undefined
+  /** Derived per paint, lazily: only the active pane with the panel open ever asks. */
+  let subagentList: readonly SubagentEntry[] | undefined
+
+  function setSelectedSubagent(id: string | undefined): void {
+    if (id === selectedSubagent) return
+    selectedSubagent = id
+    renderTranscript()
+  }
+
   function toggleDisclosureAt(id: string, expanded: boolean): void {
     disclosure = toggleDisclosure(disclosure, id, expanded)
     renderTranscript()
@@ -2098,6 +2120,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     shellState,
     note,
     hasConversation,
+    subagents: () => (subagentList ??= subagentEntries(presentationTranscript(transcript).items)),
+    setSelectedSubagent,
     refreshWelcome: renderTranscript,
     refreshCommands: () => {
       void refreshCommands()

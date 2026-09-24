@@ -72,13 +72,13 @@ test('M04 keeps the thinking head through an unchanged streaming snapshot', (t) 
   }
   assert.equal(starts.starts, 0)
   const items: TranscriptItem[] = [{ id: 'th', kind: 'thinking', text: 'ABC', turnId: 't1', pending: true }]
-  view.render(transcript(items), new Map([['th', true]]), RUNNING_T1)
+  view.render(transcript(items), new Map([['th:live', true]]), RUNNING_T1)
   view.stub.click(identity.sample() as HTMLElement)
-  assert.deepEqual(view.toggled, [['th', true]], 'the surviving head reads the current ref')
+  assert.deepEqual(view.toggled, [['th:live', true]], 'the surviving head reads the current ref')
   view.render(transcript(items, { generation: 1 }), NO_DISCLOSURE, RUNNING_T1)
   assert.notEqual(identity.sample(), head, 'a reset with reused ids clears the nested cache')
   view.stub.click(identity.sample() as HTMLElement)
-  assert.deepEqual(view.toggled.at(-1), ['th', false], 'reset does not inherit the previous disclosure ref')
+  assert.deepEqual(view.toggled.at(-1), ['th:live', false], 'reset does not inherit the previous disclosure ref')
 })
 
 test('M05 keeps the thinking body and settled assistant blocks across deltas', (t) => {
@@ -229,7 +229,7 @@ test('M14 advancing the current step keeps an opened thought open without replay
   assert.equal(view.stub.inspect(body).classes.includes('preview'), false)
 })
 
-test('a thinking step folds to a two-line preview, the same node either way, and its preview opens it', (t) => {
+test('a live thinking step folds to a two-line preview, its preview opens it, and sealing folds it away', (t) => {
   const view = mount(t)
   const item: TranscriptItem = { id: 's', kind: 'thinking', text: '第一行\n第二行\n第三行', turnId: 't1', pending: true }
   // The running turn's current step, and still folded: a thought is never
@@ -242,14 +242,19 @@ test('a thinking step folds to a two-line preview, the same node either way, and
   assert.equal(body.text, '第一行\n第二行\n第三行', 'the clamp is CSS; the text is whole')
 
   view.stub.click(body.node)
-  assert.deepEqual(view.toggled, [['s', false]])
+  assert.deepEqual(view.toggled, [['s:live', false]])
 
-  view.render(transcript([item]), new Map([['s', true]]), RUNNING_T1)
+  view.render(transcript([item]), new Map([['s:live', true]]), RUNNING_T1)
   const open = groupOf(view).children[1]!.children[0]!.children[1]!
   assert.equal(open.node, body.node, 'the fold is a class change, not a rebuild')
   assert.deepEqual(open.classes, ['step-body', 'thinking-text'])
   view.stub.click(open.node)
   assert.equal(view.toggled.length, 1, 'clicking open text (to select it) does not fold it')
+
+  const { pending: _pending, ...sealed } = item
+  view.render(transcript([sealed]), new Map([['s:live', true], ['t1', true]]))
+  const folded = groupOf(view).children[1]!.children[0]!.children[1]!
+  assert.deepEqual(folded.classes, ['step-body', 'thinking-text', 'folded'], 'opened mid-stream, still folded once sealed')
 })
 
 test('a sealed thought puts its measured time at the head’s right, and a replayed one shows none', (t) => {
@@ -285,7 +290,9 @@ interface Rendered {
   readonly thumbs: Map<string, string>
   /** What each 复制 click handed the pane for the clipboard. */
   readonly copied: readonly string[]
-  render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput): void
+  /** Every `Agent` row click, by id. */
+  readonly openedSubagents: readonly string[]
+  render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput, selectedSubagent?: string): void
   stopClock(): void
   dispose(): void
   jump(): StubView
@@ -303,6 +310,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const copied: string[] = []
   const viewedImages: Array<readonly [string, string]> = []
   const thumbs = new Map<string, string>()
+  const openedSubagents: string[] = []
   let taskClicks = 0
   const view = createTranscriptView(container, host, {
     onToggle: (id, expanded) => toggled.push([id, expanded]),
@@ -311,6 +319,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     onViewImage: (image) => viewedImages.push([image.id, image.name]),
     imageThumbUrl: (imageId) => thumbs.get(imageId),
     onCopy: (text) => copied.push(text),
+    onOpenSubagent: (id) => openedSubagents.push(id),
   })
   const jump = (): StubView => {
     const found = stub.inspect(host).children.find((child) => child.classes.includes('scroll-bottom'))
@@ -333,7 +342,8 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     viewedImages,
     thumbs,
     copied,
-    render: (state, disclosure = NO_DISCLOSURE, activity) => view.render(state, disclosure, activity),
+    openedSubagents,
+    render: (state, disclosure = NO_DISCLOSURE, activity, selectedSubagent) => view.render(state, disclosure, activity, selectedSubagent),
     stopClock: () => view.stopClock(),
     dispose: () => view.dispose(),
     jump,
@@ -516,7 +526,7 @@ test('a streaming block shows the live label over a preview of the thought', (t)
   assert.equal(block.children[1]?.text, '推理')
 })
 
-test('a sealed block names itself, shows the measured time, and keeps its preview', (t) => {
+test('a sealed block names itself, shows the measured time, and folds its text away', (t) => {
   const { render, items } = mount(t)
   render(transcript([sealedThinking]))
   const block = thinking(items())
@@ -530,7 +540,7 @@ test('a sealed block names itself, shows the measured time, and keeps its previe
     ['btn-label', 'icon', 'thinking-duration'],
   )
   assert.equal(block.children[0]?.children.at(-1)?.text, '7m 38s')
-  assert.deepEqual(block.children[1]?.classes, ['thinking-body', 'thinking-text', 'preview'])
+  assert.deepEqual(block.children[1]?.classes, ['thinking-body', 'thinking-text', 'folded'])
 })
 
 test('the pane is absolute answer outranks the default, both ways', (t) => {
@@ -540,7 +550,7 @@ test('the pane is absolute answer outranks the default, both ways', (t) => {
   assert.equal(thinking(items()).classes.includes('collapsed'), false)
   assert.deepEqual(thinking(items()).children[1]?.classes, ['thinking-body', 'thinking-text'])
 
-  render(transcript([liveThinking]), new Map([['thinking-0', false]]))
+  render(transcript([liveThinking]), new Map([['thinking-0:live', false]]))
   assert.equal(thinking(items()).classes.includes('collapsed'), true)
   assert.equal(thinking(items()).children[1]?.classes.includes('preview'), true)
 })
@@ -1402,7 +1412,7 @@ test('a running Agent step says what its sub-agent is doing, even folded', (t) =
   assert.deepEqual(live?.children.map((part) => part.text), ['↳', 'Read', 'src/a.ts'])
 })
 
-test('an Agent step opens into its task and the sub-agent answer, with the run in the head', (t) => {
+test('an Agent step is a link to the side panel, with the run in the head', (t) => {
   const view = mount(t)
   view.render(transcript([agentStep()]), new Map([['t1', true], ['agent-1', true]]))
 
@@ -1427,29 +1437,17 @@ test('an Agent step opens into its task and the sub-agent answer, with the run i
     'the model is not drawn twice',
   )
 
-  // The body is the conversation the call stands for: the task, then the
-  // answer — prose, so markdown, with the `**` already a strong node rather
-  // than markers a plain body would print.
-  const body = step?.children[1]
-  assert.equal(body?.classes.includes('step-body'), true)
-  const prompt = body?.children[0]
-  assert.equal(prompt?.className, 'step-agent-prompt')
-  assert.equal(prompt?.children[0]?.className, 'step-agent-label')
-  assert.equal(prompt?.children[0]?.text, '任务')
-  assert.equal(prompt?.children[1]?.className, 'step-agent-text md')
-  assert.equal(prompt?.children[1]?.text, '找到 display 的所有用法')
-  const response = body?.children[1]
-  assert.equal(response?.className, 'step-agent-response')
-  assert.equal(response?.children[0]?.text, '回复')
-  assert.equal(response?.children[1]?.text, '22 个工具返回了 display.summary，其中 6 个带 detail。')
-  // Markdown, and the fuller of the two renderings of the answer: the result
-  // content, not the run's capped summary.
-  assert.equal(response?.children[1]?.children[0]?.tagName, 'P')
-  assert.equal(response?.children[1]?.children[0]?.children[0]?.tagName, 'STRONG')
-  // The notices the model reads are not the reader's: the continuation id is
-  // gone, the truncation warning is a quiet Chinese note under the reply.
-  assert.equal(response?.children[2]?.className, 'step-agent-notes')
-  assert.equal(response?.children[2]?.text, '输出可能不完整')
+  // Never a fold: the run lives in the side panel, even when the disclosure
+  // says open, and a click asks for that panel instead of toggling.
+  assert.equal(step?.children.some((child) => child.classes.includes('step-body')), false)
+  view.stub.click(head!.node)
+  assert.deepEqual(view.openedSubagents, ['agent-1'])
+  assert.deepEqual(view.toggled, [])
+
+  view.render(transcript([agentStep()]), new Map([['t1', true]]), undefined, 'agent-1')
+  const selected = groupOf(view).children[1]?.children[0]
+  assert.equal(selected?.classes.includes('selected'), true)
+  assert.equal(selected?.children[0]?.attributes.get('aria-pressed'), 'true')
 })
 
 function webStep(overrides: { failed?: boolean; errorCode?: ToolErrorCode } = {}): TranscriptItem {
@@ -1501,29 +1499,6 @@ test('a WebFetch step opens into the page as the markdown the tool made of it', 
 
 test('the fallback body still serves the new families when their data is absent', (t) => {
   const view = mount(t)
-
-  // An Agent step with nothing of its own — no task, no run, not even a
-  // content the family could answer with (the shape an old or foreign record
-  // leaves) — is the fallback family's to draw, not an error.
-  view.render(transcript([{
-    id: 'agent-old',
-    kind: 'tool',
-    text: 'Agent(找出问题)',
-    toolName: 'Agent',
-    turnId: 't1',
-    tool: {
-      displayName: 'Agent',
-      useSummary: '找出问题',
-      resultSummary: 'Done',
-      detail: '报告',
-    },
-  }]), new Map([['t1', true], ['agent-old', true]]))
-  const agentBody = groupOf(view).children[1]?.children[0]?.children[1]
-  assert.equal(agentBody?.children.some((child) => child.classes.includes('step-agent-prompt')), false)
-  assert.deepEqual(
-    agentBody?.children.map((part) => [part.className, part.text]),
-    [['step-body-head', 'Done'], ['step-body-text', '报告']],
-  )
 
   // A failed fetch is a failure first: its own text drawn by the fallback —
   // under the step's `failed` class and its danger colour — not an article.

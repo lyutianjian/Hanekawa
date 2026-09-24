@@ -12,6 +12,7 @@ import {
   isStepExpanded,
   EDIT_TOOLS,
   resolveDisclosure,
+  thinkingDisclosureId,
   thinkingDurationLabel,
   thinkingHeaderLabel,
   thinkingHeaderName,
@@ -35,7 +36,7 @@ import {
 import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE, viewportPolicy } from '../model/transcriptAnchor.js'
 import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 import { splitFileMentions } from '../model/userMessage.js'
-import { splitAgentReply } from '../model/agentReply.js'
+import { AGENT_TOOL } from '../model/subagentPanel.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolErrorCode } from '../../../harness/types.js'
 import {
@@ -108,7 +109,7 @@ export interface TranscriptView {
    * that into 「which group is live」 and 「what the tail row reads」. `undefined`
    * is an idle session: no row is drawn.
    */
-  render(state: TranscriptState, disclosure: DisclosureState, activity?: WaitingInput): void
+  render(state: TranscriptState, disclosure: DisclosureState, activity?: WaitingInput, selectedSubagent?: string): void
   /**
    * Stops the live status's clock.
    *
@@ -131,6 +132,8 @@ export interface TranscriptHandlers {
    * above the composer — so the row's whole job is to point at it (§7.3).
    */
   onTaskStep(): void
+  /** An `Agent` row was clicked: its run opens in the side panel, not in place. */
+  onOpenSubagent(id: string): void
   /**
    * A path in a search result was clicked (§6.2 检索). `path` is relative to the
    * session's cwd — exactly what the tool printed — and `line` is the hit's own
@@ -456,7 +459,7 @@ export function createTranscriptView(
       refs.clear()
       seenDisclosures.clear()
     },
-    render(state, disclosure, activity) {
+    render(state, disclosure, activity, selectedSubagent) {
       if (!document.hidden && !observing) {
         resizeObserver?.observe(container)
         resizeObserver?.observe(column)
@@ -506,6 +509,7 @@ export function createTranscriptView(
       }, {
         liveGroupId: live.liveGroupId,
         startedAt: activity?.startedAt,
+        selectedSubagent,
         keepClock: (span) => { clockNode = span },
         afterPaint: (run) => afterPaint.push(run),
       })
@@ -647,6 +651,8 @@ interface CachedNode {
  */
 interface DisclosureRef {
   expanded: boolean
+  /** The id a click answers under, when it is not the row's own (a live thought). */
+  id?: string
 }
 
 interface StepFeedback {
@@ -665,6 +671,8 @@ function settleFeedback(entry: StepFeedback): void {
 interface LivePaint {
   readonly liveGroupId: string | undefined
   readonly startedAt: number | undefined
+  /** The `Agent` row whose run the side panel is showing. */
+  readonly selectedSubagent: string | undefined
   /** Handed the elapsed span whichever carrier built it, so the clock can fill it. */
   keepClock(span: HTMLElement): void
   afterPaint(run: () => void): void
@@ -694,7 +702,7 @@ interface Painter extends TranscriptHandlers, LivePaint {
     create?: () => HTMLElement,
   ): HTMLElement
   /** The mutable disclosure a kept head reads at click time. */
-  ref(key: string, expanded: boolean): DisclosureRef
+  ref(key: string, expanded: boolean, id?: string): DisclosureRef
   feedback(key: string, node: HTMLElement, status: string): void
   disclose(key: string, expanded: boolean, head: HTMLElement, body: () => HTMLElement | undefined): HTMLElement | undefined
   prune(): void
@@ -721,10 +729,12 @@ function createPainter(
     disclosure,
     liveGroupId: paint.liveGroupId,
     startedAt: paint.startedAt,
+    selectedSubagent: paint.selectedSubagent,
     keepClock: paint.keepClock,
     afterPaint: paint.afterPaint,
     onToggle: handlers.onToggle,
     onTaskStep: handlers.onTaskStep,
+    onOpenSubagent: handlers.onOpenSubagent,
     onOpenPath: handlers.onOpenPath,
     onViewImage: handlers.onViewImage,
     imageThumbUrl: handlers.imageThumbUrl,
@@ -754,13 +764,14 @@ function createPainter(
       cache.set(key, { node, className, signature, children })
       return node
     },
-    ref(key, expanded) {
+    ref(key, expanded, id) {
       const existing = refs.get(key)
       if (existing) {
         existing.expanded = expanded
+        existing.id = id
         return existing
       }
-      const created = { expanded }
+      const created = { expanded, id }
       refs.set(key, created)
       return created
     },
@@ -1012,7 +1023,7 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
   // Fields rather than the step object: `toStep` mints a new one on every paint,
   // so an object identity would mean 「always different」 and no reuse at all. The
   // strings it carries *are* the item's own, so `===` still settles in one compare.
-  return painter.node(`step:${step.id}`, classes.join(' '), [step.text, step.durationMs, expanded], () => {
+  return painter.node(`step:${step.id}`, classes.join(' '), [step.text, step.durationMs, expanded, live], () => {
     // Not 「正在思考」 while live: inside a group the tail row already says that,
     // one line below, and the hairline is this head's own sign of life.
     const label = THINKING_DONE_FALLBACK
@@ -1026,7 +1037,7 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
     // under a key of its own is thrown away and rebuilt every render — leaving
     // the head holding the first paint's object, forever reporting 「folded」.
     const headKey = `thinking-head:${step.id}`
-    const ref = painter.ref(headKey, expanded)
+    const ref = painter.ref(headKey, expanded, thinkingDisclosureId(step))
     const head = painter.node(
       headKey,
       'step-head thinking-step-head',
@@ -1043,33 +1054,35 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
           live ? rule() : duration === undefined ? undefined : quiet('step-duration', duration),
         ]
       },
-      () => button('step-head thinking-step-head', '', label, () => painter.onToggle(step.id, ref.expanded)),
+      () => button('step-head thinking-step-head', '', label, () => painter.onToggle(ref.id!, ref.expanded)),
     )
-    return [head, thinkingText(painter, `thinking-body:${step.id}`, 'step-body', step.id, step.text, expanded, ref)]
+    return [head, thinkingText(painter, `thinking-body:${step.id}`, 'step-body', step.text, expanded, live, ref)]
   })
 }
 
 /**
- * The thought itself, shared by the step and the loose block: a preview while
- * folded (CSS clamps it), the whole text while open. The node is kept across the
- * fold so the toggle is a class change, not a rebuild.
+ * The thought itself, shared by the step and the loose block: the whole text while
+ * open; folded, a preview while it streams (CSS clamps it) and nothing once it
+ * seals. The node is kept across the fold so the toggle is a class change, not a
+ * rebuild.
  */
 function thinkingText(
   painter: Painter,
   key: string,
   base: string,
-  id: string,
   text: string,
   expanded: boolean,
+  live: boolean,
   ref: DisclosureRef,
 ): HTMLElement {
-  return painter.node(key, `${base} thinking-text${expanded ? '' : ' preview'}`, [text], (node) => {
+  const fold = expanded ? '' : live ? ' preview' : ' folded'
+  return painter.node(key, `${base} thinking-text${fold}`, [text], (node) => {
     node.textContent = text
     return [...node.childNodes]
   }, () => {
     const node = el('div', '')
     node.addEventListener('click', () => {
-      if (!ref.expanded) painter.onToggle(id, false)
+      if (!ref.expanded) painter.onToggle(ref.id!, false)
     })
     return node
   })
@@ -1146,9 +1159,6 @@ const READ_TOOL = 'Read'
 
 /** The web family (§6.2 Web): the two tools whose result is fetched prose. */
 const WEB_TOOLS = new Set(['WebFetch', 'WebSearch'])
-
-/** The Agent family (§6.2 Agent): the one tool that runs a sub-agent. */
-const AGENT_TOOL = 'Agent'
 
 /** One numbered line of the read family's code block. */
 interface CodeRow {
@@ -1264,14 +1274,19 @@ function familyStats(family: FamilyData): string | undefined {
   return agentStats(family.agent)
 }
 
-function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElement {
+function toolStep(painter: Painter, step: ToolLike, disclosed: boolean): HTMLElement {
   const status = step.kind === 'tool' ? step.status : step.pending === true ? 'running' : 'done'
+  // A sub-agent's run lives in the side panel; its row is a link there, never a fold.
+  const agent = step.kind === 'tool' && step.toolName === AGENT_TOOL
+  const expanded = disclosed && !agent
+  const selected = agent && painter.selectedSubagent === step.id
   const classes = ['step', step.kind, status]
   if (!expanded) classes.push('collapsed')
+  if (selected) classes.push('selected')
   // `step.tool` is the item's own detail object, so it changes reference exactly
   // when the result merges in — see `thinkingStep` for why not the step itself.
   const detail = step.kind === 'tool' ? step.tool : undefined
-  return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded], () => {
+  return painter.node(`step:${step.id}`, classes.join(' '), [step.text, detail, status, expanded, selected], () => {
     const family = familyData(step)
     const live = subagentLive(step, status)
     // A running sub-agent has no run record yet; its live count stands in.
@@ -1285,12 +1300,16 @@ function toolStep(painter: Painter, step: ToolLike, expanded: boolean): HTMLElem
     const headKey = `tool-head:${step.id}`
     const ref = painter.ref(headKey, expanded)
     const name = stepAccessibleName(step, status, stats)
-    const head = painter.node(headKey, 'step-head', [name, detail, step.text, expanded], (node) => {
+    const head = painter.node(headKey, 'step-head', [name, detail, step.text, expanded, selected], (node) => {
       node.title = name
       node.setAttribute('aria-label', name)
-      node.setAttribute('aria-expanded', expanded ? 'true' : 'false')
+      if (agent) node.setAttribute('aria-pressed', selected ? 'true' : 'false')
+      else node.setAttribute('aria-expanded', expanded ? 'true' : 'false')
       return [statusBead, ...headParts(step, stats)]
-    }, () => button('step-head', '', name, () => painter.onToggle(step.id, ref.expanded)))
+    }, () => button('step-head', '', name, () => {
+      if (agent) painter.onOpenSubagent(step.id)
+      else painter.onToggle(step.id, ref.expanded)
+    }))
     const bodyKey = `tool-body:${step.id}`
     const body = painter.disclose(bodyKey, expanded, head, () => {
       const content = stepBody(step, family, painter)
@@ -1428,8 +1447,6 @@ function stepBody(step: ToolLike, family: FamilyData, painter: Painter): HTMLEle
       el('span', 'step-code-text', row.text),
     ))))
   }
-  const agent = agentBody(step)
-  if (agent !== undefined) return agent
   const web = webBody(step)
   if (web !== undefined) return web
   const { resultSummary, detail, content } = step.tool
@@ -1443,52 +1460,6 @@ function stepBody(step: ToolLike, family: FamilyData, painter: Painter): HTMLEle
     // block, so a long output never turns the group itself into a scroll window.
     text === undefined || text.length === 0 ? undefined : el('pre', 'step-body-text', text),
   )
-}
-
-/**
- * The Agent family's body: the task (the prompt the parent wrote) over the
- * sub-agent's answer. Two labelled sections, because two unlabelled text blocks
- * are ambiguous — and the labels are the one place the body needs words of its
- * own, the head having taken everything the records can count.
- *
- * The answer is the fuller of the result's `content` and the run's own
- * transcript: they are the same report budgeted differently (the run's record
- * is what a background agent leaves when the result was only a start notice),
- * and the fuller text is the truer reply. The notices the result appends for
- * the model are peeled off first (`splitAgentReply`) — the continuation id is
- * dropped, the rest drawn as one quiet line of notes under the reply.
- */
-function agentBody(step: ToolLike): HTMLElement | undefined {
-  if (step.kind !== 'tool' || step.toolName !== AGENT_TOOL) return undefined
-  const task = step.tool.task
-  const reply = step.tool.content === undefined ? undefined : splitAgentReply(step.tool.content)
-  const response = agentResponse(reply?.text, step.tool.subagent?.summary)
-  const notes = reply?.notes ?? []
-  if (task === undefined && response === undefined) return undefined
-  return el(
-    'div',
-    'step-body',
-    task === undefined ? undefined : el(
-      'div',
-      'step-agent-prompt',
-      el('div', 'step-agent-label', '任务'),
-      el('div', 'step-agent-text md', ...markdownChildren(task)),
-    ),
-    response === undefined ? undefined : el(
-      'div',
-      'step-agent-response',
-      el('div', 'step-agent-label', '回复'),
-      el('div', 'step-agent-text md', ...markdownChildren(response)),
-      notes.length === 0 ? undefined : el('div', 'step-agent-notes', notes.join(' · ')),
-    ),
-  )
-}
-
-/** The fuller of the two renderings of the sub-agent's answer (§6.2 Agent). */
-function agentResponse(content: string | undefined, summary: string | undefined): string | undefined {
-  if (content === undefined || content.length === 0) return summary
-  if (summary === undefined || summary.length === 0) return content
-  return content.length >= summary.length ? content : summary
 }
 
 /**
@@ -1731,7 +1702,7 @@ function looseThinkingNode(
     // still flips to point up while the block is open — that rule matches on the
     // class, not on the position.
     const headKey = `loose-thinking-head:${item.id}`
-    const ref = painter.ref(headKey, expanded)
+    const ref = painter.ref(headKey, expanded, thinkingDisclosureId(item))
     const header = painter.node(headKey, 'thinking-header', [name, expanded], (node) => {
       node.setAttribute('aria-expanded', String(expanded))
       node.setAttribute('aria-label', name)
@@ -1741,8 +1712,8 @@ function looseThinkingNode(
         icon('chevron-down'),
         duration === undefined ? undefined : quiet('thinking-duration', duration),
       ]
-    }, () => button('thinking-header', '', label, () => painter.onToggle(item.id, ref.expanded)))
-    return [header, thinkingText(painter, `loose-thinking-body:${item.id}`, 'thinking-body', item.id, item.text, expanded, ref)]
+    }, () => button('thinking-header', '', label, () => painter.onToggle(ref.id!, ref.expanded)))
+    return [header, thinkingText(painter, `loose-thinking-body:${item.id}`, 'thinking-body', item.text, expanded, item.pending === true, ref)]
   })
 }
 

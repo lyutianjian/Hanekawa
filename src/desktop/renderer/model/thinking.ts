@@ -118,7 +118,8 @@ function defaultStepExpanded(step: ActivityStep): boolean {
   // A failure is the reason someone opens a finished group at all, so it opens
   // itself — in a running turn just as much as in a sealed one.
   if (isStepFailed(step)) return true
-  // A thought's collapsed state is a two-line preview; only a click shows it whole.
+  // A live thought folds to a two-line preview, a sealed one away entirely; only
+  // a click shows it whole.
   if (step.kind !== 'tool') return false
   // The permission request is drawn in the composer and that is where the user is
   // looking; unfolding a diff up here would take the focus back (§5.1).
@@ -141,7 +142,7 @@ export function resolveDisclosure(
   for (const entry of entries) {
     if (entry.kind === 'item') {
       if (entry.item.kind !== 'thinking') continue
-      next.set(entry.item.id, isLooseThinkingExpanded(entry.item, manual))
+      next.set(entry.item.id, manual.get(thinkingDisclosureId(entry.item)) ?? false)
       continue
     }
     const { group } = entry
@@ -151,7 +152,8 @@ export function resolveDisclosure(
     next.set(group.turnId, open)
     for (let index = 0; index < group.steps.length; index += 1) {
       const step = group.steps[index]!
-      next.set(step.id, manual.get(step.id) ?? (open && isStepExpanded(group, index)))
+      const answer = manual.get(step.kind === 'thinking' ? thinkingDisclosureId(step) : step.id)
+      next.set(step.id, answer ?? (open && isStepExpanded(group, index)))
     }
   }
   return next
@@ -160,6 +162,15 @@ export function resolveDisclosure(
 /** The same predicate `groupTranscript` counts with, so head and body agree. */
 function isStepFailed(step: ActivityStep): boolean {
   return ('status' in step && step.status === 'failed') || ('failed' in step && step.failed === true)
+}
+
+/**
+ * The key a thought's disclosure is answered under. A live thought answers under
+ * a `:live` key of its own, so opening it mid-stream is forgotten the moment it
+ * seals: a finished thought always folds away, whatever was clicked before.
+ */
+export function thinkingDisclosureId(block: { readonly id: string; readonly pending?: boolean }): string {
+  return block.pending === true ? `${block.id}:live` : block.id
 }
 
 /**
@@ -188,11 +199,11 @@ export function pruneDisclosure(entries: readonly TranscriptEntry[], state: Disc
   for (const entry of entries) {
     if (entry.kind === 'group') {
       live.add(entry.group.turnId)
-      for (const step of entry.group.steps) live.add(step.id)
+      for (const step of entry.group.steps) live.add(step.kind === 'thinking' ? thinkingDisclosureId(step) : step.id)
     } else if (entry.item.kind === 'thinking') {
       // A thinking block from a record with no `turnId` never joins a group, and
       // it is still a disclosure the user can have answered.
-      live.add(entry.item.id)
+      live.add(thinkingDisclosureId(entry.item))
     }
   }
   const next = new Map<string, boolean>()
@@ -205,9 +216,8 @@ export function pruneDisclosure(entries: readonly TranscriptEntry[], state: Disc
 /**
  * A thinking block that never joined a group — a record with no `turnId`.
  *
- * Folded to its preview by default, streaming or sealed, like a thinking step.
- * The answer is still absolute, and it is stored in the same map under the
- * block's own id.
+ * Folded by default like a thinking step: a preview while it streams, away once
+ * it seals. The answer is still absolute, stored under `thinkingDisclosureId`.
  */
 export function isLooseThinkingExpanded(item: TranscriptItem, state: DisclosureState = NO_DISCLOSURE): boolean {
   return state.get(item.id) ?? false

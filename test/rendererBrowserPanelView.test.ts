@@ -41,7 +41,6 @@ interface Rendered {
   view: BrowserPanelView
   nodes: {
     panel: HTMLElement
-    resizer: HTMLElement
     tabs: HTMLElement
     address: HTMLElement
     banner: HTMLElement
@@ -60,7 +59,6 @@ function render(t: { after(fn: () => void): void }, options: { measurable?: bool
   const stub = installDomStub()
   const nodes = {
     panel: stub.createContainer('panel'),
-    resizer: stub.createContainer('resizer'),
     tabs: stub.createContainer('tabs'),
     address: stub.createContainer('address'),
     banner: stub.createContainer('banner'),

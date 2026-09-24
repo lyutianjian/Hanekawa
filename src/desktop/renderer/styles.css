@@ -1085,6 +1085,120 @@ body.resizing #browser-resizer::after { opacity: 1; }
    beside it would be the one thing on screen it does not cover. */
 body.settings-open #browser-panel,
 body.settings-open #browser-resizer { display: none; }
+/* The panel's two views take turns in it: the browser, and the sub-agents. */
+#browser-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#browser-view[hidden] { display: none; }
+/* Shown only once the session has a sub-agent: the browser alone needs no switch. */
+#side-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border-bottom: 1px solid var(--border-subtle);
+}
+#side-tabs[hidden] { display: none; }
+.side-tab {
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  padding: var(--space-1) var(--space-2);
+  cursor: default;
+}
+.side-tab:hover { background: var(--surface-hover); }
+.side-tab.active { background: var(--surface-card); color: var(--text-primary); }
+.side-tab-close {
+  margin-left: auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  font-size: var(--type-meta);
+  padding: 0 var(--space-2);
+  cursor: default;
+}
+.side-tab-close:hover { background: var(--surface-active); color: var(--text-primary); }
+#subagent-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2);
+}
+#subagent-view[hidden] { display: none; }
+.subagent-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.subagent-row:hover { background: var(--surface-hover); }
+.subagent-row .step-live { margin-left: 0; padding-bottom: 0; }
+.subagent-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--type-ui);
+}
+.subagent-name { min-width: 0; color: var(--text-primary); font-family: var(--font-mono); overflow-wrap: anywhere; }
+.subagent-desc { color: var(--text-secondary); font-size: var(--type-meta); overflow-wrap: anywhere; }
+.subagent-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  font-variant-numeric: tabular-nums;
+}
+.subagent-back {
+  align-self: flex-start;
+  margin-bottom: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  padding: var(--space-1) var(--space-2);
+  cursor: default;
+}
+.subagent-back:hover { background: var(--surface-hover); color: var(--text-primary); }
+.subagent-section { margin-top: var(--space-3); min-width: 0; overflow-wrap: anywhere; font-size: var(--type-ui); }
+.subagent-label {
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+}
+/* What the result told the model about the run (truncated, ran in a worktree). */
+.subagent-notes {
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+}
+.subagent-empty { margin: var(--space-3) 0; color: var(--text-tertiary); font-size: var(--type-meta); }
 /* The session search box, the sidebar's first region. It carries the column's
    top inset now that the workspace header above it is gone — the workspaces are
    headings inside the list, not a dropdown over it. */
@@ -1864,8 +1978,8 @@ body.settings-open #browser-resizer { display: none; }
    slant on CJK glyphs, which have none, and it read as smudged small print. The
    text keeps its own line breaks.
 
-   Folded, it is a two-line preview of the opening, clamped with an ellipsis and
-   clickable to open; open, it is the whole thought, capped and scrolling inside
+   Folded while it streams, it is a two-line preview of the opening, clamped with
+   an ellipsis and clickable to open; folded once sealed, it is gone; open, it is the whole thought, capped and scrolling inside
    itself like a terminal block, so a long one never turns the turn into a wall. */
 .thinking-text {
   white-space: pre-wrap;
@@ -1881,6 +1995,7 @@ body.settings-open #browser-resizer { display: none; }
   cursor: pointer;
 }
 .thinking-text.preview:hover { color: var(--text-secondary); }
+.thinking-text.folded { display: none; }
 .thinking-text:not(.preview) {
   max-height: 320px;
   overflow-y: auto;
@@ -2457,32 +2572,9 @@ body.settings-open #browser-resizer { display: none; }
   overflow-wrap: anywhere;
 }
 
-/* The Agent family's body (T16): the task over the sub-agent's answer — prose,
-   so markdown, on the step's own surface rather than a card: it is the
-   conversation the call stands for, not an output block. The label names each
-   half, because two unlabelled text blocks are ambiguous; the answer sits one
-   rung up from the task because it is the payload the reader opened for. */
-.step-agent-prompt { margin-bottom: var(--space-2); min-width: 0; }
-.step-agent-label {
-  margin-bottom: var(--space-1);
-  color: var(--text-tertiary);
-  font-size: var(--type-micro);
-}
-.step-agent-text { max-height: 320px; overflow-y: auto; overflow-x: clip; overflow-wrap: anywhere; }
-/* The task is the parent's own prompt, already known: three lines, then scroll.
-   The reply keeps a taller cap, about fourteen lines, and scrolls inside itself
-   like a terminal block, so a long report never becomes the turn. */
-.step-agent-prompt .step-agent-text { max-height: 4.8em; }
-.step-agent-response .step-agent-text { max-height: 22em; }
-.step-agent-response { color: var(--text-secondary); }
-/* What the result told the model about the run (truncated, ran in a worktree),
-   one quiet line under the reply. */
-.step-agent-notes {
-  margin-top: var(--space-1);
-  color: var(--text-tertiary);
-  font-size: var(--type-micro);
-  overflow-wrap: anywhere;
-}
+/* An `Agent` row is a link to the side panel; the one whose run is on screen
+   there stays lit, so the reader can see which row the panel is about. */
+.step.selected > .step-head { background: var(--surface-active); color: var(--text-secondary); }
 
 /* The web family's body (T16): the fetched page, which the tool already turned
    into markdown — an article, clipped inside itself like every other body. */

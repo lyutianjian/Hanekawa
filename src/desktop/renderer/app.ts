@@ -86,7 +86,8 @@ import {
   type ThemePreference,
 } from './model/theme.js'
 import { canvasHeaderView, type CanvasHeaderMenuItem } from './model/canvasHeader.js'
-import { required } from './dom/dom.js'
+import { replace, required, show } from './dom/dom.js'
+import { button } from './dom/controls.js'
 import { onPressOutside } from './dom/dismiss.js'
 import { createCanvasHeaderView } from './dom/canvasHeaderView.js'
 import { createSettingsView } from './dom/settingsView.js'
@@ -104,6 +105,7 @@ import { createSidebarView } from './dom/sidebarView.js'
 import { createTitleBarView } from './dom/titleBarView.js'
 import { titleBarMenus, type TitleBarAction } from './model/titleBar.js'
 import { createBrowserPanelView, browserPanelNodes } from './dom/browserPanelView.js'
+import { createSubagentPanelView } from './dom/subagentPanelView.js'
 import {
   BROWSER_WIDTH_STORAGE_KEY,
   BROWSER_WIDTH_VARIABLE,
@@ -330,6 +332,8 @@ function attachPaneSession(lane: string): void {
         .openInEditor(root, { path, ...(line === undefined ? {} : { line }) })
         .catch((error) => activePane()?.note(describe(error), 'error'))
     },
+    onOpenSubagent: (id) => openSubagent(id),
+    onSubagentsChanged: () => renderSubagents(),
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.
@@ -578,7 +582,7 @@ function renderSidebar(): void {
     menus: titleMenus,
     openMenu: titleBarMenu,
     sidebarCollapsed: view.collapsed,
-    browserOpen,
+    browserOpen: browserOpen && sideTab === 'browser',
     canCreate: view.canCreate,
   })
 }
@@ -1107,6 +1111,13 @@ applyBrowserWidth(browserWidth)
  * still has tabs — a derived flag would spring straight back open.
  */
 let browserOpen = false
+/**
+ * Which view the side panel shows while `browserOpen`. The panel is shared: the
+ * browser and the session's sub-agents take turns in it.
+ */
+let sideTab: 'browser' | 'subagents' = 'browser'
+/** The sub-agent on its own page in the panel; `undefined` is the list. */
+let selectedSubagent: string | undefined
 /** Which tab each lane last had on screen, so switching back restores it. */
 const browserActiveTab = new Map<string, string>()
 
@@ -1146,11 +1157,81 @@ function renderBrowser(): void {
     tabs,
     lane,
     activeTabId,
-    open: browserOpen,
+    open: browserOpen && sideTab === 'browser',
     // The settings screen fills the canvas and owns the window; a page painted
     // beside it would be the one thing on screen it does not cover.
     occluded: settingsState.open,
   })
+  renderSubagents()
+}
+
+// --- the side panel's other half: sub-agents -----------------------------------
+
+const sidePanel = required('browser-panel')
+const sideTabs = required('side-tabs')
+const sideResizer = required('browser-resizer')
+const subagentPanel = createSubagentPanelView(required('subagent-view'), (id) => {
+  selectedSubagent = id
+  renderSubagents()
+})
+/** The strip's last paint, so a stream delta does not rebuild buttons under the pointer. */
+let sideTabsDrawn: string | undefined
+
+function renderSubagents(): void {
+  const visible = browserOpen && !settingsState.open
+  show(sidePanel, visible)
+  show(sideResizer, visible)
+  const pane = activePane()
+  const entries = visible ? pane?.subagents() ?? [] : []
+  const onSubagents = visible && sideTab === 'subagents'
+  // The strip exists once there is something to switch to; the browser alone needs none.
+  const withTabs = visible && (entries.length > 0 || onSubagents)
+  show(sideTabs, withTabs)
+  const running = entries.filter((entry) => entry.status === 'running' || entry.status === 'awaiting-approval').length
+  const strip = `${withTabs}|${sideTab}|${running}`
+  if (strip !== sideTabsDrawn) {
+    sideTabsDrawn = strip
+    const tab = (label: string, which: typeof sideTab, onClick: () => void): HTMLElement => {
+      const node = button(`side-tab${sideTab === which ? ' active' : ''}`, label, label, onClick)
+      node.setAttribute('role', 'tab')
+      node.setAttribute('aria-selected', String(sideTab === which))
+      return node
+    }
+    replace(
+      sideTabs,
+      tab('浏览器', 'browser', () => showSideTab('browser')),
+      tab(running > 0 ? `子代理 · ${running} 运行中` : '子代理', 'subagents', () => {
+        selectedSubagent = undefined
+        showSideTab('subagents')
+      }),
+      button('side-tab-close', '✕', '关闭侧栏', () => {
+        browserOpen = false
+        renderSidebar()
+        renderBrowser()
+      }),
+    )
+  }
+  show(required('subagent-view'), onSubagents)
+  if (onSubagents) subagentPanel.render({ entries, selected: selectedSubagent })
+  pane?.setSelectedSubagent(onSubagents ? selectedSubagent : undefined)
+}
+
+/** Raise the panel onto one of its two views. */
+function showSideTab(tab: typeof sideTab): void {
+  browserOpen = true
+  sideTab = tab
+  // The title bar's browser button draws the browser half only.
+  renderSidebar()
+  // Opening onto nothing would be a blank panel, so the browser's first showing mints a tab.
+  if (tab === 'browser' && activeLane !== undefined && tabsForLane(shellClient.getBrowserTabs(), activeLane).length === 0) {
+    createPanelTab(activeLane)
+  }
+  renderBrowser()
+}
+
+function openSubagent(id: string): void {
+  selectedSubagent = id
+  showSideTab('subagents')
 }
 
 /**
@@ -1198,21 +1279,19 @@ function createPanelTab(lane: string): void {
     })
 }
 
+/**
+ * The title bar's browser button. With the panel on its sub-agents it switches to
+ * the browser rather than closing. Closing never touches the tabs: they belong
+ * to the lane, not to the panel.
+ */
 function toggleBrowserPanel(): void {
-  browserOpen = !browserOpen
-  // The title bar's right rail draws this flag, and `renderSidebar` is the one
-  // call site that paints the bar — so the toggle has to go through it.
-  renderSidebar()
-  // Opening onto nothing would be a blank panel, so the first open mints a tab.
-  // Closing never touches the tabs: they belong to the lane, not to the panel.
-  if (
-    browserOpen &&
-    activeLane !== undefined &&
-    tabsForLane(shellClient.getBrowserTabs(), activeLane).length === 0
-  ) {
-    createPanelTab(activeLane)
+  if (browserOpen && sideTab === 'browser') {
+    browserOpen = false
+    renderSidebar()
+    renderBrowser()
+    return
   }
-  renderBrowser()
+  showSideTab('browser')
 }
 
 const titleBar = createTitleBarView(
@@ -1591,6 +1670,7 @@ shellClient.onBrowserState((tabs) => {
   const latest = arrived.at(-1)
   if (latest !== undefined && activeLane !== undefined && (browserOpen || mintingTabs === 0)) {
     browserOpen = true
+    sideTab = 'browser'
     // Onto the new tab, not whichever one was last on screen: the page the agent
     // just opened is the one it is asking about.
     browserActiveTab.set(activeLane, latest.tabId)

@@ -72,7 +72,6 @@ export interface BrowserPanelView {
 export function createBrowserPanelView(
   nodes: {
     panel: HTMLElement
-    resizer: HTMLElement
     tabs: HTMLElement
     address: HTMLElement
     banner: HTMLElement
@@ -254,7 +253,6 @@ export function createBrowserPanelView(
     const panelVisible = next.open && !next.occluded
 
     show(nodes.panel, panelVisible)
-    show(nodes.resizer, panelVisible)
 
     const rows = own.map((tab) => {
       const row = el('div', tabClass(tab, next.activeTabId))
@@ -360,15 +358,13 @@ function tabClass(tab: WireBrowserTabInfo, activeTabId: string | undefined): str
 /** The ids `index.html` declares for the panel, resolved in one place. */
 export function browserPanelNodes(): {
   panel: HTMLElement
-  resizer: HTMLElement
   tabs: HTMLElement
   address: HTMLElement
   banner: HTMLElement
   hole: HTMLElement
 } {
   return {
-    panel: required('browser-panel'),
-    resizer: required('browser-resizer'),
+    panel: required('browser-view'),
     tabs: required('browser-tabs'),
     address: required('browser-address'),
     banner: required('browser-banner'),

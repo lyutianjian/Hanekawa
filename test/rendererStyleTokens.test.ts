@@ -2188,7 +2188,6 @@ test('a diff is the only block in a turn that scrolls sideways', () => {
     '.step-body-text',
     '.step-search',
     '.step-code',
-    '.step-agent-text',
     '.step-web',
   ]) {
     const body = blockFor(selector)

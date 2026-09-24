@@ -220,11 +220,15 @@
         `border`, the same discipline `#canvas` follows and for the same reason —
         an outline never enters `getBoundingClientRect()`.
       -->
-      <aside id="browser-panel" hidden aria-label="浏览器">
-        <div id="browser-tabs" role="tablist" aria-label="标签页"></div>
-        <div id="browser-address"></div>
-        <div id="browser-banner" role="status" hidden></div>
-        <div id="browser-hole"></div>
+      <aside id="browser-panel" hidden aria-label="侧栏">
+        <div id="side-tabs" role="tablist" aria-label="侧栏视图" hidden></div>
+        <div id="browser-view">
+          <div id="browser-tabs" role="tablist" aria-label="标签页"></div>
+          <div id="browser-address"></div>
+          <div id="browser-banner" role="status" hidden></div>
+          <div id="browser-hole"></div>
+        </div>
+        <div id="subagent-view" hidden></div>
       </aside>
     </div>
     <!--

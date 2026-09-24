@@ -90,79 +90,68 @@ export function isGroupExpanded(
 }
 
 /**
- * A step's disclosure, by position in its group — the position *is* the default
- * (§5.1), which is why this takes the group and an index rather than a step.
+ * The tools whose body is a diff. They open by default (§5.1): the patch *is*
+ * the result, where a read, a search or a command already said what it did on
+ * its head line.
  */
+export const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+
+/** A step's disclosure: the user's answer when there is one, else the default. */
 export function isStepExpanded(
   group: ActivityGroup,
   index: number,
   state: DisclosureState = NO_DISCLOSURE,
-  live = group.status === 'running',
-  retained = false,
 ): boolean {
   const step = group.steps[index]
   if (step === undefined) return false
   if (!isStepCollapsible(step)) return true
-  return state.get(step.id) ?? defaultStepExpanded(group, index, step, live, retained)
+  return state.get(step.id) ?? defaultStepExpanded(step)
 }
 
-function defaultStepExpanded(group: ActivityGroup, index: number, step: ActivityStep, live: boolean, retained: boolean): boolean {
-  // A failure is the reason someone opens a finished group at all (§5.1), so it
-  // opens itself — in a running turn just as much as in a sealed one, because a
-  // failed step scrolling past unopened is the case this whole screen exists for.
+/**
+ * Open only what the head line cannot say: a failure, and an edit's diff. A
+ * successful read, search, command or sub-agent stays one line whether the turn
+ * is running or sealed — a running step that unfolded itself turned the turn
+ * into a wall of output and made the viewport jump with every tool.
+ */
+function defaultStepExpanded(step: ActivityStep): boolean {
+  // A failure is the reason someone opens a finished group at all, so it opens
+  // itself — in a running turn just as much as in a sealed one.
   if (isStepFailed(step)) return true
-  // A thought is never unfolded for the reader: its collapsed state is a
-  // two-line preview rather than nothing, and a long one streaming open is the
-  // wall of text this rule exists to prevent. Only a click shows it whole.
-  if (step.kind === 'thinking') return false
-  if (live && group.status !== 'aborted' && retained) return true
+  // A thought's collapsed state is a two-line preview; only a click shows it whole.
+  if (step.kind !== 'tool') return false
   // The permission request is drawn in the composer and that is where the user is
   // looking; unfolding a diff up here would take the focus back (§5.1).
-  if ('status' in step && step.status === 'awaiting-approval') return false
-  return live && group.status !== 'aborted' && index === group.steps.length - 1
+  if (step.status === 'awaiting-approval') return false
+  return step.toolName !== undefined && EDIT_TOOLS.has(step.toolName)
 }
 
-export interface DisclosureProtection {
-  readonly focused: ReadonlySet<string>
-  readonly selected: ReadonlySet<string>
-  readonly readingHistory: boolean
-}
-
-/** Direction A. Previous values are presentation memory, never manual answers.
- * A completion may organise once, but cannot withdraw manually opened or
- * actively read content. The owning view supplies DOM observations only. */
+/**
+ * The disclosure every row paints with. Only the user's clicks survive the turn:
+ * the live group is open while it runs and folds the moment it ends — whether or
+ * not the reader was scrolled into it, focused in it or selecting in it — unless
+ * they opened the group, or a step inside it, by hand.
+ */
 export function resolveDisclosure(
   entries: readonly TranscriptEntry[],
   manual: DisclosureState,
-  previous: DisclosureState,
   liveGroupId: string | undefined,
-  protection: DisclosureProtection,
 ): DisclosureState {
   const next = new Map<string, boolean>()
-  const protectedAt = (id: string): boolean => protection.readingHistory
-    || protection.focused.has(id) || protection.selected.has(id)
   for (const entry of entries) {
     if (entry.kind === 'item') {
       if (entry.item.kind !== 'thinking') continue
-      const { id } = entry.item
-      next.set(id, manual.get(id) ?? (protectedAt(id) && previous.get(id) === true
-        || isLooseThinkingExpanded(entry.item)))
+      next.set(entry.item.id, isLooseThinkingExpanded(entry.item, manual))
       continue
     }
     const { group } = entry
     const live = group.turnId === liveGroupId && group.status !== 'aborted'
-    const protectedGroup = protectedAt(group.turnId)
-      || group.steps.some((step) => protectedAt(step.id))
-    const hold = protectedGroup && previous.get(group.turnId) === true
     const manuallyOpenedChild = group.steps.some((step) => manual.get(step.id) === true)
-    const open = manual.get(group.turnId) ?? (hold || manuallyOpenedChild || isGroupExpanded(group, NO_DISCLOSURE, live))
+    const open = manual.get(group.turnId) ?? (manuallyOpenedChild || isGroupExpanded(group, NO_DISCLOSURE, live))
     next.set(group.turnId, open)
     for (let index = 0; index < group.steps.length; index += 1) {
       const step = group.steps[index]!
-      const wasOpen = previous.get(step.id) === true
-      next.set(step.id, manual.get(step.id) ?? (open && (
-        hold && wasOpen || isStepExpanded(group, index, NO_DISCLOSURE, live, wasOpen)
-      )))
+      next.set(step.id, manual.get(step.id) ?? (open && isStepExpanded(group, index)))
     }
   }
   return next
@@ -232,13 +221,13 @@ export function isLooseThinkingExpanded(item: TranscriptItem, state: DisclosureS
  * the transcript is an `aria-live` region and a head tracking the activity would
  * be re-announced at every step (§8).
  */
-export function groupHeaderLabel(group: ActivityGroup): string {
+export function groupHeaderLabel(group: ActivityGroup, withFailures = true): string {
   // `stepCount` counts actions, so zero is a turn that only thought and answered.
   // 「0 步」 is not a fact worth a slot; the status alone carries that turn.
   const parts = [groupStatusLabel(group), ...(group.stepCount > 0 ? [`${group.stepCount} 步`] : [])]
   // Stated, not opened: a failure already opens its own step (§5.1), and forcing
   // the whole group open would move everything under it.
-  if (group.failedCount > 0) parts.push(`${group.failedCount} 失败`)
+  if (withFailures && group.failedCount > 0) parts.push(groupFailureLabel(group)!)
   return parts.join(' · ')
 }
 
@@ -249,10 +238,15 @@ export function groupHeaderLabel(group: ActivityGroup): string {
  * calls, and a head that flashed 「已完成」 after each result would report a
  * running turn as over. Liveness is the session's (`model/waiting.ts`).
  */
-export function groupRunningLabel(group: ActivityGroup): string {
+export function groupRunningLabel(group: ActivityGroup, withFailures = true): string {
   const parts = [RUNNING_LABEL, ...(group.stepCount > 0 ? [`${group.stepCount} 步`] : [])]
-  if (group.failedCount > 0) parts.push(`${group.failedCount} 失败`)
+  if (withFailures && group.failedCount > 0) parts.push(groupFailureLabel(group)!)
   return parts.join(' · ')
+}
+
+/** 「2 失败」, drawn apart from the rest of the head so it can take the danger colour. */
+export function groupFailureLabel(group: ActivityGroup): string | undefined {
+  return group.failedCount > 0 ? `${group.failedCount} 失败` : undefined
 }
 
 /**

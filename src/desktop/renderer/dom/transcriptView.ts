@@ -2,6 +2,7 @@ import { stripAnsi } from '../model/ansi.js'
 import { parseUnifiedPatch, type PatchRows } from '../model/diffRows.js'
 import { parseSearchResults, searchStats, type SearchResults } from '../model/searchResults.js'
 import {
+  groupFailureLabel,
   groupHeaderLabel,
   groupHeaderName,
   groupRunningLabel,
@@ -9,8 +10,8 @@ import {
   isLooseThinkingExpanded,
   isStepCollapsible,
   isStepExpanded,
+  EDIT_TOOLS,
   resolveDisclosure,
-  NO_DISCLOSURE,
   thinkingDurationLabel,
   thinkingHeaderLabel,
   thinkingHeaderName,
@@ -193,7 +194,6 @@ export function createTranscriptView(
   const feedback = new Map<string, StepFeedback>()
   const disclosures = new Map<string, { node: HTMLElement; presence: Presence }>()
   const seenDisclosures = new Set<string>()
-  let previousDisclosure: DisclosureState = NO_DISCLOSURE
   let generation: number | undefined
   type ReadingPosition = { node: HTMLElement; offset: number }
   let readingPosition: ReadingPosition | undefined
@@ -467,7 +467,6 @@ export function createTranscriptView(
         for (const entry of disclosures.values()) entry.presence.dispose()
         disclosures.clear()
         seenDisclosures.clear()
-        previousDisclosure = NO_DISCLOSURE
         cache.clear()
         refs.clear()
         for (const entry of feedback.values()) settleFeedback(entry)
@@ -493,10 +492,7 @@ export function createTranscriptView(
         if (selection && !selection.isCollapsed
           && (node.contains(selection.anchorNode) || node.contains(selection.focusNode))) selected.add(id)
       }
-      const resolvedDisclosure = resolveDisclosure(entries, disclosure, previousDisclosure, live.liveGroupId, {
-        focused, selected, readingHistory: !atBottom || guardedPosition !== undefined,
-      })
-      previousDisclosure = resolvedDisclosure
+      const resolvedDisclosure = resolveDisclosure(entries, disclosure, live.liveGroupId)
       const afterPaint: Array<() => void> = []
       const painter = createPainter(cache, refs, feedback, disclosures, seenDisclosures, resolvedDisclosure, {
         ...handlers,
@@ -897,6 +893,8 @@ function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean, li
   const ref = painter.ref(`group:${group.turnId}`, expanded)
   const name = groupHeaderName(group, live)
   const label = live ? groupRunningLabel(group) : groupHeaderLabel(group)
+  const counts = live ? groupRunningLabel(group, false) : groupHeaderLabel(group, false)
+  const failures = groupFailureLabel(group)
   return painter.node(
     `head:${group.turnId}`,
     live ? 'group-head live' : 'group-head',
@@ -910,8 +908,13 @@ function groupHead(painter: Painter, group: ActivityGroup, expanded: boolean, li
       // The label is a child rather than `button()`'s own so it can be
       // `aria-hidden`: a live one's step count moves as the turn works, and this
       // subtree sits in an `aria-live` region (§8). The name is
-      // `groupHeaderName`'s stable one instead.
-      return [quiet('btn-label', label)]
+      // `groupHeaderName`'s stable one instead. The chevron is the fold said in a
+      // shape: a folded turn's head is a quiet line that did not read as a switch.
+      return [
+        quiet('btn-label', counts),
+        failures === undefined ? undefined : quiet('group-failures', failures),
+        icon('chevron-right'),
+      ]
     },
     () => button('group-head', '', name, () => painter.onToggle(group.turnId, ref.expanded)),
   )
@@ -939,7 +942,7 @@ function beadStatus(step: ActivityStep): string {
 // --- steps -------------------------------------------------------------------
 
 function stepNode(painter: Painter, group: ActivityGroup, step: ActivityStep, index: number): HTMLElement {
-  const expanded = isStepExpanded(group, index, painter.disclosure, painter.liveGroupId === group.turnId)
+  const expanded = isStepExpanded(group, index, painter.disclosure)
   switch (step.kind) {
     case 'thinking':
       return thinkingStep(painter, step, expanded)
@@ -1080,8 +1083,6 @@ type ToolLike = Extract<ActivityStep, { kind: 'tool' | 'subagent' }>
  * member whose `detail` does not parse (an old record, a foreign tool with the
  * same name) simply falls back to the plain body.
  */
-const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
-
 /**
  * The family's own body data, or `undefined` when this step is not one of its
  * patches. Parsed once per fill — the painter's signature already holds the tool

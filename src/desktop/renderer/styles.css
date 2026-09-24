@@ -1940,11 +1940,11 @@ body.settings-open #browser-resizer { display: none; }
    status line and the beads — never a third shadow or radius rung, and not an
    indent either: the steps sit on the group head's own left margin.
 
-   There is **no disclosure chevron** on either head (§9). A glyph pointing at a
-   fold is a second thing to read on a row whose whole job is to be skimmed, and
-   the row is the switch: the hover tint below is the only affordance, and it is
-   the reason both heads carry a radius and a negative margin — the tint has to
-   reach past the text to read as a row rather than as a highlighted label.
+   The group head carries a small chevron: a folded turn is one quiet grey line,
+   and without the glyph it did not read as something that opens. Step heads
+   have none — the row is the switch, and the hover tint is the affordance, the
+   reason both heads carry a radius and a negative margin (the tint has to reach
+   past the text to read as a row rather than as a highlighted label).
 
    The two heads are written out rather than grouped: `rendererStyleTokens` asks
    a control's resting state to be a selector of its own, and a shared
@@ -2022,6 +2022,22 @@ body.settings-open #browser-resizer { display: none; }
   min-width: 0;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+.group-head .icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+.activity-group:not(.collapsed) > .group-head .icon { transform: rotate(90deg); }
+/* The failure count takes the one colour on the row: it is why a folded turn is
+   worth opening. The separator is the label's own 「 · 」, split off with it. */
+.group-failures { margin-left: calc(-1 * var(--space-2)); color: var(--text-danger); }
+.group-failures::before { content: '\00a0·\00a0'; color: var(--text-tertiary); }
+/* Prose a turn writes between its steps (「我先看一下项目结构。」) sits a rung
+   below the final answer, or it reads as the answer having already begun. */
+.group-steps > .step.text {
+  color: var(--text-secondary);
+  font-size: var(--type-ui);
 }
 .group-steps {
   display: flex;
@@ -2417,6 +2433,11 @@ body.settings-open #browser-resizer { display: none; }
   font-size: var(--type-micro);
 }
 .step-agent-text { max-height: 320px; overflow-y: auto; overflow-x: clip; overflow-wrap: anywhere; }
+/* The task is the parent's own prompt, already known: three lines, then scroll.
+   The reply keeps a taller cap, about fourteen lines, and scrolls inside itself
+   like a terminal block, so a long report never becomes the turn. */
+.step-agent-prompt .step-agent-text { max-height: 4.8em; }
+.step-agent-response .step-agent-text { max-height: 22em; }
 .step-agent-response { color: var(--text-secondary); }
 
 /* The web family's body (T16): the fetched page, which the tool already turned

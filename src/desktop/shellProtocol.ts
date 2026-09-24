@@ -257,6 +257,8 @@ export interface WireBrowserTabInfo {
    * rather than a press that does nothing.
    */
   agentActive?: boolean
+  /** File names of downloads the page started and the browser cancelled, oldest first. */
+  blockedDownloads?: string[]
 }
 
 // --- settings ----------------------------------------------------------------

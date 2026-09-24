@@ -15,7 +15,11 @@ export const NO_TABS = 'No browser tabs are open. Use browser.create_tab to open
 
 export function renderTabs(tabs: readonly BrowserTabState[]): string {
   if (tabs.length === 0) return NO_TABS
-  return [TAB_COLUMNS.join('\t'), ...tabs.map(renderTabRow)].join('\n')
+  // File names can hold spaces and tabs, so they go below the table, not in `flags`.
+  const blocked = tabs.flatMap((tab) =>
+    (tab.blockedDownloads ?? []).map((name) => `Blocked a download in tab ${tab.tabId}: ${JSON.stringify(name)} (downloads are cancelled).`),
+  )
+  return [TAB_COLUMNS.join('\t'), ...tabs.map(renderTabRow), ...blocked].join('\n')
 }
 
 export function renderTabRow(tab: BrowserTabState): string {

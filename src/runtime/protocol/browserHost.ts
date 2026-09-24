@@ -27,6 +27,8 @@ export interface BrowserTabState {
   error?: string
   /** The user took this tab back; from phase 5 that also blocks the agent. */
   takenOver?: boolean
+  /** Downloads the page started, cancelled by the browser: their file names, oldest first. */
+  blockedDownloads?: string[]
 }
 
 /** One page of a projection, already rendered. The tool passes it through. */

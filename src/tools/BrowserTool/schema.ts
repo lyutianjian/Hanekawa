@@ -18,6 +18,9 @@ import { z, type ZodTypeAny } from 'zod/v3'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { JsonSchema } from '../../harness/toolValidation.js'
 import {
+  EMULATE_SCALE_MAX,
+  EMULATE_SIZE_MAX,
+  EMULATE_SIZE_MIN,
   PRESS_KEYS_MAX,
   TYPE_TEXT_MAX,
   WAIT_FOR_DEFAULT_MS,
@@ -87,6 +90,22 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
         .enum(['domcontentloaded', 'load'])
         .optional()
         .describe('load (default) waits for images and subresources too; domcontentloaded returns once the HTML is parsed.'),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('tab.emulate'),
+      tabId,
+      preset: z
+        .enum(['iphone', 'ipad', 'desktop'])
+        .optional()
+        .describe('iphone (390x844 @3x, mobile, iOS Safari UA), ipad (820x1180 @2x, mobile, iPad UA) or desktop (1280x800 @1x, default UA). Other fields override it.'),
+      width: z.number().int().min(EMULATE_SIZE_MIN).max(EMULATE_SIZE_MAX).optional().describe('Viewport width in CSS pixels.'),
+      height: z.number().int().min(EMULATE_SIZE_MIN).max(EMULATE_SIZE_MAX).optional().describe('Viewport height in CSS pixels.'),
+      deviceScaleFactor: z.number().positive().max(EMULATE_SCALE_MAX).optional().describe('devicePixelRatio. Default 1 without a preset.'),
+      mobile: z.boolean().optional().describe('Mobile viewport rules (meta viewport, overlay scrollbars) and touch support.'),
+      userAgent: z.string().min(1).max(512).optional().describe('User-Agent string to send and report.'),
+      reset: z.boolean().optional().describe('true clears the emulation; pass nothing else with it.'),
     })
     .strict(),
   z.object({ operation: z.literal('page.elements.snapshot'), ...elementsFields }).strict(),

@@ -1926,8 +1926,21 @@ body.settings-open #browser-resizer { display: none; }
   background: currentColor;
   animation: breathe var(--motion-running) var(--ease-standard) infinite;
 }
-/* One running signal on this line: the bead. The words remain readable. */
-.waiting-label { color: var(--text-secondary); }
+/* The words carry the thinking row's old sheen, now that the tail row is where
+   「正在思考」 is read: a band of `--text-primary` travelling through
+   `--text-secondary` letters, on `sheen`'s own keyframes and duration. The band
+   is a text highlight, not an accent, so it holds in both themes — brighter on
+   dark, deeper on light. Reduced motion stops it on its last frame, which is
+   plain secondary text. */
+.waiting-label {
+  color: var(--text-secondary);
+  background: linear-gradient(90deg, var(--text-secondary) 35%, var(--text-primary) 50%, var(--text-secondary) 65%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: sheen var(--motion-running) linear infinite;
+}
 /* The counter, in the digits that do not jitter as they climb. Monospaced for
    the same reason the meta row's time is: it changes ten times a second. */
 .waiting-elapsed {

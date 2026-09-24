@@ -14,7 +14,7 @@ Unlike WebFetch, this runs a full browser: JavaScript executes, logins persist b
 
 Every call names an \`operation\`. The fields each one takes:
 
-- \`browser.get_state\` — no fields. Lists this session's tabs: tabId, url, title, flags.
+- \`browser.get_state\` — no fields. Lists this session's tabs: tabId, url, title, flags. Downloads are never saved: a download a page starts is cancelled, and a line under the table names each blocked file.
 - \`browser.create_tab\` — optional \`url\`. Opens a tab and returns its tabId. With a url it also starts loading it.
 - \`browser.close_tab\` — \`tabId\`.
 - \`tab.navigate\` — \`tabId\`, \`url\`. Returns as soon as the navigation starts; follow it with tab.wait_for_load.

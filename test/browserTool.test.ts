@@ -83,6 +83,12 @@ test('get_state renders a tab table, and says so when there are none', async () 
   const listed = await run(createBrowserTool(host), { operation: 'browser.get_state' })
   assert.match(listed.content, /^tabId\turl\ttitle\tflags\n/)
   assert.match(listed.content, /tab-1\thttps:\/\/x\.test\/\tX/)
+
+  const blocked = createBrowserTool(stubHost({
+    listTabs: async () => [{ tabId: 'tab-1', url: 'https://x.test/', title: 'X', loading: false, blockedDownloads: ['report 2026.pdf'] }],
+  }).host)
+  const told = await run(blocked, { operation: 'browser.get_state' })
+  assert.match(told.content, /\nBlocked a download in tab tab-1: "report 2026\.pdf"/)
 })
 
 test('each operation reaches its own host call', async () => {

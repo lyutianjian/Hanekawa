@@ -35,7 +35,7 @@ import type {
   BrowserWaitRequest,
 } from '../../runtime/protocol/browserHost.js'
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
-import { cdpSender, pageEvaluator, requirePage } from './cdp.js'
+import { cdpLease, cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
 import {
   clickTarget,
@@ -303,6 +303,7 @@ export class DesktopBrowserHost implements BrowserHost {
     return {
       key: page.contents,
       send: cdpSender(page),
+      lease: cdpLease(page),
       evaluate: pageEvaluator(page),
       check,
       platform: process.platform,

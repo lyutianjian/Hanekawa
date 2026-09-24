@@ -1398,7 +1398,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // polled, and 「已等待」 must start at the moment the user pressed Enter.
     if (event.type === 'turn-start') turnStartedAt = Date.now()
     if (event.type === 'turn-end') turnStartedAt = undefined
-    const outcome = applySessionEvent(transcript, event, toolDisplays)
+    const outcome = applySessionEvent(transcript, event, toolDisplays, Date.now())
     transcript = outcome.state
     noteConversationState()
 

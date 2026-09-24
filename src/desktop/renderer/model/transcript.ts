@@ -170,17 +170,18 @@ export interface TranscriptItem {
   readonly pending?: boolean
   readonly failed?: boolean
   readonly toolName?: string
-  /**
-   * A sealed thinking block's header label — this turn's elapsed time. `text` is
-   * the reasoning itself, so the two cannot share a field.
-   */
-  readonly summary?: string
   /** The activity group this item belongs to (§4.1). Absent = outside every group. */
   readonly turnId?: string
   /** The originating record's timestamp; the fallback source of a group's duration. */
   readonly createdAt?: string
-  /** On a `duration` item: the turn's measured elapsed time, in ms. */
+  /**
+   * On a `duration` item: the turn's measured elapsed time, in ms. On a thinking
+   * block: how long the model reasoned, from its first delta to its last
+   * `thinking_stop` — measured live only, so a replayed block has none.
+   */
   readonly durationMs?: number
+  /** On a thinking block still being measured: its first delta's wall clock. */
+  readonly startedAt?: number
   /** On the notice minted by a `turn_interruption`: this turn was aborted. */
   readonly interrupt?: boolean
   /** On a `tool` item: both records' worth of head and body (§4.5). */
@@ -196,7 +197,7 @@ export interface TranscriptItem {
 
 /** One step inside an activity group. `text` is the body; heads are the view's job. */
 export type ActivityStep =
-  | { readonly kind: 'thinking'; readonly id: string; readonly text: string; readonly pending?: boolean; readonly summary?: string }
+  | { readonly kind: 'thinking'; readonly id: string; readonly text: string; readonly pending?: boolean; readonly durationMs?: number }
   | {
       readonly kind: 'tool'
       readonly id: string
@@ -340,6 +341,8 @@ export function applySessionEvent(
   state: TranscriptState,
   event: SessionEvent,
   toolDisplays?: ToolDisplayLookup,
+  /** The wall clock at delivery. Absent = thinking goes unmeasured (tests, replays). */
+  now?: number,
 ): TranscriptOutcome {
   switch (event.type) {
     case 'turn-start':
@@ -362,7 +365,7 @@ export function applySessionEvent(
       return { state: applyRecord(state, event.record, toolDisplays) }
 
     case 'stream':
-      return { state: applyStream(state, event.event) }
+      return { state: applyStream(state, event.event, now) }
 
     case 'tool-progress':
       return { state: { ...state, toolProgress: event.listContent } }
@@ -506,11 +509,11 @@ function closeThinkingSegments(items: readonly TranscriptItem[]): TranscriptItem
 }
 
 function closeSegment(item: TranscriptItem): TranscriptItem {
-  const { pending: _pending, ...closed } = item
+  const { pending: _pending, startedAt: _startedAt, ...closed } = item
   return closed
 }
 
-function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type: 'stream' }>['event']): TranscriptState {
+function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type: 'stream' }>['event'], now?: number): TranscriptState {
   switch (event.type) {
     case 'text_delta': {
       const fresh = indexOfItem(state.items, DRAFT_ID) === -1
@@ -529,9 +532,9 @@ function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type
       }
     }
     case 'thinking_delta':
-      return appendThinking(state, event.thinking)
+      return appendThinking(state, event.thinking, now)
     case 'thinking_stop':
-      return { ...state, isThinking: false }
+      return { ...state, isThinking: false, items: stampThinkingDuration(state, now) }
     case 'message_start':
       // One model request is one thinking segment (§4.2): a second request within
       // the turn — a tool round trip — closes the open segment and the next delta
@@ -592,7 +595,7 @@ function appendToLive(
  * A `transcript-reset` rebuilds the state, so the id cannot outlive the items it
  * points at.
  */
-function appendThinking(state: TranscriptState, text: string): TranscriptState {
+function appendThinking(state: TranscriptState, text: string, now?: number): TranscriptState {
   const index = state.liveThinkingId === undefined
     ? -1
     : indexOfItem(state.items, state.liveThinkingId)
@@ -608,6 +611,7 @@ function appendThinking(state: TranscriptState, text: string): TranscriptState {
         kind: 'thinking',
         text,
         pending: true,
+        ...(now === undefined ? {} : { startedAt: now }),
         ...(state.turnId === undefined ? {} : { turnId: state.turnId }),
       }],
     }
@@ -616,6 +620,20 @@ function appendThinking(state: TranscriptState, text: string): TranscriptState {
   const existing = items[index]!
   items[index] = { ...existing, text: existing.text + text }
   return { ...state, isThinking: true, items }
+}
+
+/**
+ * The open segment's elapsed time so far, rewritten at every `thinking_stop`: a
+ * request may reason in more than one block, and the segment spans them all.
+ */
+function stampThinkingDuration(state: TranscriptState, now: number | undefined): readonly TranscriptItem[] {
+  if (now === undefined || state.liveThinkingId === undefined) return state.items
+  const index = indexOfItem(state.items, state.liveThinkingId)
+  const open = index === -1 ? undefined : state.items[index]!
+  if (open?.startedAt === undefined) return state.items
+  const items = [...state.items]
+  items[index] = { ...open, durationMs: Math.max(0, now - open.startedAt) }
+  return items
 }
 
 function applyRecord(
@@ -664,7 +682,10 @@ function applyRecord(
       else {
         const committed = pending.splice(replayed, 1)[0]!
         presentationIds!.set(committed.id, state.presentationIds?.get(next[open]!.id) ?? next[open]!.id)
-        next[open] = committed
+        // The record knows the reasoning, not how long it took; only the live
+        // segment was there to time it.
+        const { durationMs } = next[open]!
+        next[open] = durationMs === undefined ? committed : { ...committed, durationMs }
       }
     }
     liveThinkingId = undefined
@@ -1050,7 +1071,11 @@ function mergeAdjacentThinking(items: readonly TranscriptItem[]): TranscriptItem
     const previous = item.kind === 'thinking' && item.pending !== true ? lastVisible(merged) : -1
     const target = previous === -1 ? undefined : merged[previous]!
     if (target && target.kind === 'thinking' && target.pending !== true && target.turnId === item.turnId) {
-      merged[previous] = { ...target, text: `${target.text}\n\n${item.text}` }
+      // A sum only when both were timed: half a measurement would understate it.
+      const { durationMs: _durationMs, ...rest } = target
+      merged[previous] = target.durationMs !== undefined && item.durationMs !== undefined
+        ? { ...rest, text: `${target.text}\n\n${item.text}`, durationMs: target.durationMs + item.durationMs }
+        : { ...rest, text: `${target.text}\n\n${item.text}` }
     } else {
       merged.push(item)
     }
@@ -1316,7 +1341,7 @@ function toStep(item: TranscriptItem): ActivityStep {
         id: item.id,
         text: item.text,
         ...(item.pending === true ? { pending: true } : {}),
-        ...(item.summary === undefined ? {} : { summary: item.summary }),
+        ...(item.durationMs === undefined ? {} : { durationMs: item.durationMs }),
       }
     case 'tool': {
       const tool = item.tool ?? { displayName: item.toolName ?? '', useSummary: '' }

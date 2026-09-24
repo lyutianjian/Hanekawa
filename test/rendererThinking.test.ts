@@ -13,7 +13,9 @@ import {
   isStepExpanded,
   pruneDisclosure,
   resolveDisclosure,
+  thinkingDurationLabel,
   thinkingHeaderLabel,
+  thinkingHeaderName,
   toggleDisclosure,
 } from '../src/desktop/renderer/model/thinking.js'
 import type { DisclosureState } from '../src/desktop/renderer/model/thinking.js'
@@ -31,28 +33,30 @@ import type {
  */
 
 const live = (id = 'thinking-0'): TranscriptItem => ({ id, kind: 'thinking', text: 'why', pending: true })
-const sealed = (summary?: string, id = 'thinking-0'): TranscriptItem => ({
-  id, kind: 'thinking', text: 'why', ...(summary ? { summary } : {}),
+const sealed = (durationMs?: number, id = 'thinking-0'): TranscriptItem => ({
+  id, kind: 'thinking', text: 'why', ...(durationMs === undefined ? {} : { durationMs }),
 })
 
-test('the header says what the block is doing', () => {
+test('the header says what the block is doing, and the time only once it is measured', () => {
   assert.equal(thinkingHeaderLabel(live()), THINKING_LIVE_LABEL)
-  assert.equal(thinkingHeaderLabel(sealed('已处理 7m 38s')), '已处理 7m 38s')
-  // An aborted turn seals the block without an elapsed time, and the header still
-  // has to name what it opens.
-  assert.equal(thinkingHeaderLabel(sealed()), THINKING_DONE_FALLBACK)
+  assert.equal(thinkingHeaderLabel(sealed(458_000)), THINKING_DONE_FALLBACK)
+  assert.equal(thinkingDurationLabel(sealed(458_000)), '7m 38s')
+  // A replayed block was never timed, and a live one has no total yet.
+  assert.equal(thinkingDurationLabel(sealed()), undefined)
+  assert.equal(thinkingDurationLabel({ ...live(), durationMs: 900 }), undefined)
+  assert.equal(thinkingHeaderName('思考过程', '12s'), '思考过程 · 用时 12s')
+  assert.equal(thinkingHeaderName('思考过程', undefined), '思考过程')
 })
 
-test('a block outside every group is open while it streams and closed once sealed', () => {
-  // No group means no 「current step」 to be, so this one keeps the static default.
-  assert.equal(isLooseThinkingExpanded(live()), true)
-  assert.equal(isLooseThinkingExpanded(sealed('已处理 1s')), false)
+test('a block outside every group folds to its preview, streaming or sealed', () => {
+  assert.equal(isLooseThinkingExpanded(live()), false)
+  assert.equal(isLooseThinkingExpanded(sealed(1000)), false)
 
-  // And the answer is absolute here too: closed by hand while streaming stays
-  // closed, and nothing about another block's id leaks across.
-  const state: DisclosureState = new Map([['thinking-0', false]])
-  assert.equal(isLooseThinkingExpanded(live(), state), false)
-  assert.equal(isLooseThinkingExpanded(live('thinking-1'), state), true)
+  // And the answer is absolute: opened by hand stays open, and nothing about
+  // another block's id leaks across.
+  const state: DisclosureState = new Map([['thinking-0', true]])
+  assert.equal(isLooseThinkingExpanded(live(), state), true)
+  assert.equal(isLooseThinkingExpanded(live('thinking-1'), state), false)
 })
 
 /**

@@ -11,7 +11,9 @@ import {
   isStepExpanded,
   resolveDisclosure,
   NO_DISCLOSURE,
+  thinkingDurationLabel,
   thinkingHeaderLabel,
+  thinkingHeaderName,
   STEP_COMPLETION_FALLBACK_MS,
   THINKING_DONE_FALLBACK,
   type DisclosureState,
@@ -979,8 +981,15 @@ function taskStep(painter: Painter, step: Extract<ActivityStep, { kind: 'task' }
  *
  * The hairline is the *live* row's status and only that: while the thought is
  * still arriving it runs from the label to the chevron with a sheen travelling
- * along it, and the moment the thought seals it is gone. A finished row is text
- * and a chevron, and the chevron only appears under the pointer.
+ * along it, and the moment the thought seals it is gone, leaving the time the
+ * model spent (when the live stream measured one) at the row's right end.
+ *
+ * The body is always drawn. Folded, it is a two-line preview of the thought's
+ * *opening* — stable while tokens arrive, so the row does not grow or scroll
+ * under the reader — cut with an ellipsis; open, it is the whole text, capped in
+ * height and scrolling inside itself like a tool's output. Clicking the preview
+ * opens it too; clicking open text does not fold it, or selecting a sentence
+ * would.
  *
  * The head is a **kept node**, which is what makes the sheen watchable. Its own
  * signature is the label, the disclosure and the live flag — none of which move
@@ -997,10 +1006,12 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
   // Fields rather than the step object: `toStep` mints a new one on every paint,
   // so an object identity would mean 「always different」 and no reuse at all. The
   // strings it carries *are* the item's own, so `===` still settles in one compare.
-  return painter.node(`step:${step.id}`, classes.join(' '), [step.text, step.summary, expanded], () => {
+  return painter.node(`step:${step.id}`, classes.join(' '), [step.text, step.durationMs, expanded], () => {
     // Not 「正在思考」 while live: inside a group the tail row already says that,
     // one line below, and the hairline is this head's own sign of life.
-    const label = live ? THINKING_DONE_FALLBACK : thinkingHeaderLabel(step)
+    const label = THINKING_DONE_FALLBACK
+    const duration = thinkingDurationLabel(step)
+    const name = thinkingHeaderName(label, duration)
     // The kept head outlives the paint that built it, so its click reads the
     // disclosure from the mutable ref rather than from a closed-over boolean.
     //
@@ -1013,22 +1024,48 @@ function thinkingStep(painter: Painter, step: Extract<ActivityStep, { kind: 'thi
     const head = painter.node(
       headKey,
       'step-head thinking-step-head',
-      [label, expanded, live],
+      [name, expanded, live],
       (node) => {
         // `button()` writes these at build time only, and this node outlives the
-        // label it was built with: 「正在思考」 seals to 「已处理 Xm Xs」.
-        node.title = label
-        node.setAttribute('aria-label', label)
+        // label it was built with: the time lands once the thought seals.
+        node.title = name
+        node.setAttribute('aria-label', name)
         node.setAttribute('aria-expanded', expanded ? 'true' : 'false')
-        return [el('span', 'btn-label', label), live ? rule() : undefined, icon('chevron-right')]
+        return [
+          el('span', 'btn-label', label),
+          icon('chevron-right'),
+          live ? rule() : duration === undefined ? undefined : quiet('step-duration', duration),
+        ]
       },
       () => button('step-head thinking-step-head', '', label, () => painter.onToggle(step.id, ref.expanded)),
     )
-    const body = painter.disclose(`thinking-body:${step.id}`, expanded, head, () => painter.node(`thinking-body:${step.id}`, 'step-body', [step.text], (node) => {
-      node.textContent = step.text
-      return [...node.childNodes]
-    }))
-    return [head, body]
+    return [head, thinkingText(painter, `thinking-body:${step.id}`, 'step-body', step.id, step.text, expanded, ref)]
+  })
+}
+
+/**
+ * The thought itself, shared by the step and the loose block: a preview while
+ * folded (CSS clamps it), the whole text while open. The node is kept across the
+ * fold so the toggle is a class change, not a rebuild.
+ */
+function thinkingText(
+  painter: Painter,
+  key: string,
+  base: string,
+  id: string,
+  text: string,
+  expanded: boolean,
+  ref: DisclosureRef,
+): HTMLElement {
+  return painter.node(key, `${base} thinking-text${expanded ? '' : ' preview'}`, [text], (node) => {
+    node.textContent = text
+    return [...node.childNodes]
+  }, () => {
+    const node = el('div', '')
+    node.addEventListener('click', () => {
+      if (!ref.expanded) painter.onToggle(id, false)
+    })
+    return node
   })
 }
 
@@ -1616,24 +1653,26 @@ function looseThinkingNode(
   // Driven by the item, never by `TranscriptState.isThinking`: that flag goes false
   // on `thinking_stop` while the block is still arriving.
   if (item.pending === true) classes.push('live')
-  return painter.node(key, classes.join(' '), [item.text, item.summary, expanded], () => {
+  return painter.node(key, classes.join(' '), [item.text, item.pending, item.durationMs, expanded], () => {
     const label = thinkingHeaderLabel(item)
-    // 「已处理 Xm Xs `⌵`」 (design_guidance 四.3): the glyph follows the label and
+    const duration = thinkingDurationLabel(item)
+    const name = thinkingHeaderName(label, duration)
+    // 「思考过程 `⌵` 12s」 (design_guidance 四.3): the glyph follows the label and
     // still flips to point up while the block is open — that rule matches on the
     // class, not on the position.
     const headKey = `loose-thinking-head:${item.id}`
     const ref = painter.ref(headKey, expanded)
-    const header = painter.node(headKey, 'thinking-header', [label, expanded], (node) => {
+    const header = painter.node(headKey, 'thinking-header', [name, expanded], (node) => {
       node.setAttribute('aria-expanded', String(expanded))
-      node.setAttribute('aria-label', label)
-      node.title = label
-      return [el('span', 'btn-label', label), icon('chevron-down')]
+      node.setAttribute('aria-label', name)
+      node.title = name
+      return [
+        el('span', 'btn-label', label),
+        icon('chevron-down'),
+        duration === undefined ? undefined : quiet('thinking-duration', duration),
+      ]
     }, () => button('thinking-header', '', label, () => painter.onToggle(item.id, ref.expanded)))
-    const body = painter.disclose(`loose-thinking-body:${item.id}`, expanded, header, () => painter.node(`loose-thinking-body:${item.id}`, 'thinking-body', [item.text], (node) => {
-      node.textContent = item.text
-      return [...node.childNodes]
-    }))
-    return [header, body]
+    return [header, thinkingText(painter, `loose-thinking-body:${item.id}`, 'thinking-body', item.id, item.text, expanded, ref)]
   })
 }
 

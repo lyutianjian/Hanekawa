@@ -33,7 +33,9 @@ import {
   formatSingleToolProgress,
   formatSubagentSpinnerProgress,
   formatToolProgress,
+  truncateMiddle,
 } from './toolProgress.js'
+import { getToolDisplay } from '../tools/display.js'
 import type { AgentSession } from './types.js'
 
 /**
@@ -52,8 +54,11 @@ export type SessionEvent =
   | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[] }
   /** A record reached the UI. `approvalToolUseId`/`subagentProgress` are the correlations the controller tracks. */
   | { type: 'record'; record: SessionRecord; approvalToolUseId?: string; subagentProgress?: string }
-  /** The set of in-flight tool calls changed. Spinner text itself lives on the snapshot. */
-  | { type: 'tool-progress'; listContent?: string }
+  /**
+   * The set of in-flight tool calls changed. Spinner text itself lives on the snapshot.
+   * `subagents` is what each foreground `Agent` call's run is doing, keyed by that call.
+   */
+  | { type: 'tool-progress'; listContent?: string; subagents?: SubagentActivity[] }
   /** Raw model stream event, forwarded untouched. */
   | { type: 'stream'; event: ModelStreamEvent }
   /** A one-off message to surface in the transcript. */
@@ -124,6 +129,16 @@ export interface SessionControllerDeps {
   createFileHistoryService?: (cwd: string, sessionId: string) => FileHistoryService
 }
 
+/** The latest tool a subagent run started, for the parent `Agent` call that owns the run. */
+export interface SubagentActivity {
+  /** The parent's `Agent` tool_use id. */
+  toolUseId: string
+  tool: string
+  summary: string
+  /** Tool calls the run has started so far. */
+  toolCount: number
+}
+
 /**
  * The headless half of a chat session: turn lifecycle, token accounting,
  * file history, tool-progress correlation and interrupt rollback.
@@ -145,6 +160,7 @@ export class SessionController {
   private readonly lastToolUseIdByTool = new Map<string, string>()
   private readonly activeToolProgress = new Map<string, ToolProgressEvent>()
   private readonly subagentProgress = new Map<string, string>()
+  private readonly subagentActivity = new Map<string, SubagentActivity>()
   private fileHistory: FileHistoryService
   /**
    * False until `init()` has replayed the log. Snapshots taken before that
@@ -372,6 +388,7 @@ export class SessionController {
       this.lastToolUseIdByTool.clear()
       this.activeToolProgress.clear()
       this.subagentProgress.clear()
+      this.subagentActivity.clear()
       this.streaming = false
       this.spinnerSubText = undefined
       this.publish()
@@ -416,6 +433,7 @@ export class SessionController {
     this.lastToolUseIdByTool.clear()
     this.activeToolProgress.clear()
     this.subagentProgress.clear()
+    this.subagentActivity.clear()
     this.usage = createEmptySessionUsage()
     this.usageAnchorRecordId = undefined
     this.ledger.rebase(records)
@@ -629,6 +647,7 @@ export class SessionController {
     } else if (record.type === 'tool_approval') {
       approvalToolUseId = this.lastToolUseIdByTool.get(record.tool)
     } else if (record.type === 'tool_result') {
+      this.subagentActivity.delete(record.toolUseId)
       if (record.display?.taskSnapshot) {
         this.taskSnapshot = record.display.taskSnapshot
         if (this.activeToolProgress.size === 0) this.spinnerSubText = undefined
@@ -652,6 +671,15 @@ export class SessionController {
       if (event.source?.type === 'subagent' && event.source.agentId) {
         this.subagentProgress.set(event.source.agentId, formatSingleToolProgress(event))
       }
+      const parentToolUseId = event.source?.parentToolUseId
+      if (parentToolUseId) {
+        this.subagentActivity.set(parentToolUseId, {
+          toolUseId: parentToolUseId,
+          tool: event.call.name,
+          summary: subagentStepSummary(event.call.name, event.call.input),
+          toolCount: (this.subagentActivity.get(parentToolUseId)?.toolCount ?? 0) + 1,
+        })
+      }
     } else {
       this.activeToolProgress.delete(event.call.id)
       if (event.source?.type === 'subagent' && event.source.agentId) {
@@ -671,6 +699,7 @@ export class SessionController {
     this.emit({
       type: 'tool-progress',
       ...(foregroundEvents.length > 1 && content !== undefined ? { listContent: content } : {}),
+      ...(this.subagentActivity.size > 0 ? { subagents: [...this.subagentActivity.values()] } : {}),
     })
   }
 
@@ -830,4 +859,15 @@ function debugFileHistory(message: string): void {
   if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
     console.error(`[hanekawa][file-history] ${message}`)
   }
+}
+
+/** One line naming what a subagent's tool call targets. Searches show the bare
+ * pattern: their shared summary spells out `pattern: "…"`, which is noise in a
+ * one-line progress caption. */
+function subagentStepSummary(tool: string, input: unknown): string {
+  if ((tool === 'Grep' || tool === 'Glob') && typeof input === 'object' && input !== null) {
+    const pattern = (input as { pattern?: unknown }).pattern
+    if (typeof pattern === 'string') return truncateMiddle(pattern, 80)
+  }
+  return getToolDisplay(tool, input).summary
 }

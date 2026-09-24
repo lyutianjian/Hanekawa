@@ -509,6 +509,37 @@ test('tool progress is state, not an item', () => {
   assert.deepEqual(state.items, [])
 })
 
+test('a running Agent step carries its sub-agent\'s latest tool until the result lands', () => {
+  const call: SessionRecord = {
+    type: 'tool_use', id: 'agent-call', tool: 'Agent', riskLevel: 'safe', createdAt: 'now',
+    input: { subagent_type: 'explore', description: 'look', task: 'look around' },
+  } as SessionRecord
+  let { state } = fold([
+    { type: 'record', record: call },
+    { type: 'tool-progress', subagents: [{ toolUseId: 'agent-call', tool: 'Read', summary: 'a.txt', toolCount: 1 }] },
+  ])
+  const step = state.items.find((item) => item.id === 'agent-call')
+  assert.equal(step?.tool?.displayName, '子代理')
+  assert.equal(step?.tool?.agentType, 'explore')
+  assert.deepEqual(step?.tool?.live, { tool: 'Read', summary: 'a.txt', toolCount: 1 })
+
+  // An unchanged set keeps the array, so a repaint costs nothing.
+  const same = fold([{ type: 'tool-progress', subagents: [{ toolUseId: 'agent-call', tool: 'Read', summary: 'a.txt', toolCount: 1 }] }], state).state
+  assert.equal(same.items, state.items)
+
+  state = fold([{ type: 'tool-progress' }], state).state
+  assert.equal(state.items.find((item) => item.id === 'agent-call')?.tool?.live, undefined)
+})
+
+test('the subagent summary appended for the model draws nothing', () => {
+  const { state } = fold([
+    { type: 'record', record: message('s1', 'assistant', '<subagent-summary type="general" agent_id="a1" tokens="12" />') },
+    { type: 'record', record: message('s2', 'assistant', '<subagent-summary type="explore">\n  <critical-file>a.ts</critical-file>\n</subagent-summary>') },
+  ])
+  assert.deepEqual(state.items, [])
+  assert.deepEqual(createTranscriptState([message('s1', 'assistant', '<subagent-summary type="general" />')]).items, [])
+})
+
 test('a failed turn still gets its duration line; an aborted one does not', () => {
   assert.equal(formatTurnSummary({ type: 'turn-end', aborted: false, rolledBack: false, durationMs: 1250 }), '已处理 1s')
   assert.equal(formatTurnSummary({ type: 'turn-end', aborted: true, rolledBack: false, durationMs: 1250 }), undefined)
@@ -1129,7 +1160,7 @@ test('a run record no call claims keeps a row of its own, without erroring', () 
   assert.equal(group.stepCount, 2)
   // The parent-less record is the standalone row it has always been.
   assert.equal(group.steps[0]!.kind, 'subagent')
-  assert.equal(group.steps[0]!.text, 'explore finished: 旧报告')
+  assert.equal(group.steps[0]!.text, '子代理 · explore 已完成：旧报告')
   // The unanswerable pointer paints as the family's own step: the run's facts,
   // with no call around them — its body is the report the record carries.
   const orphan = group.steps[1]!

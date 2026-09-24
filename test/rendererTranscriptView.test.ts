@@ -1365,6 +1365,41 @@ function agentStep(): TranscriptItem {
   }
 }
 
+test('a running Agent step says what its sub-agent is doing, even folded', (t) => {
+  const view = mount(t)
+  const running: TranscriptItem = {
+    id: 'agent-1',
+    kind: 'tool',
+    text: '子代理 扫一遍 tools/',
+    toolName: 'Agent',
+    turnId: 't1',
+    pending: true,
+    tool: {
+      displayName: '子代理',
+      useSummary: '扫一遍 tools/',
+      agentType: 'explore',
+      task: '找用法',
+      live: { tool: 'Read', summary: 'src/a.ts', toolCount: 3 },
+    },
+  }
+  view.render(transcript([running]), new Map([['t1', true], ['agent-1', false]]))
+
+  const step = groupOf(view).children[1]?.children[0]
+  const head = step?.children[0]
+  assert.deepEqual(
+    head?.children.slice(1).map((part) => [part.className, part.text]),
+    [
+      ['step-name', '子代理'],
+      ['step-tag', 'explore'],
+      ['step-summary', '扫一遍 tools/'],
+      ['step-suffix', '3 工具'],
+    ],
+  )
+  const live = step?.children[1]
+  assert.equal(live?.className, 'step-live')
+  assert.deepEqual(live?.children.map((part) => part.text), ['↳', 'Read', 'src/a.ts'])
+})
+
 test('an Agent step opens into its task and the sub-agent answer, with the run in the head', (t) => {
   const view = mount(t)
   view.render(transcript([agentStep()]), new Map([['t1', true], ['agent-1', true]]))

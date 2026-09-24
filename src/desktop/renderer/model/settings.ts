@@ -16,6 +16,7 @@ import {
 } from '../../shellProtocol.js'
 import { DEFAULT_THEME_PREFERENCE, THEME_PREFERENCES, type ThemePreference } from './theme.js'
 import { EFFORT_LABELS } from './composer.js'
+import { agentDescription } from './builtinLabels.js'
 import {
   VALID_EFFORT_LEVELS,
   normalizeSupportedEfforts,
@@ -1351,7 +1352,7 @@ const AGENT_PERMISSION_MODE_LABELS: Record<string, string> = {
 }
 
 function agentDetail(agent: WireAgentDefinitionInfo): string {
-  const parts = [agent.builtIn ? '内置' : '自定义', agent.description]
+  const parts = [agent.builtIn ? '内置' : '自定义', agentDescription(agent)]
   // Absent means every tool, which is the opposite of "no tools" — spelling it
   // out is the only way the row cannot be read backwards.
   parts.push(agent.tools ? `工具：${agent.tools.join('、')}` : '工具：全部')

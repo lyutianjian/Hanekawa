@@ -194,6 +194,7 @@ import {
 } from './model/imageViewer.js'
 import type { ImageViewerView } from './dom/imageViewerView.js'
 import type { ImageAttachmentRef } from '../../media/types.js'
+import { localizeCommands } from './model/builtinLabels.js'
 import {
   advanceTaskPanel,
   retireCompletedTaskPanel,
@@ -1808,7 +1809,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   async function refreshCommands(): Promise<void> {
     try {
-      commands = await client.listCommands()
+      commands = localizeCommands(await client.listCommands())
     } catch {
       // Completion is a convenience; losing it must not break the composer.
     }

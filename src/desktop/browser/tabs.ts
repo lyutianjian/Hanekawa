@@ -25,7 +25,7 @@
  *   a new document.
  */
 
-import { WebContentsView, session, type BaseWindow, type WebContents } from 'electron'
+import { WebContentsView, session, type BaseWindow, type Session, type WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { WireBrowserRect, WireBrowserTabInfo } from '../shellProtocol.js'
 import { BrowserHostError } from './errors.js'
@@ -57,6 +57,9 @@ export const AUTOMATION_WORLD_ID = 1001
 
 /** A new tab's bounds until the renderer has measured its hole. */
 const INITIAL_RECT: WireBrowserRect = { x: 0, y: 0, width: 1280, height: 720 }
+
+/** How many blocked downloads a tab remembers; older ones fall off the front. */
+const BLOCKED_DOWNLOADS_KEPT = 5
 
 /**
  * A tab, and the four things that make it addressable over time.
@@ -103,6 +106,8 @@ interface TabEntry {
   agentGeneration: number | undefined
   /** The icon of the page an agent navigation is leaving, for when it stays. */
   pendingFavicon: string | undefined
+  /** File names of downloads the page started and the host cancelled, oldest first. */
+  blockedDownloads: string[]
 }
 
 /**
@@ -130,6 +135,7 @@ export class BrowserTabHost {
   private window: BaseWindow | undefined
   private changePending = false
   private disposed = false
+  private sessionWired = false
 
   // --- window lifetime -------------------------------------------------------
 
@@ -179,6 +185,7 @@ export class BrowserTabHost {
       refusedUnload: undefined,
       agentGeneration: undefined,
       pendingFavicon: undefined,
+      blockedDownloads: [],
     }
     this.tabs.set(entry.tabId, entry)
     // The view is built eagerly rather than on first paint: a tab the agent
@@ -376,6 +383,7 @@ export class BrowserTabHost {
       if (entry.favicon !== undefined) info.favicon = entry.favicon
       if (entry.takenOver) info.takenOver = true
       if (entry.agentActive) info.agentActive = true
+      if (entry.blockedDownloads.length > 0) info.blockedDownloads = [...entry.blockedDownloads]
       return info
     })
   }
@@ -522,7 +530,7 @@ export class BrowserTabHost {
 
     const view = new WebContentsView({
       webPreferences: {
-        session: session.fromPartition(BROWSER_PARTITION),
+        session: this.browserSession(),
         // No `preload`. The three flags below are the usual hardening; the
         // absent fourth line is the one that actually keeps the automation
         // surface out of reach of the page.
@@ -541,15 +549,42 @@ export class BrowserTabHost {
     return view
   }
 
-  private wire(entry: TabEntry, contents: WebContents): void {
-    const alive = (): boolean => this.tabs.get(entry.tabId) === entry
+  /**
+   * The browser partition, with its session-wide handlers installed the first
+   * time a tab needs it. Lazily rather than in the constructor because the host
+   * is built before the app is ready, and a session cannot be touched until then.
+   * Once, because the handlers belong to the partition every tab shares.
+   */
+  private browserSession(): Session {
+    const ses = session.fromPartition(BROWSER_PARTITION)
+    if (this.sessionWired) return ses
+    this.sessionWired = true
 
-    // Permission requests are denied outright in this phase. A prompt queue is
-    // its own piece of work, and the honest interim behaviour is refusal: a
-    // silent grant would hand a model-chosen site the camera.
-    contents.session.setPermissionRequestHandler((_contents, _permission, callback) => {
+    // Permissions are denied outright in this phase. A prompt queue is its own
+    // piece of work, and the honest interim behaviour is refusal: a silent grant
+    // would hand a model-chosen site the camera. The check handler answers the
+    // synchronous questions (`navigator.permissions.query`) the same way.
+    ses.setPermissionRequestHandler((_contents, _permission, callback) => {
       callback(false)
     })
+    ses.setPermissionCheckHandler(() => false)
+
+    // A download would otherwise open the system save dialog or land silently
+    // in the default folder, and the agent would know about neither. It is
+    // cancelled, and the tab remembers the name so `get_state` can say so.
+    ses.on('will-download', (_event, item, contents) => {
+      item.cancel()
+      const entry = [...this.tabs.values()].find((candidate) => candidate.view?.webContents === contents)
+      if (entry === undefined) return
+      entry.blockedDownloads.push(item.getFilename())
+      if (entry.blockedDownloads.length > BLOCKED_DOWNLOADS_KEPT) entry.blockedDownloads.shift()
+      this.emitChange()
+    })
+    return ses
+  }
+
+  private wire(entry: TabEntry, contents: WebContents): void {
+    const alive = (): boolean => this.tabs.get(entry.tabId) === entry
 
     // A popup becomes a tab in the same lane rather than a window. `deny` is not
     // "block the link" — it is "do not let Chromium make a window", and the tab

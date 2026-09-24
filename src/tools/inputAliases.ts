@@ -123,8 +123,8 @@ const SPECS: Record<string, AliasSpec> = {
       key: 'keys',
     },
     arrays: ['keys'],
-    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount'],
-    booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit'],
+    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index'],
+    booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit', 'checked'],
   },
 }
 

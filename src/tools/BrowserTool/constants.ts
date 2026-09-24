@@ -22,6 +22,8 @@ export const BROWSER_OPERATIONS = [
   'page.click',
   'page.type',
   'page.press_key',
+  'page.select_option',
+  'page.set_checked',
   'page.scroll',
   'page.wait_for',
 ] as const
@@ -42,6 +44,8 @@ export const OPERATIONS_NEEDING_TAB: ReadonlySet<string> = new Set<BrowserOperat
   'page.click',
   'page.type',
   'page.press_key',
+  'page.select_option',
+  'page.set_checked',
   'page.scroll',
   'page.wait_for',
 ])
@@ -67,7 +71,12 @@ export const READ_ONLY_OPERATIONS: ReadonlySet<string> = new Set<BrowserOperatio
  * `validate.ts` say it instead — before the call reaches a page that would
  * refuse it with a less useful sentence.
  */
-export const OPERATIONS_NEEDING_TARGET: ReadonlySet<string> = new Set<BrowserOperation>(['page.click', 'page.type'])
+export const OPERATIONS_NEEDING_TARGET: ReadonlySet<string> = new Set<BrowserOperation>([
+  'page.click',
+  'page.type',
+  'page.select_option',
+  'page.set_checked',
+])
 
 /**
  * Restated from `desktop/browser/limits.ts` rather than imported: `src/tools/`

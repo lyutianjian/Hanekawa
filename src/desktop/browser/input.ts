@@ -22,8 +22,18 @@
  *   back through the transcript instead.
  */
 
-import type { GuardOptions, ScrollOptions, ScrollResult, TargetOptions, TargetResult } from './inject/bundle.js'
-import { guardScript, resolveScript, scrollScript, unwrap } from './inject/bundle.js'
+import type {
+  CheckStateOptions,
+  CheckStateResult,
+  GuardOptions,
+  ScrollOptions,
+  ScrollResult,
+  SelectOptions,
+  SelectResult,
+  TargetOptions,
+  TargetResult,
+} from './inject/bundle.js'
+import { checkStateScript, guardScript, resolveScript, scrollScript, selectScript, unwrap } from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
 import { describeKeys, isModifier, macCommand, MODIFIER_BITS, type KeyDescription } from './keys.js'
 import { FIELD_MAX_NAME, SCROLL_VIEWPORT_FRACTION, SENSITIVE_AUTOCOMPLETE, TYPE_TEXT_MAX } from './limits.js'
@@ -65,6 +75,20 @@ export interface PressKeyRequest {
   selector?: string
   /** One chord: pressed in order, released in reverse. */
   keys: string[]
+}
+
+export interface SelectRequest {
+  ref?: string
+  selector?: string
+  value?: string
+  label?: string
+  index?: number
+}
+
+export interface SetCheckedRequest {
+  ref?: string
+  selector?: string
+  checked: boolean
 }
 
 export interface ScrollRequest {
@@ -204,6 +228,74 @@ export function pressKeys(deps: InputDeps, request: PressKeyRequest): Promise<Ac
   })
 }
 
+export function selectOption(deps: InputDeps, request: SelectRequest): Promise<ActionResult> {
+  requireTarget(request)
+  const picks = [request.value !== undefined, request.label !== undefined, request.index !== undefined]
+  if (picks.filter(Boolean).length !== 1) {
+    throw new BrowserHostError('INVALID_REQUEST', 'page.select_option takes exactly one of "value", "label" or "index".')
+  }
+  return exclusive(deps, async () => {
+    const options: SelectOptions = { nameMax: FIELD_MAX_NAME, sensitiveWords: SENSITIVE_AUTOCOMPLETE }
+    if ((request.ref ?? '') !== '') options.ref = request.ref
+    else options.selector = request.selector
+    if (request.value !== undefined) options.value = request.value
+    if (request.label !== undefined) options.label = request.label
+    if (request.index !== undefined) options.index = request.index
+
+    deps.check()
+    const result = unwrap<SelectResult>(await deps.evaluate(selectScript(options)))
+    deps.check()
+
+    const picked = result.sensitive
+      ? `option ${result.index}`
+      : `option ${result.index} "${result.label}"${result.value !== '' && result.value !== result.label ? ` (value=${result.value})` : ''}`
+    return { text: `selected ${picked} in ${describe(result)}. ${where(result)}` }
+  })
+}
+
+/**
+ * Makes a checkbox, radio or switch say what was asked, by clicking it only
+ * when it does not already.
+ *
+ * The click is a real one, through the same hit test and guard as
+ * `page.click`, because a toggle's state is the page's to change — a script
+ * flipping `checked` would skip every handler that validates or syncs it. A
+ * native input styled out of sight is clicked through its visible label.
+ * The state is read again afterwards: a click the page ignored is reported,
+ * not claimed.
+ */
+export function setChecked(deps: InputDeps, request: SetCheckedRequest): Promise<ActionResult> {
+  requireTarget(request)
+  return exclusive(deps, async () => {
+    const before = await readCheckState(deps, request)
+    const word = request.checked ? 'checked' : 'unchecked'
+    const handle = (request.ref ?? '') !== '' ? request.ref : request.selector
+    const who = `${handle} (${before.role}${before.name === '' ? '' : ` "${before.name}"`})`
+    if (before.checked === request.checked) return { text: `${who} is already ${word}; nothing was clicked.` }
+    if (!request.checked && before.radio) {
+      throw new BrowserHostError(
+        'INVALID_REQUEST',
+        `${who} is a radio button, which cannot be unchecked directly. Select another option in its group instead.`,
+      )
+    }
+    if (before.disabled) throw new BrowserHostError('ELEMENT_NOT_INTERACTABLE', `${who} is disabled.`)
+
+    const target = await resolve(deps, request, { focus: false, requireEnabled: true, requireHit: true, viaLabel: true })
+    const at = await aim(deps, target)
+    await pressAt(deps, at, 'left', 1)
+
+    const after = await readCheckState(deps, request)
+    if (after.checked !== request.checked) {
+      throw new BrowserHostError(
+        'ELEMENT_NOT_INTERACTABLE',
+        `Clicked ${who} at (${at.x}, ${at.y}), but it is still ${after.checked ? 'checked' : 'unchecked'}. The page may require something else first — read it with a snapshot.`,
+      )
+    }
+    const via = target.role === 'label' ? ' through its label' : ''
+    return { text: `${word} ${who} by clicking${via} at (${at.x}, ${at.y}). ${where(target)}` }
+  })
+}
+
 export function scrollPage(deps: InputDeps, request: ScrollRequest): Promise<ActionResult> {
   return exclusive(deps, async () => {
     const options: ScrollOptions = {
@@ -226,17 +318,34 @@ export function scrollPage(deps: InputDeps, request: ScrollRequest): Promise<Act
 
 // --- internals ---------------------------------------------------------------
 
-async function resolve(
-  deps: InputDeps,
-  request: { ref?: string; selector?: string },
-  mode: { focus: boolean; requireEnabled: boolean; requireHit?: boolean; viaLabel?: boolean },
-): Promise<TargetResult> {
+function requireTarget(request: { ref?: string; selector?: string }): void {
   if ((request.ref ?? '') === '' && (request.selector ?? '') === '') {
     throw new BrowserHostError(
       'INVALID_REQUEST',
       'Name a "ref" from page.elements.snapshot, or a CSS "selector".',
     )
   }
+}
+
+async function readCheckState(
+  deps: InputDeps,
+  request: { ref?: string; selector?: string },
+): Promise<CheckStateResult> {
+  const options: CheckStateOptions = { nameMax: FIELD_MAX_NAME, sensitiveWords: SENSITIVE_AUTOCOMPLETE }
+  if ((request.ref ?? '') !== '') options.ref = request.ref
+  else options.selector = request.selector
+  deps.check()
+  const state = unwrap<CheckStateResult>(await deps.evaluate(checkStateScript(options)))
+  deps.check()
+  return state
+}
+
+async function resolve(
+  deps: InputDeps,
+  request: { ref?: string; selector?: string },
+  mode: { focus: boolean; requireEnabled: boolean; requireHit?: boolean; viaLabel?: boolean },
+): Promise<TargetResult> {
+  requireTarget(request)
   const options: TargetOptions = {
     nameMax: FIELD_MAX_NAME,
     sensitiveWords: SENSITIVE_AUTOCOMPLETE,
@@ -311,13 +420,13 @@ async function guard(
 }
 
 /** The element, as the transcript should remember it. Never its value. */
-function describe(target: TargetResult): string {
+function describe(target: { ref?: string; selector?: string; role: string; name: string; sensitive: boolean }): string {
   const handle = target.ref !== undefined ? target.ref : (target.selector ?? 'element')
   const name = target.sensitive || target.name === '' ? '' : ` "${target.name}"`
   return `${handle} (${target.role}${name})`
 }
 
-function where(target: TargetResult): string {
+function where(target: { url: string; title: string }): string {
   return `url=${target.url} title=${target.title}`
 }
 

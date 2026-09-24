@@ -21,6 +21,7 @@
 
 import {
   hkCheckCondition,
+  hkCheckState,
   hkContains,
   hkDeepActive,
   hkDeepHit,
@@ -30,11 +31,16 @@ import {
   hkQuery,
   hkResolveTarget,
   hkScrollPage,
+  hkSelectOption,
+  type CheckStateOptions,
+  type CheckStateResult,
   type ConditionOptions,
   type ConditionResult,
   type GuardOptions,
   type ScrollOptions,
   type ScrollResult,
+  type SelectOptions,
+  type SelectResult,
   type TargetOptions,
   type TargetResult,
 } from './actions.js'
@@ -100,6 +106,16 @@ export function resolveScript(options: TargetOptions): string {
 export function guardScript(options: GuardOptions): string {
   const call = `${hkGuardTarget.name}(document, globalThis, ${literal(options)})`
   return wrap([...SHARED, ...AIM, hkGuardTarget], call)
+}
+
+export function selectScript(options: SelectOptions): string {
+  const call = `${hkSelectOption.name}(document, window, globalThis, ${literal(options)})`
+  return wrap([...SHARED, hkFlag, hkQuery, hkFindTarget, hkSelectOption], call)
+}
+
+export function checkStateScript(options: CheckStateOptions): string {
+  const call = `${hkCheckState.name}(document, globalThis, ${literal(options)})`
+  return wrap([...SHARED, hkFlag, hkQuery, hkFindTarget, hkCheckState], call)
 }
 
 export function scrollScript(options: ScrollOptions): string {
@@ -170,6 +186,8 @@ function literal(value: unknown): string {
 }
 
 export type {
+  CheckStateOptions,
+  CheckStateResult,
   ConditionOptions,
   ConditionResult,
   ElementScanOptions,
@@ -177,6 +195,8 @@ export type {
   GuardOptions,
   ScrollOptions,
   ScrollResult,
+  SelectOptions,
+  SelectResult,
   TargetOptions,
   TargetResult,
   TextScanOptions,

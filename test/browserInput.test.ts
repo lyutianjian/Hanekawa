@@ -8,6 +8,8 @@ import {
   dispatchKeys,
   enqueueInput,
   pressKeys,
+  selectOption,
+  setChecked,
   isInputActive,
   scrollPage,
   typeText,
@@ -54,6 +56,8 @@ function harness(options: {
   cancelAt?: number
   /** The page's answer to a guard; a message makes it refuse. */
   guard?: () => string | undefined
+  /** Successive answers to a check-state read. */
+  checkStates?: Array<{ checked: boolean; radio?: boolean; disabled?: boolean }>
 } = {}): Harness {
   const sent: Sent[] = []
   const scripts: string[] = []
@@ -93,7 +97,23 @@ function harness(options: {
     },
     evaluate: async (script) => {
       scripts.push(script)
-      if (script.includes('hkGuardTarget(')) {
+      if (script.includes('hkCheckState(document')) {
+        const state = options.checkStates?.shift() ?? { checked: false }
+        return {
+          ok: true,
+          value: { role: 'checkbox', name: 'Remember me', radio: false, disabled: false, ...state },
+        }
+      }
+      if (script.includes('hkSelectOption(document')) {
+        return {
+          ok: true,
+          value: {
+            ref: 'e5', role: 'combobox', name: 'Country', sensitive: false,
+            index: 1, label: 'France', value: 'fr', url: 'https://x.test/', title: 'X',
+          },
+        }
+      }
+      if (script.includes('hkGuardTarget(document')) {
         const refusal = options.guard?.()
         return refusal === undefined ? { ok: true, value: true } : { ok: false, message: refusal }
       }
@@ -444,4 +464,55 @@ test('a key pressed on a target focuses it first, and a secret field never hears
   assert.doesNotMatch(secretResult.text, /X\+Y|Password/)
   // Named keys type nothing worth hiding.
   assert.match((await pressKeys(secret.deps, { ref: 'e3', keys: ['Enter'] })).text, /pressed Enter/)
+})
+
+// --- select_option and set_checked ---------------------------------------------
+
+test('set_checked on a box already in that state clicks nothing', async () => {
+  const { deps, sent } = harness({ checkStates: [{ checked: true }] })
+  const result = await setChecked(deps, { ref: 'e6', checked: true })
+  assert.deepEqual(sent, [])
+  assert.match(result.text, /e6 \(checkbox "Remember me"\) is already checked; nothing was clicked/)
+})
+
+test('set_checked clicks through the hit test and confirms the state flipped', async () => {
+  const { deps, sent, scripts } = harness({ checkStates: [{ checked: false }, { checked: true }] })
+  const result = await setChecked(deps, { ref: 'e6', checked: true })
+  assert.deepEqual(methods(sent), [
+    'Input.dispatchMouseEvent:mouseMoved',
+    'Input.dispatchMouseEvent:mousePressed',
+    'Input.dispatchMouseEvent:mouseReleased',
+  ])
+  const resolve = scripts.find((script) => script.includes('hkResolveTarget(document')) ?? ''
+  assert.match(resolve, /"requireHit":true/)
+  assert.match(resolve, /"viaLabel":true/)
+  assert.match(result.text, /^checked e6 \(checkbox "Remember me"\) by clicking at \(120, 241\)/)
+})
+
+test('set_checked reports a click the page ignored, and refuses to uncheck a radio', async () => {
+  const ignored = harness({ checkStates: [{ checked: false }, { checked: false }] })
+  await assert.rejects(
+    () => setChecked(ignored.deps, { ref: 'e6', checked: true }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'ELEMENT_NOT_INTERACTABLE' && /still unchecked/.test(error.message),
+  )
+
+  const radio = harness({ checkStates: [{ checked: true, radio: true }] })
+  await assert.rejects(
+    () => setChecked(radio.deps, { ref: 'e7', checked: false }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'INVALID_REQUEST' && /Select another option/.test(error.message),
+  )
+  assert.deepEqual(radio.sent, [])
+})
+
+test('select_option needs exactly one way to pick, and reports what it picked', async () => {
+  const { deps, scripts } = harness()
+  assert.throws(() => selectOption(deps, { ref: 'e5' }), /exactly one/)
+  assert.throws(() => selectOption(deps, { ref: 'e5', value: 'fr', index: 1 }), /exactly one/)
+  assert.deepEqual(scripts, [])
+
+  const result = await selectOption(deps, { ref: 'e5', label: 'France' })
+  assert.match(scripts[0] ?? '', /"label":"France"/)
+  assert.match(result.text, /selected option 1 "France" \(value=fr\) in e5 \(combobox "Country"\)/)
 })

@@ -77,6 +77,46 @@ export interface TargetResult {
   title: string
 }
 
+export interface SelectOptions {
+  ref?: string
+  selector?: string
+  /** Exactly one of the three picks the option. */
+  value?: string
+  label?: string
+  index?: number
+  nameMax: number
+  sensitiveWords: string[]
+}
+
+export interface SelectResult {
+  ref?: string
+  selector?: string
+  role: string
+  name: string
+  sensitive: boolean
+  index: number
+  label: string
+  value: string
+  url: string
+  title: string
+}
+
+export interface CheckStateOptions {
+  ref?: string
+  selector?: string
+  nameMax: number
+  sensitiveWords: string[]
+}
+
+export interface CheckStateResult {
+  role: string
+  name: string
+  checked: boolean
+  /** A radio cannot be unchecked by clicking it. */
+  radio: boolean
+  disabled: boolean
+}
+
 export interface ScrollOptions {
   ref?: string
   selector?: string
@@ -336,6 +376,131 @@ export function hkGuardTarget(doc: InjDocument, g: InjGlobal, opts: GuardOptions
     )
   }
   return true
+}
+
+/**
+ * Picks an option of a native `<select>` the way a user's pick lands.
+ *
+ * There is no real input that does this — a native dropdown's popup is drawn
+ * by the browser, outside the page, and CDP cannot reach into it. So the
+ * selection is set directly and announced with the same `input` and `change`
+ * a user's pick fires; a framework that listens for `change` (React included)
+ * sees an ordinary selection. A value the page resets in its handler is
+ * reported, not assumed.
+ */
+export function hkSelectOption(doc: InjDocument, win: InjWindow, g: InjGlobal, opts: SelectOptions): SelectResult {
+  const el = hkFindTarget(doc, g, opts.ref, opts.selector)
+  const label = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
+  const tag = hkTag(el)
+  if (tag !== 'select') {
+    throw new Error(
+      'UNSUPPORTED_ELEMENT: ' +
+        label +
+        ' is a <' +
+        tag +
+        '>, not a <select>. For a custom dropdown, page.click it to open the list, then page.click the option.',
+    )
+  }
+  if (hkProp(el, 'multiple') === true) {
+    throw new Error('UNSUPPORTED_ELEMENT: ' + label + ' is a multi-select, which page.select_option does not handle yet.')
+  }
+  if (hkFlag(el, 'disabled', 'aria-disabled')) {
+    throw new Error('ELEMENT_NOT_INTERACTABLE: ' + label + ' is disabled.')
+  }
+
+  const options = hkProp(el, 'options') as ArrayLike<InjElement> | null | undefined
+  const count = options === null || options === undefined ? 0 : options.length
+  const labelOf = (option: InjElement): string => {
+    const own = hkString(hkProp(option, 'label'))
+    return (own !== '' ? own : option.textContent === null ? '' : option.textContent).replace(/\s+/g, ' ').trim()
+  }
+  let index = -1
+  for (let i = 0; i < count && index === -1; i += 1) {
+    const option = (options as ArrayLike<InjElement>)[i]
+    if (option === undefined) continue
+    if (typeof opts.index === 'number') {
+      if (i === opts.index) index = i
+    } else if (opts.value !== undefined) {
+      if (hkString(hkProp(option, 'value')) === opts.value) index = i
+    } else if (opts.label !== undefined) {
+      if (labelOf(option) === opts.label.replace(/\s+/g, ' ').trim()) index = i
+    }
+  }
+  if (index === -1) {
+    const wanted =
+      typeof opts.index === 'number'
+        ? 'index ' + opts.index
+        : opts.value !== undefined
+          ? 'value "' + opts.value + '"'
+          : 'label "' + hkString(opts.label) + '"'
+    const sensitive = hkSensitive(el, opts.sensitiveWords)
+    const listed: string[] = []
+    for (let i = 0; i < count && i < 20 && !sensitive; i += 1) {
+      const option = (options as ArrayLike<InjElement>)[i]
+      if (option !== undefined) listed.push(i + ': "' + hkTrim(labelOf(option), 60) + '"')
+    }
+    const more = count > 20 ? ' …' : ''
+    throw new Error(
+      'INVALID_REQUEST: ' + label + ' has no option with ' + wanted + '.' +
+        (listed.length > 0 ? ' Its options: ' + listed.join(', ') + more : ''),
+    )
+  }
+
+  const option = (options as ArrayLike<InjElement>)[index] as InjElement
+  const group = option.parentElement
+  if (hkProp(option, 'disabled') === true || (group !== null && hkTag(group) === 'optgroup' && hkProp(group, 'disabled') === true)) {
+    throw new Error('ELEMENT_NOT_INTERACTABLE: option ' + index + ' of ' + label + ' is disabled.')
+  }
+
+  ;(el as unknown as Record<string, unknown>)['selectedIndex'] = index
+  el.dispatchEvent(new win.Event('input', { bubbles: true, composed: true }))
+  el.dispatchEvent(new win.Event('change', { bubbles: true, composed: true }))
+  if (hkProp(el, 'selectedIndex') !== index) {
+    throw new Error(
+      'ELEMENT_NOT_INTERACTABLE: ' + label + ' was set to option ' + index + ', but the page changed it back.',
+    )
+  }
+
+  const sensitive = hkSensitive(el, opts.sensitiveWords)
+  const result: SelectResult = {
+    role: hkRole(el),
+    name: hkName(el, doc, sensitive, opts.nameMax),
+    sensitive,
+    index,
+    label: sensitive ? '' : hkTrim(labelOf(option), opts.nameMax),
+    value: sensitive ? '' : hkTrim(hkString(hkProp(option, 'value')), opts.nameMax),
+    url: hkString(hkProp(doc as unknown as InjElement, 'URL')),
+    title: typeof doc.title === 'string' ? doc.title : '',
+  }
+  if (opts.ref !== undefined) result.ref = opts.ref
+  if (opts.selector !== undefined) result.selector = opts.selector
+  return result
+}
+
+/**
+ * Whether a checkbox, radio or switch is on: the `checked` property for the
+ * native ones, `aria-checked` for anything that declares the role.
+ */
+export function hkCheckState(doc: InjDocument, g: InjGlobal, opts: CheckStateOptions): CheckStateResult {
+  const el = hkFindTarget(doc, g, opts.ref, opts.selector)
+  const label = opts.ref !== undefined && opts.ref !== '' ? 'ref ' + opts.ref : 'selector ' + hkString(opts.selector)
+  const tag = hkTag(el)
+  const type = hkString(el.getAttribute('type')).toLowerCase()
+  const role = hkRole(el)
+  const sensitive = hkSensitive(el, opts.sensitiveWords)
+  const base = { role, name: hkName(el, doc, sensitive, opts.nameMax), disabled: hkFlag(el, 'disabled', 'aria-disabled') }
+
+  if (tag === 'input' && (type === 'checkbox' || type === 'radio')) {
+    return { ...base, checked: hkProp(el, 'checked') === true, radio: type === 'radio' }
+  }
+  const roles = ['checkbox', 'switch', 'radio', 'menuitemcheckbox', 'menuitemradio']
+  if (roles.indexOf(role) !== -1) {
+    const aria = hkString(el.getAttribute('aria-checked')).toLowerCase()
+    return { ...base, checked: aria === 'true', radio: role === 'radio' || role === 'menuitemradio' }
+  }
+  throw new Error(
+    'UNSUPPORTED_ELEMENT: ' + label + ' is a ' + role + ', not a checkbox, radio or switch. Use page.click to operate it.',
+  )
 }
 
 export function hkScrollPage(doc: InjDocument, win: InjWindow, g: InjGlobal, opts: ScrollOptions): ScrollResult {

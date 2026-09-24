@@ -26,6 +26,8 @@ import type {
   BrowserPressKeyRequest,
   BrowserScreenshot,
   BrowserScrollRequest,
+  BrowserSelectRequest,
+  BrowserSetCheckedRequest,
   BrowserSnapshot,
   BrowserTabState,
   BrowserTextRequest,
@@ -35,7 +37,15 @@ import type {
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpSender, pageEvaluator, requirePage } from './cdp.js'
 import { BrowserHostError } from './errors.js'
-import { clickTarget, pressKeys, scrollPage, typeText, type InputDeps } from './input.js'
+import {
+  clickTarget,
+  pressKeys,
+  scrollPage,
+  selectOption,
+  setChecked,
+  typeText,
+  type InputDeps,
+} from './input.js'
 import { SCREENSHOT_TIMEOUT_MS } from './limits.js'
 import { BrowserOwnership } from './ownership.js'
 import { BrowserProjection } from './projection.js'
@@ -220,6 +230,22 @@ export class DesktopBrowserHost implements BrowserHost {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
     return pressKeys(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return selectOption(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async setChecked(
+    caller: BrowserCaller,
+    tabId: string,
+    request: BrowserSetCheckedRequest,
+  ): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return setChecked(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult> {

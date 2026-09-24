@@ -10,17 +10,22 @@ import type {
   GuardOptions,
   ScrollOptions,
   ScrollResult,
+  SelectOptions,
+  SelectResult,
+  CheckStateResult,
   TargetOptions,
   TargetResult,
   TextScanOptions,
   TextScanResult,
 } from '../src/desktop/browser/inject/bundle.js'
 import {
+  checkStateScript,
   conditionScript,
   elementsScript,
   guardScript,
   resolveScript,
   scrollScript,
+  selectScript,
   textScript,
   unwrap,
 } from '../src/desktop/browser/inject/bundle.js'
@@ -254,8 +259,15 @@ function windowFor(): {
   scrollY: number
   scrollBy: (x: number, y: number) => void
   scrollTo: (x: number, y: number) => void
+  Event: new (type: string, init?: { bubbles?: boolean; composed?: boolean }) => { type: string }
 } {
   const win = {
+    Event: class {
+      constructor(
+        readonly type: string,
+        readonly init?: { bubbles?: boolean; composed?: boolean },
+      ) {}
+    },
     getComputedStyle: (node: StubElement) => node.style,
     innerWidth: 1280,
     innerHeight: 720,
@@ -828,4 +840,106 @@ test('focus inside an open shadow root counts as focus on the element that holds
   const sandbox: Record<string, unknown> = { document: documentFor(body, host), window: windowFor() }
   ;(host.shadowRoot as StubShadowRoot).activeElement = inner
   assert.equal(runResolve(sandbox, { selector: '#field' }).focused, true)
+})
+
+// --- select_option and set_checked ---------------------------------------------
+
+function runSelect(sandbox: Record<string, unknown>, overrides: Partial<SelectOptions>): SelectResult {
+  const options: SelectOptions = { nameMax: FIELD_MAX_NAME, sensitiveWords: SENSITIVE_AUTOCOMPLETE, ...overrides }
+  return unwrap<SelectResult>(serialize(vm.runInNewContext(selectScript(options), sandbox)))
+}
+
+function runCheckState(sandbox: Record<string, unknown>, selector: string): CheckStateResult {
+  const options = { selector, nameMax: FIELD_MAX_NAME, sensitiveWords: SENSITIVE_AUTOCOMPLETE }
+  return unwrap<CheckStateResult>(serialize(vm.runInNewContext(checkStateScript(options), sandbox)))
+}
+
+function selectFixture(): { select: StubElement; sandbox: Record<string, unknown> } {
+  const options = [
+    el('option', { props: { value: '' }, text: 'Choose…' }),
+    el('option', { props: { value: 'fr' }, text: '  France ' }),
+    el('option', { props: { value: 'de', disabled: true }, text: 'Germany' }),
+  ]
+  const closed = el('option', { props: { value: 'xx' }, text: 'Closed' })
+  const group = el('optgroup', { props: { disabled: true }, children: [closed] })
+  const select = el('select', {
+    attrs: { id: 'country', 'aria-label': 'Country' },
+    props: { options: [...options, closed], selectedIndex: 0 },
+    children: [...options, group],
+  })
+  const body = el('body', { children: [select, el('div', { attrs: { id: 'fake', role: 'combobox' } })] })
+  return { select, sandbox: { document: documentFor(body), window: windowFor() } }
+}
+
+test('select_option picks by value, label or index, and fires input then change', () => {
+  const { select, sandbox } = selectFixture()
+  const byLabel = runSelect(sandbox, { selector: '#country', label: 'France' })
+  assert.equal(byLabel.index, 1)
+  assert.equal(byLabel.label, 'France')
+  assert.equal(byLabel.value, 'fr')
+  assert.equal(byLabel.name, 'Country')
+  assert.equal((select as unknown as { selectedIndex: number }).selectedIndex, 1)
+  assert.deepEqual(select.dispatched, ['input', 'change'])
+
+  assert.equal(runSelect(sandbox, { selector: '#country', value: '' }).index, 0)
+  assert.equal(runSelect(sandbox, { selector: '#country', index: 1 }).value, 'fr')
+})
+
+test('select_option refuses what it cannot honestly select', () => {
+  const { select, sandbox } = selectFixture()
+  assert.throws(
+    () => runSelect(sandbox, { selector: '#fake', index: 0 }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'UNSUPPORTED_ELEMENT' && /page\.click it to open/.test(error.message),
+  )
+  assert.throws(() => runSelect(sandbox, { selector: '#country', value: 'de' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
+  assert.throws(() => runSelect(sandbox, { selector: '#country', value: 'xx' }), /option 3 .* is disabled/)
+  assert.throws(
+    () => runSelect(sandbox, { selector: '#country', label: 'Spain' }),
+    (error: unknown) =>
+      error instanceof BrowserHostError && error.code === 'INVALID_REQUEST' && /1: "France"/.test(error.message),
+  )
+
+  // A page that puts the old value back in its change handler is reported.
+  select.dispatchEvent = (event: { type: string }) => {
+    if (event.type === 'change') (select as unknown as { selectedIndex: number }).selectedIndex = 0
+    return true
+  }
+  assert.throws(() => runSelect(sandbox, { selector: '#country', index: 1 }), /changed it back/)
+
+  ;(select as unknown as { multiple: boolean }).multiple = true
+  assert.throws(() => runSelect(sandbox, { selector: '#country', index: 1 }), hasCode('UNSUPPORTED_ELEMENT'))
+})
+
+test('check state reads the property for native inputs and aria-checked for roles', () => {
+  const body = el('body', {
+    children: [
+      el('input', { attrs: { id: 'box', type: 'checkbox', 'aria-label': 'Remember me' }, props: { checked: true } }),
+      el('input', { attrs: { id: 'radio', type: 'radio' }, props: { checked: false } }),
+      el('div', { attrs: { id: 'switch', role: 'switch', 'aria-checked': 'false' }, text: 'Dark mode' }),
+      el('button', { attrs: { id: 'plain' }, text: 'Save' }),
+    ],
+  })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  assert.deepEqual(runCheckState(sandbox, '#box'), { role: 'checkbox', name: 'Remember me', disabled: false, checked: true, radio: false })
+  assert.equal(runCheckState(sandbox, '#radio').radio, true)
+  assert.equal(runCheckState(sandbox, '#switch').checked, false)
+  assert.throws(() => runCheckState(sandbox, '#plain'), hasCode('UNSUPPORTED_ELEMENT'))
+})
+
+test('a native checkbox styled out of sight is aimed at through its visible label', () => {
+  const label = el('label', { text: 'Accept terms', size: { width: 120, height: 20 }, at: { top: 40, left: 0 } })
+  const box = el('input', {
+    attrs: { id: 'terms', type: 'checkbox' },
+    style: { opacity: '0' },
+    props: { labels: [label] },
+  })
+  const body = el('body', { children: [box, label] })
+  const sandbox: Record<string, unknown> = { document: documentFor(body, null, () => label), window: windowFor() }
+
+  const target = runResolve(sandbox, { selector: '#terms', requireHit: true, viaLabel: true })
+  assert.equal(target.role, 'label')
+  assert.deepEqual([target.x, target.y], [60, 50])
+  // Without the flag the hidden input is simply not interactable.
+  assert.throws(() => runResolve(sandbox, { selector: '#terms' }), hasCode('ELEMENT_NOT_INTERACTABLE'))
 })

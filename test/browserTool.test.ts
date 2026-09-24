@@ -56,6 +56,8 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     click: record('click', { text: 'clicked e3 (button "Sign in") at (120, 240).' }),
     type: record('type', { text: 'typed 7 characters into e4 (textbox).' }),
     pressKey: record('pressKey', { text: 'pressed Escape on the focused element.' }),
+    selectOption: record('selectOption', { text: 'selected option 1 "France" in e5 (combobox "Country").' }),
+    setChecked: record('setChecked', { text: 'e6 (checkbox "Remember me") is already checked; nothing was clicked.' }),
     scroll: record('scroll', { text: 'scrolled down 648px: y=648 of 4000.' }),
     waitFor: record('waitFor', { text: '#done is visible.' }),
     ...overrides,
@@ -173,6 +175,32 @@ test('press_key passes its chord through, and takes a single key or a snake-case
   })
   assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't', keys: [] }).ok, false)
   assert.equal(validateBrowserInput({ operation: 'page.press_key', tabId: 't' }).ok, false)
+})
+
+test('select_option takes exactly one pick, and set_checked passes its state through', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const none = await run(tool, { operation: 'page.select_option', tabId: 'tab-1', ref: 'e5' })
+  assert.equal(none.ok, false)
+  assert.match(none.content, /exactly one of "value", "label" or "index"; this call had none/)
+  const two = await run(tool, { operation: 'page.select_option', tabId: 'tab-1', ref: 'e5', value: 'fr', index: 1 })
+  assert.match(two.content, /had "value" and "index"/)
+  const noTarget = await run(tool, { operation: 'page.set_checked', tabId: 'tab-1', checked: true })
+  assert.match(noTarget.content, /page\.set_checked needs an element/)
+  assert.deepEqual(calls, [])
+
+  await run(tool, { operation: 'page.select_option', tabId: 'tab-1', ref: 'e5', value: '' })
+  await run(tool, { operation: 'page.set_checked', tabId: 'tab-1', selector: '#tos', checked: false })
+  assert.deepEqual((calls as Call[]).map((call) => [call.method, call.args[2]]), [
+    ['selectOption', { ref: 'e5', value: '' }],
+    ['setChecked', { selector: '#tos', checked: false }],
+  ])
+  assert.deepEqual(normalizeToolInput('Browser', { operation: 'page.set_checked', checked: 'true', index: '2' }), {
+    operation: 'page.set_checked',
+    checked: true,
+    index: 2,
+  })
 })
 
 test('an action with no element, and a wait with no condition, are refused before the host', async () => {

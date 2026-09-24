@@ -120,6 +120,24 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('page.select_option'),
+      tabId,
+      ...target,
+      value: z.string().optional().describe('Pick the option whose value attribute is exactly this.'),
+      label: z.string().min(1).optional().describe('Pick the option whose visible label is this (surrounding spaces ignored).'),
+      index: z.number().int().min(0).optional().describe('Pick the option at this 0-based position.'),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('page.set_checked'),
+      tabId,
+      ...target,
+      checked: z.boolean().describe('true to check it, false to uncheck it.'),
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('page.scroll'),
       tabId,
       ...target,
@@ -171,17 +189,27 @@ export const browserApiInputSchema: JsonSchema = {
       description:
         'page.elements.snapshot: substring filter over name and text. page.type: the text to type. page.wait_for: the text to wait for.',
     },
-    ref: { type: 'string', description: 'page.click/type/press_key/scroll: a ref from the latest page.elements.snapshot.' },
+    ref: {
+      type: 'string',
+      description: 'page.click/type/press_key/select_option/set_checked/scroll: a ref from the latest page.elements.snapshot.',
+    },
     selector: {
       type: 'string',
       description:
-        'page.click/type/press_key/scroll: a CSS selector for the element. page.wait_for: the selector to wait for.',
+        'page.click/type/press_key/select_option/set_checked/scroll: a CSS selector for the element. page.wait_for: the selector to wait for.',
     },
     keys: {
       type: 'array',
       items: { type: 'string' },
       description: `page.press_key only: 1–${PRESS_KEYS_MAX} key names forming one chord, e.g. ["Escape"] or ["ControlOrMeta", "a"].`,
     },
+    value: {
+      type: 'string',
+      description: 'page.select_option only: the option\'s value attribute. (page.type takes "text", not "value".)',
+    },
+    label: { type: 'string', description: 'page.select_option only: the option\'s visible label.' },
+    index: { type: 'number', description: 'page.select_option only: the option\'s 0-based position.' },
+    checked: { type: 'boolean', description: 'page.set_checked only: the state to leave the control in.' },
     button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'page.click only. Default left.' },
     clickCount: { type: 'number', description: 'page.click only: 2 for a double click.' },
     clear: { type: 'boolean', description: 'page.type only: empty the field before typing.' },

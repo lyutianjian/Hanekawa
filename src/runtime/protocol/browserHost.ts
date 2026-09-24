@@ -92,6 +92,19 @@ export interface BrowserPressKeyRequest extends BrowserTarget {
   signal?: AbortSignal
 }
 
+/** Exactly one of `value`, `label` and `index`. */
+export interface BrowserSelectRequest extends BrowserTarget {
+  value?: string
+  label?: string
+  index?: number
+  signal?: AbortSignal
+}
+
+export interface BrowserSetCheckedRequest extends BrowserTarget {
+  checked: boolean
+  signal?: AbortSignal
+}
+
 export interface BrowserScrollRequest extends BrowserTarget {
   direction?: 'up' | 'down' | 'top' | 'bottom'
   amount?: number
@@ -159,6 +172,9 @@ export interface BrowserHost {
   click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult>
   type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult>
   pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult>
+  selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult>
+  /** Clicks only when the control is not already in the asked-for state. */
+  setChecked(caller: BrowserCaller, tabId: string, request: BrowserSetCheckedRequest): Promise<BrowserActionResult>
   scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult>
   /** Polls a condition about the page's contents, not about its load state. */
   waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult>

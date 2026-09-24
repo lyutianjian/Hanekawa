@@ -57,6 +57,7 @@ function errorCodeFor(failure: HostFailure): ToolResult['errorCode'] {
       return 'not_found'
     case 'INVALID_REQUEST':
     case 'OUTPUT_LIMIT':
+    case 'UNSUPPORTED_ELEMENT':
       return 'invalid_input'
     case 'PAGE_NOT_READY':
     case 'BROWSER_UNAVAILABLE':
@@ -143,6 +144,10 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return 'Typing into the page'
         case 'page.press_key':
           return 'Pressing keys'
+        case 'page.select_option':
+          return 'Choosing an option'
+        case 'page.set_checked':
+          return parsed.checked ? 'Checking a box' : 'Unchecking a box'
         case 'page.scroll':
           return 'Scrolling the page'
         case 'page.wait_for':
@@ -292,6 +297,24 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
         keys: input.keys,
       }, context))
       return actionResult(result, 'Pressed keys')
+    }
+    case 'page.select_option': {
+      const result = await host.selectOption(session, input.tabId, action({
+        ref: input.ref,
+        selector: input.selector,
+        value: input.value,
+        label: input.label,
+        index: input.index,
+      }, context))
+      return actionResult(result, 'Selected an option')
+    }
+    case 'page.set_checked': {
+      const result = await host.setChecked(session, input.tabId, action({
+        ref: input.ref,
+        selector: input.selector,
+        checked: input.checked,
+      }, context))
+      return actionResult(result, input.checked ? 'Checked' : 'Unchecked')
     }
     case 'page.scroll': {
       const result = await host.scroll(session, input.tabId, action({

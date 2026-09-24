@@ -65,6 +65,15 @@ function crossFieldRules(operation: string, input: Record<string, unknown>): Too
       'ref',
     )
   }
+  if (operation === 'page.select_option') {
+    const picks = ['value', 'label', 'index'].filter((key) => input[key] !== undefined)
+    if (picks.length !== 1) {
+      return fail(
+        `page.select_option takes exactly one of "value", "label" or "index"; this call had ${picks.length === 0 ? 'none' : picks.map((key) => `"${key}"`).join(' and ')}.`,
+        'value',
+      )
+    }
+  }
   if (operation === 'page.wait_for' && !has('selector') && !has('text')) {
     return fail('page.wait_for needs something to wait for: a CSS "selector", a "text", or both.', 'selector')
   }

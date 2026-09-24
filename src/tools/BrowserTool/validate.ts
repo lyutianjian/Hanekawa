@@ -21,6 +21,9 @@ const TAB_ID_REMEDY = 'Get tabId from browser.get_state or browser.create_tab.'
 
 const OPERATION_LIST = BROWSER_OPERATIONS.join(', ')
 
+/** What a cursor read honours; every other snapshot field was fixed when the snapshot was taken. */
+const CURSOR_FIELDS = new Set(['operation', 'tabId', 'cursor', 'maxChars'])
+
 function fail(message: string, path = 'operation'): ToolValidationResult {
   const error: ToolValidationError = { path, expected: 'valid Browser input', actual: 'invalid', message }
   return { ok: false, errors: [error] }
@@ -51,7 +54,8 @@ function describeFields(operation: string): string {
 }
 
 /**
- * The two rules a discriminated union cannot hold: "one of these two fields".
+ * The rules a discriminated union cannot hold: "one of these two fields", and
+ * "a cursor read takes no filters".
  *
  * They are checked after the schema rather than inside it because a `refine`
  * turns a branch into a `ZodEffects`, which `discriminatedUnion` will not take —
@@ -59,6 +63,15 @@ function describeFields(operation: string): string {
  */
 function crossFieldRules(operation: string, input: Record<string, unknown>): ToolValidationResult {
   const has = (key: string): boolean => typeof input[key] === 'string' && (input[key] as string) !== ''
+  if (has('cursor')) {
+    const ignored = Object.keys(input).filter((key) => input[key] !== undefined && !CURSOR_FIELDS.has(key))
+    if (ignored.length > 0) {
+      return fail(
+        `${operation} with "cursor" reads the snapshot already taken, so ${ignored.map((key) => `"${key}"`).join(', ')} would be ignored. To change the filters, drop "cursor" and scan again; to keep paging, pass only tabId, cursor and maxChars.`,
+        ignored[0],
+      )
+    }
+  }
   if (OPERATIONS_NEEDING_TARGET.has(operation) && !has('ref') && !has('selector')) {
     return fail(
       `${operation} needs an element: pass "ref" from a page.elements.snapshot row, or a CSS "selector".`,

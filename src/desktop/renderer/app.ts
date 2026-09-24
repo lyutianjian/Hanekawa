@@ -1416,6 +1416,10 @@ function ownedByTarget(event: KeyboardEvent): boolean {
 }
 
 document.addEventListener('keydown', (event) => {
+  // Mid-IME composition every key belongs to the input method: Enter commits the
+  // pinyin letters, Escape cancels them. 229 covers the commit keydown some
+  // platforms report with `isComposing` already false.
+  if (event.isComposing || event.keyCode === 229) return
   const chord = {
     key: event.key,
     shiftKey: event.shiftKey,

@@ -7,6 +7,7 @@ import {
   clickTarget,
   dispatchKeys,
   enqueueInput,
+  hoverTarget,
   pressKeys,
   selectOption,
   setChecked,
@@ -157,6 +158,20 @@ test('a click hovers before it presses, and lands on the rounded centre', async 
   assert.equal(sent[0]?.params['buttons'], 0)
   assert.match(result.text, /clicked e1 \(button "Sign in"\) at \(120, 241\)/)
   assert.match(result.text, /url=https:\/\/x\.test\//)
+})
+
+test('a hover resolves with the hit test, moves once, and presses nothing', async () => {
+  const { deps, sent, scripts } = harness()
+  const result = await hoverTarget(deps, { selector: '#menu' })
+
+  assert.deepEqual(methods(sent), ['Input.dispatchMouseEvent:mouseMoved'])
+  assert.equal(sent[0]?.params['buttons'], 0)
+  assert.deepEqual([sent[0]?.params['x'], sent[0]?.params['y']], [120, 241])
+  // One resolve, no guard: what the hover opens may well cover the point.
+  assert.equal(scripts.length, 1)
+  assert.match(scripts[0] ?? '', /"requireEnabled":false/)
+  assert.match(scripts[0] ?? '', /"requireHit":true/)
+  assert.match(result.text, /hovered over e1 \(button "Sign in"\) at \(120, 241\)/)
 })
 
 test('a right or double click says so, in the event and in the evidence', async () => {

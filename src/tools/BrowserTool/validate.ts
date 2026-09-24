@@ -13,7 +13,7 @@
  */
 
 import type { ToolValidationError, ToolValidationResult } from '../../harness/toolValidation.js'
-import { BROWSER_OPERATIONS, OPERATIONS_NEEDING_TARGET } from './constants.js'
+import { BROWSER_OPERATIONS, OPERATIONS_NEEDING_TARGET, WAIT_FOR_DEFAULT_MS } from './constants.js'
 import { browserInputSchema } from './schema.js'
 
 /** Where a `tabId` comes from. Repeated on purpose: it is the common mistake. */
@@ -23,6 +23,9 @@ const OPERATION_LIST = BROWSER_OPERATIONS.join(', ')
 
 /** What a cursor read honours; every other snapshot field was fixed when the snapshot was taken. */
 const CURSOR_FIELDS = new Set(['operation', 'tabId', 'cursor', 'maxChars'])
+
+/** `page.wait_for` states about one element's own state, which text cannot answer. */
+const ELEMENT_STATES = new Set(['enabled', 'disabled', 'checked', 'unchecked'])
 
 function fail(message: string, path = 'operation'): ToolValidationResult {
   const error: ToolValidationError = { path, expected: 'valid Browser input', actual: 'invalid', message }
@@ -92,6 +95,23 @@ function crossFieldRules(operation: string, input: Record<string, unknown>): Too
       'page.wait_for needs something to wait for: a CSS "selector", a "text", a "url", or a combination (all must hold).',
       'selector',
     )
+  }
+  if (operation === 'page.wait_for') {
+    const state = input['state']
+    if (typeof state === 'string' && ELEMENT_STATES.has(state) && (!has('selector') || has('text'))) {
+      return fail(
+        `page.wait_for with state "${state}" is about one element: pass a CSS "selector" and no "text".`,
+        has('text') ? 'text' : 'selector',
+      )
+    }
+    const stable = input['stableForMs']
+    const timeout = typeof input['timeoutMs'] === 'number' ? input['timeoutMs'] : WAIT_FOR_DEFAULT_MS
+    if (typeof stable === 'number' && stable >= timeout) {
+      return fail(
+        `page.wait_for: stableForMs (${stable}) must be shorter than timeoutMs (${timeout}), or the wait can never succeed.`,
+        'stableForMs',
+      )
+    }
   }
   return { ok: true, errors: [] }
 }

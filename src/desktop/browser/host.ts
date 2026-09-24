@@ -21,6 +21,8 @@ import type {
   BrowserCaller,
   BrowserClickRequest,
   BrowserElementsRequest,
+  BrowserHoverRequest,
+  BrowserLoadState,
   BrowserHistoryAction,
   BrowserHost,
   BrowserPressKeyRequest,
@@ -41,6 +43,7 @@ import { forgetRefsScript } from './inject/bundle.js'
 import {
   clickTarget,
   pressKeys,
+  hoverTarget,
   scrollPage,
   selectOption,
   setChecked,
@@ -168,9 +171,10 @@ export class DesktopBrowserHost implements BrowserHost {
   async waitForLoad(
     caller: BrowserCaller,
     tabId: string,
-    options: { timeoutMs: number; signal?: AbortSignal },
+    options: { timeoutMs: number; until?: BrowserLoadState; signal?: AbortSignal },
   ): Promise<BrowserTabState> {
     const revision = this.enter(caller)
+    const until = options.until ?? 'load'
     this.requireTab(caller, tabId)
     const check = this.guard(caller, revision, options.signal)
     // Monotonic: a clock adjustment mid-wait must not end it early or hang it.
@@ -192,10 +196,13 @@ export class DesktopBrowserHost implements BrowserHost {
         }
         return toState(row)
       }
+      // The DOM is parsed, and that is all a `domcontentloaded` wait asked:
+      // images, fonts and iframes may still be arriving.
+      if (until === 'domcontentloaded' && this.deps.tabs.pageFor(tabId)?.domReady === true) return toState(row)
       if (performance.now() > deadline) {
         throw new BrowserHostError(
           'WAIT_TIMEOUT',
-          `The page did not finish loading within ${options.timeoutMs}ms. Last seen: ${describe(row)}`,
+          `The page did not ${until === 'load' ? 'finish loading' : 'reach DOMContentLoaded'} within ${options.timeoutMs}ms. Last seen: ${describe(row)}`,
         )
       }
       await sleep(POLL_INTERVAL_MS)
@@ -274,6 +281,12 @@ export class DesktopBrowserHost implements BrowserHost {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
     return setChecked(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+  }
+
+  async hover(caller: BrowserCaller, tabId: string, request: BrowserHoverRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    return hoverTarget(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult> {

@@ -36,6 +36,7 @@ import {
   type CheckStateResult,
   type ConditionOptions,
   type ConditionResult,
+  type ConditionState,
   type GuardOptions,
   type ScrollOptions,
   type ScrollResult,
@@ -137,7 +138,7 @@ export function scrollScript(options: ScrollOptions): string {
 
 export function conditionScript(options: ConditionOptions): string {
   const call = `${hkCheckCondition.name}(document, window, ${literal(options)})`
-  return wrap([...SHARED, ...TEXT, hkQuery, hkCheckCondition], call)
+  return wrap([...SHARED, ...TEXT, hkFlag, hkQuery, hkCheckCondition], call)
 }
 
 /**
@@ -202,6 +203,7 @@ export type {
   CheckStateResult,
   ConditionOptions,
   ConditionResult,
+  ConditionState,
   ElementScanOptions,
   ElementScanResult,
   GuardOptions,

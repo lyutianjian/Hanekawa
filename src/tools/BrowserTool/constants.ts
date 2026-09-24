@@ -24,6 +24,7 @@ export const BROWSER_OPERATIONS = [
   'page.press_key',
   'page.select_option',
   'page.set_checked',
+  'page.hover',
   'page.scroll',
   'page.wait_for',
 ] as const
@@ -46,6 +47,7 @@ export const OPERATIONS_NEEDING_TAB: ReadonlySet<string> = new Set<BrowserOperat
   'page.press_key',
   'page.select_option',
   'page.set_checked',
+  'page.hover',
   'page.scroll',
   'page.wait_for',
 ])
@@ -76,6 +78,7 @@ export const OPERATIONS_NEEDING_TARGET: ReadonlySet<string> = new Set<BrowserOpe
   'page.type',
   'page.select_option',
   'page.set_checked',
+  'page.hover',
 ])
 
 /**

@@ -96,6 +96,11 @@ export interface SetCheckedRequest {
   checked: boolean
 }
 
+export interface HoverRequest {
+  ref?: string
+  selector?: string
+}
+
 export interface ScrollRequest {
   ref?: string
   selector?: string
@@ -300,6 +305,26 @@ export function setChecked(deps: InputDeps, request: SetCheckedRequest): Promise
     }
     const via = target.role === 'label' ? ' through its label' : ''
     return { text: `${word} ${who} by clicking${via} at (${at.x}, ${at.y}). ${where(target)}` }
+  })
+}
+
+/**
+ * Puts the pointer on the element and leaves it there, so a menu or tooltip
+ * that opens on `mouseover` opens.
+ *
+ * The same resolve and hit test as `page.click`, then one move and nothing
+ * else: no guard after it, because what the hover opens is expected to cover
+ * the point. A disabled element is still hovered — its tooltip is often the
+ * one explaining why.
+ */
+export function hoverTarget(deps: InputDeps, request: HoverRequest): Promise<ActionResult> {
+  return exclusive(deps, async () => {
+    const target = await resolve(deps, request, { focus: false, requireEnabled: false, requireHit: true })
+    const at = { x: Math.round(target.x), y: Math.round(target.y) }
+    deps.check()
+    await deps.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'none', buttons: 0 })
+    deps.check()
+    return { text: `hovered over ${describe(target)} at (${at.x}, ${at.y}). ${where(target)}` }
   })
 }
 

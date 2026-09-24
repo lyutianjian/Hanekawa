@@ -15,12 +15,14 @@
  *   error, so "the button never appeared" can be told apart from "the page was
  *   still showing a spinner" without a second round trip. Before the first
  *   observation lands it says so in as many words.
+ * - **`stableForMs` is continuous.** A poll that misses restarts the clock, and
+ *   so does a document swap: stability on the page being left says nothing.
  * - **A navigation mid-wait is evidence, not a failure.** The condition is about
  *   the document the tab ends up on; a document swap is noted in the answer and
  *   the wait continues, because refusing would leave the model with nothing.
  */
 
-import type { ConditionOptions, ConditionResult } from './inject/bundle.js'
+import type { ConditionOptions, ConditionResult, ConditionState } from './inject/bundle.js'
 import { conditionScript, unwrap } from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
 import {
@@ -36,7 +38,12 @@ export type UrlMatch = 'exact' | 'prefix' | 'contains'
 export interface WaitCondition {
   selector?: string
   text?: string
-  state?: 'visible' | 'hidden'
+  state?: ConditionState
+  /**
+   * The condition must hold on every poll for this long before the wait
+   * returns, so a page still animating or re-rendering is not caught mid-way.
+   */
+  stableForMs?: number
   /** The tab's committed URL, compared by `urlMatch` (default `prefix`). */
   url?: string
   urlMatch?: UrlMatch
@@ -67,15 +74,23 @@ export interface WaitOutcome {
 
 const NOT_OBSERVED = 'Not observed yet.'
 
+/** States about one element, which a text match cannot answer. */
+const ELEMENT_STATES: ReadonlySet<ConditionState> = new Set(['enabled', 'disabled', 'checked', 'unchecked'])
+
 export async function waitForCondition(deps: WaitDeps, condition: WaitCondition): Promise<WaitOutcome> {
   const wantsUrl = (condition.url ?? '') !== ''
   const wantsPage = (condition.selector ?? '') !== '' || (condition.text ?? '') !== ''
   if (!wantsUrl && !wantsPage) {
     throw new BrowserHostError('INVALID_REQUEST', 'page.wait_for needs a "selector", a "text" or a "url".')
   }
+  const state = condition.state ?? 'visible'
+  if (ELEMENT_STATES.has(state) && ((condition.selector ?? '') === '' || (condition.text ?? '') !== '')) {
+    throw new BrowserHostError('INVALID_REQUEST', `page.wait_for with state "${state}" needs a "selector" and no "text".`)
+  }
+  const stableForMs = Math.max(0, condition.stableForMs ?? 0)
   const urlMatch = condition.urlMatch ?? 'prefix'
   const options: ConditionOptions = {
-    state: condition.state ?? 'visible',
+    state,
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
@@ -91,6 +106,9 @@ export async function waitForCondition(deps: WaitDeps, condition: WaitCondition)
   const deadline = now() + deps.timeoutMs
   let lastObserved = NOT_OBSERVED
   let documentChanged = false
+  /** When the condition started holding without a break, or `undefined` while it does not. */
+  let heldSince: number | undefined
+  let heldGeneration: number | undefined
 
   for (;;) {
     deps.check()
@@ -123,15 +141,34 @@ export async function waitForCondition(deps: WaitDeps, condition: WaitCondition)
     if (deps.generation() !== startGeneration) documentChanged = true
 
     const note = documentChanged ? ' (the document changed while waiting)' : ''
+    let success: string | undefined
     if (!wantsPage && urlOk) {
-      return { text: `url ${describeUrlMatch(urlMatch)} ${condition.url}${note}. url=${urlSeen}` }
+      success = `url ${describeUrlMatch(urlMatch)} ${condition.url}${note}. url=${urlSeen}`
     }
     if (result !== undefined) {
       lastObserved = wantsUrl ? `url=${urlSeen}; ${result.observed}` : result.observed
       if (result.matched) {
         const prefix = wantsUrl ? `url ${describeUrlMatch(urlMatch)} ${condition.url}, and ` : ''
-        return { text: `${prefix}${result.observed}${note}. url=${result.url} title=${result.title}` }
+        success = `${prefix}${result.observed}${note}. url=${result.url} title=${result.title}`
       }
+    }
+
+    let waitMs = WAIT_POLL_INTERVAL_MS
+    if (success === undefined) {
+      heldSince = undefined
+    } else {
+      const generation = deps.generation()
+      const at = now()
+      if (heldSince === undefined || heldGeneration !== generation) {
+        heldSince = at
+        heldGeneration = generation
+      }
+      const held = at - heldSince
+      if (held >= stableForMs) {
+        return { text: stableForMs > 0 ? `${success} (held for ${Math.round(held)}ms)` : success }
+      }
+      lastObserved = `${lastObserved} (held ${Math.round(held)}ms of the ${stableForMs}ms asked for)`
+      waitMs = Math.min(waitMs, stableForMs - held)
     }
 
     if (now() >= deadline) {
@@ -143,7 +180,7 @@ export async function waitForCondition(deps: WaitDeps, condition: WaitCondition)
         { lastObserved },
       )
     }
-    await sleep(Math.min(WAIT_POLL_INTERVAL_MS, deps.timeoutMs))
+    await sleep(Math.max(1, Math.min(waitMs, deps.timeoutMs)))
   }
 }
 

@@ -671,6 +671,40 @@ test('a condition is about what is visible, and says what it saw', () => {
   assert.equal(runCondition(sandbox, { selector: '#status', text: 'Spinner' }).matched, false)
 })
 
+test('attached ignores rendering; enabled and checked read one element’s own state', () => {
+  const body = el('body', {
+    children: [
+      el('p', { attrs: { id: 'hint' }, text: 'Saved', style: { display: 'none' } }),
+      el('button', { attrs: { id: 'go' }, text: 'Go', props: { disabled: true } }),
+      el('button', { attrs: { id: 'aria', 'aria-disabled': 'true' }, text: 'Aria' }),
+      el('input', { attrs: { id: 'box', type: 'checkbox' }, props: { checked: true } }),
+      el('div', { attrs: { id: 'sw', role: 'switch', 'aria-checked': 'false' } }),
+    ],
+  })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+
+  assert.equal(runCondition(sandbox, { selector: '#hint' }).matched, false)
+  assert.equal(runCondition(sandbox, { selector: '#hint', state: 'attached' }).matched, true)
+  assert.equal(runCondition(sandbox, { selector: '#hint', state: 'detached' }).matched, false)
+  assert.equal(runCondition(sandbox, { selector: '#nope', state: 'detached' }).matched, true)
+  // Hidden text is still in the document.
+  assert.equal(runCondition(sandbox, { text: 'Saved', state: 'attached' }).matched, true)
+  assert.equal(runCondition(sandbox, { text: 'Saved', state: 'detached' }).matched, false)
+
+  const go = runCondition(sandbox, { selector: '#go', state: 'enabled' })
+  assert.equal(go.matched, false)
+  assert.match(go.observed, /#go is disabled/)
+  assert.equal(runCondition(sandbox, { selector: '#go', state: 'disabled' }).matched, true)
+  assert.equal(runCondition(sandbox, { selector: '#aria', state: 'disabled' }).matched, true)
+  // An element that is not there yet is neither.
+  assert.equal(runCondition(sandbox, { selector: '#nope', state: 'enabled' }).matched, false)
+  assert.equal(runCondition(sandbox, { selector: '#nope', state: 'disabled' }).matched, false)
+
+  assert.equal(runCondition(sandbox, { selector: '#box', state: 'checked' }).matched, true)
+  assert.equal(runCondition(sandbox, { selector: '#sw', state: 'unchecked' }).matched, true)
+  assert.throws(() => runCondition(sandbox, { selector: '#go', state: 'checked' }), hasCode('UNSUPPORTED_ELEMENT'))
+})
+
 test('a text that was not seen is only "hidden" when the whole page was looked at', () => {
   const body = el('body', { children: Array.from({ length: 20 }, (_, index) => el('p', { text: `Row ${index}` })) })
   const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }

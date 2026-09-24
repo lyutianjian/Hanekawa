@@ -56,6 +56,11 @@ const PAGES = {
 }
 
 const server = createServer((request, response) => {
+  if (request.url === '/report.csv') {
+    response.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="report 1.csv"' })
+    response.end('a,b\n1,2\n')
+    return
+  }
   const page = PAGES[new URL(request.url ?? '/', 'http://x').pathname]
   response.writeHead(page === undefined ? 404 : 200, { 'content-type': 'text/html; charset=utf-8' })
   response.end(page ?? 'not found')
@@ -242,10 +247,34 @@ async function run() {
   await settle()
   check('a keystroke mid-turn takes the tab over', rowOf()?.takenOver === true, JSON.stringify(rowOf()))
 
-  // K: a tab the panel is not showing is parked, still painting, so a
+  // K: permissions and downloads, answered once for the whole partition.
+  host.turnEnded(caller.sessionId)
+  const downloader = { sessionId: caller.sessionId, turnId: 'turn-4' }
+  const permission = await contents.executeJavaScript("navigator.permissions.query({ name: 'geolocation' }).then((status) => status.state)")
+  check('a permission check is answered denied', permission === 'denied', permission)
+  const second = await host.createTab(downloader, `${origin}/next`)
+  await host.waitForLoad(downloader, second.tabId, { timeoutMs: 10_000 })
+  const cancelled = new Promise((resolve) => {
+    tabs.pageFor(second.tabId).contents.session.once('will-download', (_event, item) => setImmediate(() => resolve(item.getState())))
+  })
+  await host.navigate(downloader, second.tabId, `${origin}/report.csv`)
+  const state = await Promise.race([cancelled, new Promise((resolve) => setTimeout(() => resolve('timeout'), 5000))])
+  check('a download is cancelled', state === 'cancelled', state)
+  const listed = (await host.listTabs(downloader)).find((entry) => entry.tabId === second.tabId)
+  check(
+    'get_state names the blocked download on its tab only',
+    JSON.stringify(listed?.blockedDownloads) === '["report 1.csv"]' &&
+      (await host.listTabs(downloader)).find((entry) => entry.tabId === tab.tabId)?.blockedDownloads === undefined,
+    JSON.stringify(listed),
+  )
+  check('the tab still shows the page it was on', listed?.url === `${origin}/next`, listed?.url)
+  const settled = await host.waitForLoad(downloader, second.tabId, { timeoutMs: 3000 }).then(() => 'none', (error) => error?.code ?? String(error))
+  check('wait_for_load after a download link does not hang', settled !== 'TIMEOUT', settled)
+
+  // L: a tab the panel is not showing is parked, still painting, so a
   // screenshot is of the page as it is now rather than the last shown frame.
   host.turnEnded(caller.sessionId)
-  const shooter = { sessionId: caller.sessionId, turnId: 'turn-4' }
+  const shooter = { sessionId: caller.sessionId, turnId: 'turn-5' }
   const centre = (shot) => {
     const image = nativeImage.createFromBuffer(shot.bytes)
     const { width, height } = image.getSize()

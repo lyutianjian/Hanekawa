@@ -450,6 +450,7 @@ function toState(row: WireBrowserTabInfo): BrowserTabState {
   const state: BrowserTabState = { tabId: row.tabId, url: row.url, title: row.title, loading: row.loading }
   if (row.error !== undefined) state.error = row.error
   if (row.takenOver === true) state.takenOver = true
+  if (row.blockedDownloads !== undefined) state.blockedDownloads = [...row.blockedDownloads]
   return state
 }
 

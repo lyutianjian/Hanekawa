@@ -91,18 +91,21 @@ test('a closing tab drops its snapshots', async () => {
   )
 })
 
-test('text segments page the same way', async () => {
+test('text blocks page the same way, one kind-and-text row each', async () => {
   const scan: TextScanResult = {
     url: 'https://x.test/',
     title: 'X',
-    segments: Array.from({ length: 500 }, (_, index) => `Paragraph ${index + 1} ${'word '.repeat(10)}`),
+    blocks: Array.from({ length: 500 }, (_, index) => ({
+      kind: 'text',
+      text: `Paragraph ${index + 1} ${'word '.repeat(10)}`,
+    })),
     truncated: false,
     scanned: 1500,
   }
   const projection = new BrowserProjection()
   const first = await projection.text(owner, evaluator(scan), {})
   assert.ok(first.cursor !== undefined)
-  assert.match(first.text, /^# text {2}url=https:\/\/x\.test\//)
+  assert.match(first.text, /^# text {2}url=https:\/\/x\.test\/.*\nkind\ttext\ntext\tParagraph 1 word/)
   const second = projection.read(owner, first.cursor as string)
   assert.ok(second.text.includes('Paragraph '))
 })

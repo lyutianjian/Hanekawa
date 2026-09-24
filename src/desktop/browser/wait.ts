@@ -23,7 +23,13 @@
 import type { ConditionOptions, ConditionResult } from './inject/bundle.js'
 import { conditionScript, unwrap } from './inject/bundle.js'
 import { BrowserHostError } from './errors.js'
-import { FIELD_MAX_TEXT, SCAN_BUDGET_MS, SCAN_MAX_NODES, WAIT_POLL_INTERVAL_MS } from './limits.js'
+import {
+  FIELD_MAX_TEXT,
+  SCAN_BUDGET_MS,
+  SCAN_MAX_NODES,
+  SENSITIVE_AUTOCOMPLETE,
+  WAIT_POLL_INTERVAL_MS,
+} from './limits.js'
 
 export interface WaitCondition {
   selector?: string
@@ -58,6 +64,7 @@ export async function waitForCondition(deps: WaitDeps, condition: WaitCondition)
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
   }
   if (condition.selector !== undefined) options.selector = condition.selector
   if (condition.text !== undefined) options.text = condition.text

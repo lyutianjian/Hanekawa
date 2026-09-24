@@ -13,9 +13,13 @@
 
 import { BrowserHostError } from './errors.js'
 import type { ElementRow } from './inject/elements.js'
+import type { TextBlock } from './inject/text.js'
 import { MAX_CHARS_MAX, MAX_CHARS_MIN, PAGE_OVERHEAD_RESERVE } from './limits.js'
 
 export const ELEMENT_COLUMNS = ['ref', 'role', 'name', 'text', 'value', 'href', 'flags'] as const
+
+/** `kind` is row/item/heading/text; a trailing `+` continues the line above. */
+export const TEXT_COLUMNS = ['kind', 'text'] as const
 
 /** Flag name by row key, in the order they are emitted. */
 const ELEMENT_FLAGS: ReadonlyArray<[keyof ElementRow, string]> = [
@@ -63,7 +67,11 @@ export function elementsHeader(head: SnapshotHeadline, total: number): string {
 }
 
 export function textHeader(head: SnapshotHeadline, total: number): string {
-  return metaLine('text', head, total)
+  return metaLine('text', head, total) + '\n' + TEXT_COLUMNS.join('\t')
+}
+
+export function renderTextBlock(block: TextBlock): string {
+  return block.kind + '\t' + block.text
 }
 
 function metaLine(kind: string, head: SnapshotHeadline, total: number): string {

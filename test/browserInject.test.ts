@@ -57,9 +57,14 @@ interface StubStyle {
   cursor: string
 }
 
-interface TextNode {
-  nodeType: 3
-  textContent: string
+class TextNode {
+  readonly nodeType = 3
+  parentElement: StubElement | null = null
+  root: { host?: StubElement } = {}
+  constructor(readonly textContent: string) {}
+  getRootNode(): { host?: StubElement } {
+    return this.parentElement === null ? this.root : this.parentElement.getRootNode()
+  }
 }
 
 interface ElementSpec {
@@ -67,12 +72,19 @@ interface ElementSpec {
   props?: Record<string, unknown>
   text?: string
   children?: StubElement[]
-  shadow?: StubElement[]
+  /** Mixed content in document order, for when text and elements interleave. */
+  nodes?: Array<string | StubElement>
+  shadow?: Array<string | StubElement>
+  /** A `<slot>`'s assigned nodes. */
+  assigned?: StubElement[]
   style?: Partial<StubStyle>
   size?: { width: number; height: number }
   /** Viewport position of the box. Absent means the top-left corner. */
   at?: { top: number; left: number }
 }
+
+/** The tags the stub lays out inline, as a browser's default stylesheet would. */
+const INLINE_TAGS = new Set(['a', 'b', 'i', 'em', 'strong', 'span', 'code', 'label', 'small', 'mark', 'slot'])
 
 interface StubShadowRoot {
   children: StubElement[]
@@ -98,24 +110,40 @@ class StubElement {
   owner: { activeElement: StubElement | null } | undefined
   private readonly size: { width: number; height: number }
   private readonly at: { top: number; left: number }
-  private root: { host?: StubElement } = {}
+  root: { host?: StubElement } = {}
+  assignedNodes?: () => StubElement[]
+  dispatched: string[] = []
 
   constructor(tag: string, spec: ElementSpec = {}) {
     this.tagName = tag.toUpperCase()
     this.attrs = { ...spec.attrs }
-    this.style = { display: 'block', visibility: 'visible', opacity: '1', cursor: 'auto', ...spec.style }
+    const display = INLINE_TAGS.has(tag) ? 'inline' : 'block'
+    this.style = { display, visibility: 'visible', opacity: '1', cursor: 'auto', ...spec.style }
     this.size = spec.size ?? { width: 100, height: 20 }
     this.at = spec.at ?? { top: 0, left: 0 }
     Object.assign(this, spec.props ?? {})
-    if (spec.text !== undefined) this.childNodes.push({ nodeType: 3, textContent: spec.text })
-    for (const child of spec.children ?? []) {
-      child.parentElement = this
-      this.children.push(child)
-      this.childNodes.push(child)
+    const content: Array<string | StubElement> = [
+      ...(spec.text !== undefined ? [spec.text] : []),
+      ...(spec.children ?? []),
+      ...(spec.nodes ?? []),
+    ]
+    for (const item of content) {
+      const node = typeof item === 'string' ? new TextNode(item) : item
+      node.parentElement = this
+      if (node instanceof StubElement) this.children.push(node)
+      this.childNodes.push(node)
     }
     if (spec.shadow !== undefined) {
-      for (const child of spec.shadow) child.root = { host: this }
-      this.shadowRoot = { children: spec.shadow, childNodes: spec.shadow }
+      const shadowNodes = spec.shadow.map((item) => (typeof item === 'string' ? new TextNode(item) : item))
+      for (const node of shadowNodes) node.root = { host: this }
+      this.shadowRoot = {
+        children: shadowNodes.filter((node): node is StubElement => node instanceof StubElement),
+        childNodes: shadowNodes,
+      }
+    }
+    if (spec.assigned !== undefined) {
+      const assigned = spec.assigned
+      this.assignedNodes = () => assigned
     }
   }
 
@@ -131,7 +159,12 @@ class StubElement {
   }
 
   getRootNode(): { host?: StubElement } {
-    return this.root
+    return this.parentElement === null ? this.root : this.parentElement.getRootNode()
+  }
+
+  dispatchEvent(event: { type: string }): boolean {
+    this.dispatched.push(event.type)
+    return true
   }
 
   getAttribute(name: string): string | null {
@@ -271,6 +304,7 @@ function runText(body: StubElement, overrides: Partial<TextScanOptions> = {}): T
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
     ...overrides,
   }
   const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
@@ -506,6 +540,7 @@ function runCondition(sandbox: Record<string, unknown>, overrides: Partial<Condi
     maxNodes: SCAN_MAX_NODES,
     budgetMs: SCAN_BUDGET_MS,
     segmentMax: FIELD_MAX_TEXT,
+    sensitiveWords: SENSITIVE_AUTOCOMPLETE,
     ...overrides,
   }
   return unwrap<ConditionResult>(serialize(vm.runInNewContext(conditionScript(options), sandbox)))
@@ -599,9 +634,21 @@ test('a condition is about what is visible, and says what it saw', () => {
   assert.match(missing.observed, /no element matches #nope/)
   assert.equal(runCondition(sandbox, { selector: '#nope', state: 'hidden' }).matched, true)
 
+  const split = documentFor(el('body', { children: [el('p', { nodes: ['Order ', el('b', { text: 'confirmed' })] })] }))
+  assert.equal(runCondition({ document: split, window: windowFor() }, { text: 'Order confirmed' }).matched, true)
+
   // A selector plus a text is a search inside that subtree.
   assert.equal(runCondition(sandbox, { selector: '#status', text: 'Loaded' }).matched, true)
   assert.equal(runCondition(sandbox, { selector: '#status', text: 'Spinner' }).matched, false)
+})
+
+test('a text that was not seen is only "hidden" when the whole page was looked at', () => {
+  const body = el('body', { children: Array.from({ length: 20 }, (_, index) => el('p', { text: `Row ${index}` })) })
+  const sandbox: Record<string, unknown> = { document: documentFor(body), window: windowFor() }
+  assert.equal(runCondition(sandbox, { text: 'Spinner', state: 'hidden' }).matched, true)
+  const cut = runCondition(sandbox, { text: 'Spinner', state: 'hidden', maxNodes: 5 })
+  assert.equal(cut.matched, false)
+  assert.match(cut.observed, /hit its budget/)
 })
 
 test('scrolling moves the window and reports where it stopped', () => {
@@ -626,17 +673,69 @@ test('scrolling moves the window and reports where it stopped', () => {
   assert.equal(far.scrolledIntoView, true)
 })
 
-test('text is gathered per owning element, and scripts never contribute', () => {
+test('text is grouped by block, in reading order, and scripts never contribute', () => {
   const body = el('body', {
     children: [
-      el('p', { children: [el('span', { text: 'Hello' }), el('span', { text: 'world' })], text: '' }),
+      el('p', { nodes: ['点击', el('a', { attrs: { href: '/x' }, text: '这里' }), '继续'] }),
+      el('p', { children: [el('span', { text: 'Hello' }), el('span', { text: 'world' })] }),
+      el('div', { children: [el('div', { text: 'one' }), el('div', { text: 'two' })] }),
+      el('p', { nodes: ['line', el('br'), 'break'] }),
       el('script', { text: 'console.log(1)' }),
       el('p', { text: 'Hidden', style: { display: 'none' } }),
     ],
   })
   const result = runText(body)
-  assert.deepEqual(result.segments, ['Hello', 'world'])
+  assert.deepEqual(result.blocks, [
+    { kind: 'text', text: '点击这里继续' },
+    // Two inline spans with no space between them draw as one word.
+    { kind: 'text', text: 'Helloworld' },
+    { kind: 'text', text: 'one' },
+    { kind: 'text', text: 'two' },
+    { kind: 'text', text: 'line break' },
+  ])
   assert.equal(result.title, 'Stub Page')
+})
+
+test('list items, headings and table rows say what they are', () => {
+  const body = el('body', {
+    children: [
+      el('h1', { nodes: ['Orders ', el('small', { text: '(3)' })] }),
+      el('ul', { children: [el('li', { children: [el('p', { text: 'first' }), el('p', { text: 'para' })] })] }),
+      el('table', {
+        children: [el('tr', { children: [el('td', { text: 'Widget' }), el('td', { text: '$4' })] })],
+      }),
+    ],
+  })
+  assert.deepEqual(runText(body).blocks, [
+    { kind: 'heading', text: 'Orders (3)' },
+    { kind: 'item', text: 'first para' },
+    { kind: 'row', text: 'Widget $4' },
+  ])
+})
+
+test('a long block is split across rows, never cut, and never through an emoji', () => {
+  // 9 characters then an emoji that straddles the 10-character boundary.
+  const body = el('body', { children: [el('p', { text: 'abcdefghi😀jklmnopqrstuvwxyz' })] })
+  const blocks = runText(body, { segmentMax: 10 }).blocks
+  assert.deepEqual(blocks.map((block) => block.kind), ['text', 'text+', 'text+'])
+  assert.equal(blocks[0]?.text, 'abcdefghi')
+  assert.equal(blocks[1]?.text, '😀jklmnopq')
+  assert.equal(blocks.map((block) => block.text).join(''), 'abcdefghi😀jklmnopqrstuvwxyz')
+})
+
+test('the text walk follows the rendered tree: shadow content once, slotted content in its slot', () => {
+  const slotted = el('span', { text: 'slotted' })
+  const body = el('body', {
+    children: [
+      el('my-card', {
+        children: [slotted],
+        shadow: [el('p', { nodes: ['before ', el('slot', { assigned: [slotted] }), ' after'] })],
+      }),
+      el('input', { attrs: { type: 'text' }, props: { value: 'typed' }, text: 'never' }),
+      el('div', { attrs: { autocomplete: 'one-time-code' }, text: '123456' }),
+    ],
+  })
+  assert.deepEqual(runText(body).blocks, [{ kind: 'text', text: 'before slotted after' }])
 })
 
 // --- aiming: the hit test and the guard ----------------------------------------

@@ -29,8 +29,6 @@ export interface InjStyle {
 export interface InjNode {
   readonly nodeType: number
   readonly textContent: string | null
-  /** `null` for a node whose parent is a shadow root rather than an element. */
-  readonly parentElement: InjElement | null
   getRootNode(): InjRoot
 }
 

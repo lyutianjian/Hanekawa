@@ -55,7 +55,7 @@ import {
   hkVisible,
   hkWalk,
 } from './semantics.js'
-import { hkCollectText, hkOwnText, type TextScanOptions, type TextScanResult } from './text.js'
+import { hkBlockOf, hkCollectText, hkTextBlocks, type TextScanOptions, type TextScanResult } from './text.js'
 import { BrowserHostError } from '../errors.js'
 
 const SHARED = [
@@ -74,6 +74,9 @@ const SHARED = [
   hkWalk,
 ]
 
+/** Text grouped by block, shared by the text snapshot and `wait_for`'s text match. */
+const TEXT = [hkBlockOf, hkTextBlocks]
+
 /** Hit testing and focus, through shadow roots. */
 const AIM = [hkDeepHit, hkContains, hkDeepActive, hkDescribe]
 
@@ -84,7 +87,7 @@ export function elementsScript(options: ElementScanOptions): string {
 
 export function textScript(options: TextScanOptions): string {
   const call = `${hkCollectText.name}(document, window, ${literal(options)})`
-  return wrap([...SHARED, hkOwnText, hkCollectText], call)
+  return wrap([...SHARED, ...TEXT, hkCollectText], call)
 }
 
 /** Where an element is, and whether it can be acted on at all. */
@@ -106,7 +109,7 @@ export function scrollScript(options: ScrollOptions): string {
 
 export function conditionScript(options: ConditionOptions): string {
   const call = `${hkCheckCondition.name}(document, window, ${literal(options)})`
-  return wrap([...SHARED, hkOwnText, hkQuery, hkCheckCondition], call)
+  return wrap([...SHARED, ...TEXT, hkQuery, hkCheckCondition], call)
 }
 
 /**

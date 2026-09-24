@@ -21,8 +21,8 @@
 
 import type { InjDocument, InjElement, InjGlobal, InjWindow } from './dom.js'
 import { hkFlag } from './elements.js'
-import { hkName, hkParent, hkProp, hkRole, hkSensitive, hkString, hkTag, hkTrim, hkVisible, hkWalk } from './semantics.js'
-import { hkOwnText } from './text.js'
+import { hkName, hkParent, hkProp, hkRole, hkSensitive, hkString, hkTag, hkTrim, hkVisible } from './semantics.js'
+import { hkTextBlocks, type TextBlock } from './text.js'
 
 export interface TargetOptions {
   /** A ref from the latest `page.elements.snapshot`. Wins over `selector`. */
@@ -105,6 +105,7 @@ export interface ConditionOptions {
   maxNodes: number
   budgetMs: number
   segmentMax: number
+  sensitiveWords: string[]
 }
 
 export interface ConditionResult {
@@ -395,21 +396,32 @@ export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: Conditi
     return answer(visible, visible ? where + ' is visible' : where + ' is present but not visible')
   }
 
-  // Text is matched against each element's *own* text for the reason the text
-  // collector does it: a container's `textContent` matches a phrase that is
-  // scattered across three unrelated children.
+  // Text is matched per block, the unit the text snapshot reads out: a phrase
+  // split across inline tags (`Order <b>confirmed</b>`) is found, while one
+  // scattered across unrelated blocks — which a container's `textContent`
+  // would happily match — is not.
   const lower = needle.toLowerCase()
   const state = { nodes: 0, maxNodes: opts.maxNodes, deadline: Date.now() + opts.budgetMs, truncated: false }
-  let hit = ''
-  hkWalk(root, state, (el) => {
-    const text = hkOwnText(el, opts.segmentMax)
-    if (text === '' || text.toLowerCase().indexOf(lower) === -1) return true
-    if (!hkVisible(el, win)) return true
-    hit = hkTrim(text, 160)
-    return false
+  const blocks = hkTextBlocks(root, win, state, {
+    visibleOnly: true,
+    maxBlocks: opts.maxNodes,
+    maxBlockChars: opts.segmentMax * 100,
+    sensitiveWords: opts.sensitiveWords,
   })
+  let hit = ''
+  for (let i = 0; i < blocks.length; i += 1) {
+    const text = (blocks[i] as TextBlock).text
+    if (text.toLowerCase().indexOf(lower) !== -1) {
+      hit = hkTrim(text, 160)
+      break
+    }
+  }
 
-  if (hit !== '') return answer(true, 'found "' + needle + '" in: ' + hit)
   const suffix = state.truncated ? ' (the scan hit its budget before finishing)' : ''
+  if (hit !== '') return answer(true, 'found "' + needle + '" in: ' + hit)
+  // "Not seen" only proves "hidden" if the whole subtree was looked at.
+  if (state.truncated && !wantVisible) {
+    return { matched: false, observed: '"' + needle + '" was not seen in ' + where + suffix, url, title }
+  }
   return answer(false, '"' + needle + '" is not visible in ' + where + suffix)
 }

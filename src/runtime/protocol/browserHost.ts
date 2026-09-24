@@ -44,8 +44,15 @@ export interface BrowserSnapshot {
 export interface BrowserScreenshot {
   bytes: Buffer
   name: string
+  /** The image's pixel size. */
   width: number
   height: number
+  /**
+   * The viewport the image shows, in CSS pixels, when the page answered; the
+   * space `page.click_at` takes. `width / cssWidth` is the capture's scale.
+   */
+  cssWidth?: number
+  cssHeight?: number
 }
 
 export interface BrowserElementsRequest {
@@ -54,6 +61,8 @@ export interface BrowserElementsRequest {
   text?: string
   interactiveOnly?: boolean
   visibleOnly?: boolean
+  /** Add a `bounds` column: each visible row's viewport box, `x,y,w,h` in CSS pixels. */
+  includeBounds?: boolean
   limit?: number
   maxChars?: number
 }
@@ -76,6 +85,15 @@ export interface BrowserTarget {
 }
 
 export interface BrowserClickRequest extends BrowserTarget {
+  button?: 'left' | 'right' | 'middle'
+  clickCount?: number
+  signal?: AbortSignal
+}
+
+/** A press at a viewport point in CSS pixels, with no element resolved or hit-tested. */
+export interface BrowserClickAtRequest {
+  x: number
+  y: number
   button?: 'left' | 'right' | 'middle'
   clickCount?: number
   signal?: AbortSignal
@@ -218,6 +236,8 @@ export interface BrowserHost {
   readSnapshot(caller: BrowserCaller, tabId: string, cursor: string, maxChars?: number): Promise<BrowserSnapshot>
   screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot>
   click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult>
+  /** A press at a viewport point; reports what it landed on rather than refusing a covered one. */
+  clickAt(caller: BrowserCaller, tabId: string, request: BrowserClickAtRequest): Promise<BrowserActionResult>
   type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult>
   pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult>
   selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult>

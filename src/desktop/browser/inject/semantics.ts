@@ -19,7 +19,7 @@
  * types, one place to change a word list.
  */
 
-import type { InjDocument, InjElement, InjNode, InjWindow } from './dom.js'
+import type { InjDocument, InjElement, InjNode, InjRect, InjWindow } from './dom.js'
 
 /** Reads a property the structural DOM types do not declare (`value`, `labels`, …). */
 export function hkProp(el: InjElement, name: string): unknown {
@@ -83,10 +83,10 @@ export function hkVisible(el: InjElement, win: InjWindow): boolean {
  *
  * Only the element's own box against the window: a node clipped by a scrolling
  * ancestor still counts as on screen, which is the cheap answer and the one a
- * scroll of the page itself can act on.
+ * scroll of the page itself can act on. Takes the rect rather than the element
+ * so the collector's one measurement also serves `includeBounds`.
  */
-export function hkOffscreen(el: InjElement, win: InjWindow): boolean {
-  const rect = el.getBoundingClientRect()
+export function hkOffscreen(rect: InjRect, win: InjWindow): boolean {
   return (
     rect.top + rect.height <= 0 ||
     rect.left + rect.width <= 0 ||

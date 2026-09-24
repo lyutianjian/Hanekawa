@@ -115,6 +115,7 @@ const SPECS: Record<string, AliasSpec> = {
       max_chars: 'maxChars',
       interactive_only: 'interactiveOnly',
       visible_only: 'visibleOnly',
+      include_bounds: 'includeBounds',
       // `selector` is a real parameter as of the input operations, so it is no
       // longer folded onto `scope`: the two mean different things now — what to
       // act on versus what to restrict a scan to.
@@ -146,12 +147,14 @@ const SPECS: Record<string, AliasSpec> = {
         refresh: 'tab.reload',
         'tab.refresh': 'tab.reload',
         hover: 'page.hover',
+        click_at: 'page.click_at',
+        'page.clickAt': 'page.click_at',
         emulate: 'tab.emulate',
       },
     },
     arrays: ['keys'],
-    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs', 'width', 'height', 'deviceScaleFactor'],
-    booleans: ['interactiveOnly', 'visibleOnly', 'clear', 'submit', 'checked', 'mobile', 'reset'],
+    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs', 'x', 'y', 'width', 'height', 'deviceScaleFactor'],
+    booleans: ['interactiveOnly', 'visibleOnly', 'includeBounds', 'clear', 'submit', 'checked', 'mobile', 'reset'],
   },
 }
 

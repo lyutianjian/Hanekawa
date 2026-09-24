@@ -137,6 +137,26 @@ export interface ScrollResult {
   title: string
 }
 
+export interface PointOptions {
+  /** Viewport coordinates in CSS pixels. */
+  x: number
+  y: number
+  sensitiveWords: string[]
+}
+
+export interface PointResult {
+  /** Whatever a press at the point lands on, as `hkDescribe` names it. */
+  hit: string
+  url: string
+  title: string
+}
+
+export interface ViewportResult {
+  /** `innerWidth`/`innerHeight`: the CSS-pixel size a screenshot's pixels map onto. */
+  width: number
+  height: number
+}
+
 /**
  * What a wait asks of its target. `visible`/`hidden` are about rendering,
  * `attached`/`detached` about the node existing at all, and the last four are
@@ -630,4 +650,30 @@ export function hkCheckCondition(doc: InjDocument, win: InjWindow, opts: Conditi
     return { matched: false, observed: '"' + needle + '" was not seen in ' + where + suffix, url, title }
   }
   return answer(false, '"' + needle + '" is not ' + (inDom ? 'in ' : 'visible in ') + where + suffix)
+}
+
+/** The layout viewport in CSS pixels, which is the space `page.click_at` takes. */
+export function hkViewport(win: InjWindow): ViewportResult {
+  return { width: win.innerWidth, height: win.innerHeight }
+}
+
+/**
+ * Names what a press at a bare point would land on, for `page.click_at`.
+ *
+ * No refusal for what is there — a coordinate click exists for canvases and
+ * maps, where "covered" means nothing — only for a point off the viewport,
+ * which a real press cannot reach.
+ */
+export function hkDescribePoint(doc: InjDocument, win: InjWindow, opts: PointOptions): PointResult {
+  if (opts.x < 0 || opts.y < 0 || opts.x >= win.innerWidth || opts.y >= win.innerHeight) {
+    throw new Error(
+      'INVALID_REQUEST: (' + opts.x + ', ' + opts.y + ') is outside the viewport, which is ' +
+        win.innerWidth + 'x' + win.innerHeight + ' CSS pixels. Coordinates are CSS pixels from the top-left of the visible area.',
+    )
+  }
+  return {
+    hit: hkDescribe(hkDeepHit(doc, opts.x, opts.y), doc, opts.sensitiveWords),
+    url: hkString(hkProp(doc as unknown as InjElement, 'URL')),
+    title: typeof doc.title === 'string' ? doc.title : '',
+  }
 }

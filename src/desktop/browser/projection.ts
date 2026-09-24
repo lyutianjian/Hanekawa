@@ -38,6 +38,7 @@ export interface ElementsRequest {
   text?: string
   interactiveOnly?: boolean
   visibleOnly?: boolean
+  includeBounds?: boolean
   limit?: number
   maxChars?: number
 }
@@ -81,11 +82,13 @@ export class BrowserProjection {
     if (request.scope !== undefined) options.scope = request.scope
     if (request.role !== undefined) options.role = request.role.toLowerCase()
     if (request.text !== undefined) options.text = request.text
+    const includeBounds = request.includeBounds === true
+    if (includeBounds) options.includeBounds = true
 
     const scan = unwrap<ElementScanResult>(await evaluate(elementsScript(options)))
     const head = { url: scan.url, title: scan.title, scanTruncated: scan.truncated }
-    const lines = scan.rows.map(renderElementRow)
-    const header = elementsHeader(head, lines.length)
+    const lines = scan.rows.map((row) => renderElementRow(row, includeBounds))
+    const header = elementsHeader(head, lines.length, includeBounds)
     return this.store(owner, 'elements', header, lines, scan.truncated, request.maxChars, clampLimit(request.limit))
   }
 

@@ -18,6 +18,9 @@ import { MAX_CHARS_MAX, MAX_CHARS_MIN, PAGE_OVERHEAD_RESERVE } from './limits.js
 
 export const ELEMENT_COLUMNS = ['ref', 'role', 'name', 'text', 'value', 'href', 'flags'] as const
 
+/** The column `includeBounds` appends: viewport `x,y,w,h` in CSS pixels, empty for a hidden row. */
+export const BOUNDS_COLUMN = 'bounds'
+
 /** `kind` is row/item/heading/text; a trailing `+` continues the line above. */
 export const TEXT_COLUMNS = ['kind', 'text'] as const
 
@@ -50,20 +53,22 @@ export function clampMaxChars(value: number | undefined, fallback: number): numb
  * links and buttons — the name *is* the text — and duplicating it doubles the
  * cost of the two widest columns.
  */
-export function renderElementRow(row: ElementRow): string {
+export function renderElementRow(row: ElementRow, includeBounds = false): string {
   const name = row.name ?? ''
   const text = row.text ?? ''
   const flags: string[] = []
   for (const [key, label] of ELEMENT_FLAGS) {
     if (row[key] === true) flags.push(label)
   }
-  return [row.ref, row.role, name, text === name ? '' : text, row.value ?? '', row.href ?? '', flags.join(' ')].join(
-    '\t',
-  )
+  const cells = [row.ref, row.role, name, text === name ? '' : text, row.value ?? '', row.href ?? '', flags.join(' ')]
+  if (includeBounds) cells.push(row.bounds === undefined ? '' : row.bounds.join(','))
+  return cells.join('\t')
 }
 
-export function elementsHeader(head: SnapshotHeadline, total: number): string {
-  return metaLine('elements', head, total) + '\n' + ELEMENT_COLUMNS.join('\t')
+export function elementsHeader(head: SnapshotHeadline, total: number, includeBounds = false): string {
+  const columns: string[] = [...ELEMENT_COLUMNS]
+  if (includeBounds) columns.push(BOUNDS_COLUMN)
+  return metaLine('elements', head, total) + '\n' + columns.join('\t')
 }
 
 export function textHeader(head: SnapshotHeadline, total: number): string {

@@ -43,7 +43,7 @@ export class CdpSession {
    * release a count taken after it: the loss zeroes the count, and a stale
    * release decrementing a newer lease's count would detach under it.
    */
-  private epoch = 0
+  private generation = 0
   private idle: NodeJS.Timeout | undefined
 
   constructor(
@@ -66,14 +66,23 @@ export class CdpSession {
   acquire(): () => void {
     this.cancelIdle()
     this.users++
-    const epoch = this.epoch
+    const epoch = this.generation
     let released = false
     return () => {
-      if (released || epoch !== this.epoch) return
+      if (released || epoch !== this.generation) return
       released = true
       this.users--
       if (this.users === 0) this.armIdle()
     }
+  }
+
+  /**
+   * Which attachment a lease taken now belongs to. It changes each time the
+   * attachment is lost, so a long-lived holder compares it to tell that its
+   * lease — and whatever state rode on the attachment — is gone.
+   */
+  get epoch(): number {
+    return this.generation
   }
 
   /** Whether the debugger is attached right now. For tests and diagnostics. */
@@ -112,7 +121,7 @@ export class CdpSession {
   private lost(): void {
     this.cancelIdle()
     this.users = 0
-    this.epoch++
+    this.generation++
   }
 
   private armIdle(): void {

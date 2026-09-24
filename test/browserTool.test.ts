@@ -64,6 +64,7 @@ function stubHost(overrides: Partial<BrowserHost> = {}): { host: BrowserHost; ca
     hover: record('hover', { text: 'hovered over e7 (button "Menu") at (40, 20).' }),
     scroll: record('scroll', { text: 'scrolled down 648px: y=648 of 4000.' }),
     waitFor: record('waitFor', { text: '#done is visible.' }),
+    emulate: record('emulate', { text: 'tab tab-1 now emulates iphone.' }),
     ...overrides,
   }
   return { host, calls }
@@ -196,6 +197,34 @@ test('hover, the richer wait states and wait_for_load until reach the host', asy
     tabId: 't',
     stableForMs: 200,
     until: 'load',
+  })
+})
+
+test('tab.emulate reaches the host, and refuses a half-specified device', async () => {
+  const { host, calls } = stubHost()
+  const tool = createBrowserTool(host)
+
+  const emulated = await run(tool, { operation: 'tab.emulate', tabId: 'tab-1', preset: 'iphone', userAgent: 'UA' })
+  await run(tool, { operation: 'tab.emulate', tabId: 'tab-1', width: 500, height: 700 })
+  await run(tool, { operation: 'tab.emulate', tabId: 'tab-1', reset: true })
+  assert.equal(emulated.content, 'tab tab-1 now emulates iphone.')
+  assert.deepEqual(calls.map((call) => call.args[2]), [
+    { preset: 'iphone', userAgent: 'UA' },
+    { width: 500, height: 700 },
+    { reset: true },
+  ])
+
+  const widthOnly = validateBrowserInput({ operation: 'tab.emulate', tabId: 't', width: 500 })
+  assert.equal(widthOnly.ok, false)
+  assert.match(widthOnly.errors[0]?.message ?? '', /needs a "preset".*both "width" and "height"/)
+  const resetPlus = validateBrowserInput({ operation: 'tab.emulate', tabId: 't', reset: true, preset: 'ipad' })
+  assert.equal(resetPlus.ok, false)
+  assert.match(resetPlus.errors[0]?.message ?? '', /takes nothing else; drop "preset"/)
+  assert.deepEqual(normalizeToolInput('Browser', { action: 'emulate', tab_id: 't', device: 'iphone', device_scale_factor: '2' }), {
+    operation: 'tab.emulate',
+    tabId: 't',
+    preset: 'iphone',
+    deviceScaleFactor: 2,
   })
 })
 

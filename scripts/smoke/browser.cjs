@@ -58,6 +58,11 @@ const PAGES = {
     <script>
       document.getElementById('pad').onclick = (e) => { document.title = 'pad ' + e.offsetX + ',' + e.offsetY }
     </script>`,
+  '/phone': `<!doctype html><title>Phone</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <div style="height:1500px">top</div>
+    <button id="tap" style="width:200px;height:40px" onclick="document.title = 'tapped'">tap</button>
+    <div style="height:1500px">bottom</div>`,
   '/hover': `<!doctype html><title>Hover</title>
     <div id="trigger" style="width:200px;height:40px;background:#ddd">menu</div>
     <ul id="menu" style="display:none"><li>Profile</li></ul>
@@ -389,6 +394,40 @@ async function run() {
   tabs.setBounds(tab.tabId, { x: 0, y: 0, width: 1000, height: 800 }, true)
   const shownAgain = await host.screenshot(shooter, tab.tabId).catch((error) => error)
   check('the tab captures again once shown', shownAgain?.bytes !== undefined && centre(shownAgain) === '0,255,0', shownAgain?.bytes ? centre(shownAgain) : shownAgain?.message)
+
+  // M: device emulation holds across a DevTools round trip and resets cleanly.
+  host.turnEnded(caller.sessionId)
+  const emulator = { sessionId: caller.sessionId, turnId: 'turn-6' }
+  await host.navigate(emulator, tab.tabId, `${origin}/phone`)
+  await host.waitForLoad(emulator, tab.tabId, { timeoutMs: 5000 })
+  const probe = () => contents.executeJavaScript('({ w: innerWidth, dpr: devicePixelRatio, ua: navigator.userAgent, touch: navigator.maxTouchPoints })')
+  const before = await probe()
+  const emulated = await host.emulate(emulator, tab.tabId, { preset: 'iphone' }).catch((error) => error)
+  const phone = await probe()
+  check('emulate reports the viewport the page now sees', /innerWidth=390\b/.test(emulated?.text ?? ''), emulated?.text ?? emulated?.message)
+  check('the iphone preset narrows the page and switches its user agent', phone.w === 390 && phone.dpr === 3 && /iPhone/.test(phone.ua) && phone.touch > 0, JSON.stringify(phone))
+  const phoneShot = await host.screenshot(emulator, tab.tabId).catch((error) => error)
+  check('a screenshot is of the emulated viewport', phoneShot?.width === 390 * 3 && phoneShot?.height === 844 * 3, `${phoneShot?.width}x${phoneShot?.height}`)
+  const phoneClick = await host.click(emulator, tab.tabId, { selector: '#tap' }).catch((error) => error)
+  await settle()
+  check('a click lands under emulation', rowOf()?.title === 'tapped', `${phoneClick?.text ?? phoneClick?.message} title=${rowOf()?.title}`)
+  const reopened = new Promise((resolve) => contents.once('devtools-opened', resolve))
+  contents.openDevTools({ mode: 'detach' })
+  await reopened
+  const reclosed = new Promise((resolve) => contents.once('devtools-closed', resolve))
+  contents.closeDevTools()
+  await reclosed
+  await host.elements(emulator, tab.tabId, {})
+  const restored = await probe()
+  check('the emulation comes back after DevTools took the debugger', restored.w === 390 && /iPhone/.test(restored.ua), JSON.stringify(restored))
+  await host.navigate(emulator, tab.tabId, `${origin}/smooth`)
+  await host.waitForLoad(emulator, tab.tabId, { timeoutMs: 5000 })
+  const wide = await host.click(emulator, tab.tabId, { selector: '#far' }).catch((error) => error)
+  await settle()
+  check('a click lands on a zoomed-out page with no meta viewport', rowOf()?.title === 'clicked', `${wide?.text ?? wide?.message} title=${rowOf()?.title}`)
+  const reset = await host.emulate(emulator, tab.tabId, { reset: true }).catch((error) => error)
+  const plain = await probe()
+  check('reset restores the real viewport and user agent', plain.w === before.w && plain.ua === before.ua && plain.dpr === before.dpr, `${reset?.text ?? reset?.message} ${JSON.stringify(plain)}`)
 
   host.dispose()
   tabs.dispose()

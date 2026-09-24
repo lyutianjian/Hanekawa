@@ -22,6 +22,7 @@ import type {
   BrowserClickAtRequest,
   BrowserClickRequest,
   BrowserElementsRequest,
+  BrowserEmulateRequest,
   BrowserHoverRequest,
   BrowserLoadState,
   BrowserHistoryAction,
@@ -39,6 +40,13 @@ import type {
 } from '../../runtime/protocol/browserHost.js'
 import type { WireBrowserTabInfo } from '../shellProtocol.js'
 import { cdpLease, cdpSender, pageEvaluator, requirePage } from './cdp.js'
+import {
+  applyEmulation,
+  describeEmulation,
+  resetEmulation,
+  resolveEmulation,
+  restoreEmulation,
+} from './emulation.js'
 import { BrowserHostError } from './errors.js'
 import { forgetRefsScript, unwrap, viewportScript, type ViewportResult } from './inject/bundle.js'
 import {
@@ -213,7 +221,7 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async elements(caller: BrowserCaller, tabId: string, request: BrowserElementsRequest): Promise<BrowserSnapshot> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     const snapshot = await this.projection.elements(ownerOf(page), pageEvaluator(page), request)
     // The page has live refs again, so the next idle touch has some to forget.
     this.forgotten.delete(tabId)
@@ -223,7 +231,7 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async text(caller: BrowserCaller, tabId: string, request: BrowserTextRequest): Promise<BrowserSnapshot> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     const snapshot = await this.projection.text(ownerOf(page), pageEvaluator(page), request)
     this.ownership.assertAllowed(caller.sessionId, revision)
     return snapshot
@@ -237,7 +245,7 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     // Through CDP first: `Page.captureScreenshot` asks the renderer for a fresh
     // frame, which a tab parked off the panel still produces — `capturePage()`
     // would hand back whatever the window compositor last drew instead. The
@@ -259,7 +267,7 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return clickTarget(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
@@ -271,19 +279,19 @@ export class DesktopBrowserHost implements BrowserHost {
 
   async type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return typeText(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async pressKey(caller: BrowserCaller, tabId: string, request: BrowserPressKeyRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return pressKeys(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async selectOption(caller: BrowserCaller, tabId: string, request: BrowserSelectRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return selectOption(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
@@ -293,19 +301,19 @@ export class DesktopBrowserHost implements BrowserHost {
     request: BrowserSetCheckedRequest,
   ): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return setChecked(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async hover(caller: BrowserCaller, tabId: string, request: BrowserHoverRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return hoverTarget(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
   async scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
-    const page = this.requirePage(caller, tabId)
+    const page = await this.emulatedPage(caller, tabId)
     return scrollPage(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
   }
 
@@ -315,7 +323,7 @@ export class DesktopBrowserHost implements BrowserHost {
     // is exactly when there is no ready document to insist on.
     const urlOnly = (request.selector ?? '') === '' && (request.text ?? '') === ''
     if (urlOnly) this.requireTab(caller, tabId)
-    else this.requirePage(caller, tabId)
+    else await this.emulatedPage(caller, tabId)
     const deps = {
       // Resolved per poll, like everything below: the page a wait started on
       // is not necessarily the one it ends on.
@@ -335,6 +343,27 @@ export class DesktopBrowserHost implements BrowserHost {
       ...(request.signal ? { signal: request.signal } : {}),
     }
     return waitForCondition(deps, request)
+  }
+
+  async emulate(caller: BrowserCaller, tabId: string, request: BrowserEmulateRequest): Promise<BrowserActionResult> {
+    const revision = this.enter(caller)
+    const page = this.requirePage(caller, tabId)
+    const check = this.guard(caller, revision, request.signal)
+    check()
+    if (request.reset === true) {
+      const had = await resetEmulation(page.contents)
+      check()
+      return { text: had ? `tab ${tabId} emulates nothing now; ${await viewportOf(page)}.` : `tab ${tabId} was not emulating a device.` }
+    }
+    const settings = resolveEmulation(request)
+    await applyEmulation(page.contents, settings)
+    // Whatever the tab showed was laid out for the old viewport.
+    this.projection.dropTab(tabId)
+    check()
+    const label = request.preset === undefined ? '' : `${request.preset} `
+    return {
+      text: `tab ${tabId} now emulates ${label}(${describeEmulation(settings)}); ${await viewportOf(page)}. It lasts until reset or the tab closes. The page was not reloaded; tab.reload it for a layout built for this device from the start.`,
+    }
   }
 
   // --- internals -------------------------------------------------------------
@@ -462,6 +491,17 @@ export class DesktopBrowserHost implements BrowserHost {
     return requirePage(this.deps.tabs.pageFor(tabId), tabId)
   }
 
+  /**
+   * `requirePage`, with the tab's device emulation put back first if DevTools
+   * or a lost renderer took it: what the operation reads or presses has to be
+   * the page at the size the model asked for.
+   */
+  private async emulatedPage(caller: BrowserCaller, tabId: string): Promise<BrowserPage> {
+    const page = this.requirePage(caller, tabId)
+    await restoreEmulation(page.contents)
+    return page
+  }
+
   private rowFor(tabId: string): WireBrowserTabInfo | undefined {
     return this.deps.tabs.describe().find((tab) => tab.tabId === tabId)
   }
@@ -570,5 +610,19 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | unde
     ])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+/** The viewport as the page itself reports it, as evidence the override took. */
+async function viewportOf(page: BrowserPage): Promise<string> {
+  try {
+    const size = (await pageEvaluator(page)('({ w: innerWidth, h: innerHeight, dpr: devicePixelRatio })')) as {
+      w: number
+      h: number
+      dpr: number
+    }
+    return `the page reports innerWidth=${size.w}, innerHeight=${size.h}, devicePixelRatio=${size.dpr}`
+  } catch {
+    return 'the page could not report its viewport'
   }
 }

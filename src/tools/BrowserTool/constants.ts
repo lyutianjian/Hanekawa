@@ -16,6 +16,7 @@ export const BROWSER_OPERATIONS = [
   'tab.go_forward',
   'tab.reload',
   'tab.wait_for_load',
+  'tab.emulate',
   'page.elements.snapshot',
   'page.text.snapshot',
   'page.screenshot',
@@ -40,6 +41,7 @@ export const OPERATIONS_NEEDING_TAB: ReadonlySet<string> = new Set<BrowserOperat
   'tab.go_forward',
   'tab.reload',
   'tab.wait_for_load',
+  'tab.emulate',
   'page.elements.snapshot',
   'page.text.snapshot',
   'page.screenshot',
@@ -95,3 +97,7 @@ export const WAIT_FOR_DEFAULT_MS = 10_000
 export const WAIT_FOR_MAX_MS = 30_000
 export const TYPE_TEXT_MAX = 10_000
 export const PRESS_KEYS_MAX = 8
+/** Emulated viewport bounds, in CSS pixels, and the pixel ratio's. */
+export const EMULATE_SIZE_MIN = 100
+export const EMULATE_SIZE_MAX = 4000
+export const EMULATE_SCALE_MAX = 4

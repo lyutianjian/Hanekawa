@@ -129,6 +129,9 @@ const SPECS: Record<string, AliasSpec> = {
       // Playwright's name for the load state a navigation waits on.
       waitUntil: 'until',
       wait_until: 'until',
+      device_scale_factor: 'deviceScaleFactor',
+      user_agent: 'userAgent',
+      device: 'preset',
     },
     // Operation names the model brings from other browser tools, which have
     // no `tab.` namespace.
@@ -146,11 +149,12 @@ const SPECS: Record<string, AliasSpec> = {
         hover: 'page.hover',
         click_at: 'page.click_at',
         'page.clickAt': 'page.click_at',
+        emulate: 'tab.emulate',
       },
     },
     arrays: ['keys'],
-    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs', 'x', 'y'],
-    booleans: ['interactiveOnly', 'visibleOnly', 'includeBounds', 'clear', 'submit', 'checked'],
+    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs', 'x', 'y', 'width', 'height', 'deviceScaleFactor'],
+    booleans: ['interactiveOnly', 'visibleOnly', 'includeBounds', 'clear', 'submit', 'checked', 'mobile', 'reset'],
   },
 }
 

@@ -167,6 +167,24 @@ export interface BrowserWaitRequest {
   signal?: AbortSignal
 }
 
+export type BrowserEmulatePreset = 'iphone' | 'ipad' | 'desktop'
+
+/**
+ * A device for the tab to pretend to be: a preset, with any explicit field
+ * laid over it, or explicit `width` and `height`. `reset` clears it and takes
+ * nothing else.
+ */
+export interface BrowserEmulateRequest {
+  preset?: BrowserEmulatePreset
+  width?: number
+  height?: number
+  deviceScaleFactor?: number
+  mobile?: boolean
+  userAgent?: string
+  reset?: boolean
+  signal?: AbortSignal
+}
+
 /**
  * What an action did, in one line the transcript keeps.
  *
@@ -230,4 +248,6 @@ export interface BrowserHost {
   scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult>
   /** Polls a condition about the page's contents, not about its load state. */
   waitFor(caller: BrowserCaller, tabId: string, request: BrowserWaitRequest): Promise<BrowserActionResult>
+  /** Sets or clears the tab's device emulation, which lasts until reset or the tab closes. */
+  emulate(caller: BrowserCaller, tabId: string, request: BrowserEmulateRequest): Promise<BrowserActionResult>
 }

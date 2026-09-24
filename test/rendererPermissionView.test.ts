@@ -117,7 +117,7 @@ test('the view carries the input block, reason, streak note and diff preview', (
     selectedIndex: 0,
   })
 
-  assert.equal(view.title, '写入文件')
+  assert.equal(view.title, '新建文件', 'a Write whose preview found no file creates one')
   assert.equal(view.inputBlock.kind, 'file')
   assert.equal(view.inputBlock.content, 'a.txt')
   assert.match(view.reason, /要求确认/)

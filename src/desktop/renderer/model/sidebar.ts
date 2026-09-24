@@ -39,6 +39,13 @@ import { desktopShortcut } from './desktopShortcuts.js'
 
 // --- text --------------------------------------------------------------------
 
+/**
+ * The tooltip of 新建会话, 打开项目… and a project's + while `canCreate` is false.
+ * A blocking request parks the active lane, and a greyed button with no reason
+ * reads as broken.
+ */
+export const CREATE_BLOCKED_HINT = '先回应当前会话里的授权请求或提问'
+
 /** The nav row that turns the「最近」filter on and off. */
 export const SIDEBAR_RECENT_LABEL = '最近'
 /** The three things the list can say when it has no rows to draw. */

@@ -2,19 +2,14 @@ import type { DiffRow, PreviewView } from '../model/diffRows.js'
 import { el, replace } from './dom.js'
 
 /** Renders a `PreviewView` — a line diff with a gutter, or the message form. */
+/**
+ * A permission request's file preview: the diff, or the message a degraded
+ * preview carries. No heading — the request's title and path block above it
+ * already name the operation and the file.
+ */
 export function previewNode(view: PreviewView): HTMLElement {
-  const container = el('div')
-  const heading = view.filePath ? `${view.title}: ${view.filePath}` : view.title
-  container.appendChild(el('div', 'preview-title', heading))
-
-  if (view.kind === 'message') {
-    container.appendChild(el('div', 'block', view.message))
-    return container
-  }
-
-  container.appendChild(el('div', 'block-label', view.summary))
-  container.appendChild(diffNode(view.rows))
-  return container
+  if (view.kind === 'message') return el('div', 'block', view.message)
+  return diffNode(view.rows)
 }
 
 /**

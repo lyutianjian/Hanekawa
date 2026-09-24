@@ -275,6 +275,12 @@ export function formatPermissionTitle(
   }
 }
 
+/**
+ * Risk, source and queue position. The path is left to the input block, which
+ * already shows it for every file tool, and the `mode` source is left out: it
+ * only says "you are asked because you are asked", and the reason line below
+ * the subtitle already says why.
+ */
 export function formatPermissionSubtitle(
   request: PermissionRequestDto,
   activeIndex: number,
@@ -284,9 +290,9 @@ export function formatPermissionSubtitle(
   const strings = STRINGS[locale]
   const parts: string[] = []
   const pathLabel = getFilePath(request.input)
-  if (pathLabel) parts.push(pathLabel)
+  if (pathLabel && !isFileTool(request.toolName)) parts.push(pathLabel)
   parts.push(strings.risk[request.riskLevel])
-  parts.push(strings.source[request.source])
+  if (request.source !== 'mode') parts.push(strings.source[request.source])
   if (total > 1) parts.push(strings.pending(activeIndex + 1, total))
   return parts.join(strings.subtitleJoiner)
 }
@@ -296,7 +302,7 @@ export function formatPermissionReason(
   locale: Locale = DEFAULT_LOCALE,
 ): string {
   const strings = STRINGS[locale]
-  const detail = normalizeSentence(request.reason, locale)
+  const detail = normalizeSentence(locale === 'zh' ? translateReason(request.reason) : request.reason, locale)
   const rule = request.matchedRule ? formatPermissionRuleLabel(request.matchedRule) : undefined
   switch (request.source) {
     case 'ask rule':
@@ -347,6 +353,104 @@ export function formatPermissionRequestLabel(request: PermissionRequestDto): str
   }
   const subagentType = (request.input as Record<string, unknown>).subagent_type
   return typeof subagentType === 'string' ? `Agent:${subagentType}` : 'Agent'
+}
+
+/**
+ * The Write title once the preview has told create from overwrite, and the
+ * preview's degraded message, in the dialog's language. The preview itself is
+ * built in `services/fileToolPreview.ts` in English for the TUI and the logs.
+ */
+export function formatPermissionPreviewTitle(
+  request: PermissionRequestDto,
+  locale: Locale = DEFAULT_LOCALE,
+): string {
+  const title = formatPermissionTitle(request, locale)
+  if (locale !== 'zh' || request.toolName !== 'Write' || request.preview?.kind !== 'diff') return title
+  if (request.preview.title === 'Overwrite file') return '覆盖文件'
+  if (request.preview.title === 'Create file') return '新建文件'
+  return title
+}
+
+export function formatPermissionPreviewMessage(message: string, locale: Locale = DEFAULT_LOCALE): string {
+  return locale === 'zh' ? translate(message.trim(), PREVIEW_MESSAGES_ZH) : message
+}
+
+type Translation = readonly [RegExp, (...groups: string[]) => string]
+
+function translate(value: string, table: readonly Translation[]): string {
+  for (const [pattern, render] of table) {
+    const match = pattern.exec(value)
+    if (match) return render(...match.slice(1).map((group) => group ?? ''))
+  }
+  return value
+}
+
+/**
+ * Mirrors of the English sentences `harness/permissions.ts` writes into
+ * `reason` (`reasonFor`, `protectedPathBypassReason` and the inline prompts).
+ * The harness keeps English for the TUI and the logs; a sentence missing here
+ * falls through untranslated rather than disappearing.
+ */
+const REASONS_ZH: readonly Translation[] = [
+  [/^This action changes local state and requires confirmation\.$/, () => '该操作会修改本地文件或状态，需要你确认。'],
+  [/^This is a dangerous action and requires explicit confirmation\.$/, () => '这是危险操作，需要你明确确认。'],
+  [/^This shell command requires confirmation because it includes: (.+)\.$/, (list) =>
+    `这条命令需要确认，因为它包含：${translateCategories(list)}。`],
+  [/^Shell safety check: (.+)$/, (list) => `Shell 安全检查：${translateCategories(list)}`],
+  [/^This action would normally be auto-denied, but the session has already had (\d+) auto-denials\. Confirm explicitly to proceed, or deny to keep blocking it\.$/, (count) =>
+    `该操作通常会被自动拒绝，但本会话已经自动拒绝了 ${count} 次。确认则继续执行，拒绝则继续阻止。`],
+  [/^This action would normally be auto-denied \(protected path or deny rule\), but the model has now requested it (\d+) times in a row\. Confirm explicitly to proceed, or deny to keep blocking it\.$/, (count) =>
+    `该操作通常会被自动拒绝（受保护路径或拒绝规则），但模型已连续请求 ${count} 次。确认则继续执行，拒绝则继续阻止。`],
+  [/^Even in bypass mode, protected paths require explicit confirmation\.(?: Matched protected paths?: (.+)\.)?$/, (paths) =>
+    `即使在绕过模式下，受保护路径也需要你明确确认。${paths ? `匹配到：${paths}。` : ''}`],
+  [/^Suspicious path: (.+)$/, (detail) => `可疑路径：${detail}`],
+]
+
+/** `harness/commandAnalysis.ts` categories and `harness/bashSafety.ts` issue messages. */
+const CATEGORIES_ZH: readonly Translation[] = [
+  [/^complex shell command$/, () => '复杂命令'],
+  [/^destructive filesystem or git operation$/, () => '破坏性的文件或 git 操作'],
+  [/^external or shared-state operation$/, () => '外部或共享状态操作'],
+  [/^shell wrapper or privilege prefix$/, () => 'shell 包装或提权前缀'],
+  [/^dangerous pattern detected$/, () => '危险模式'],
+  [/^unsafe shell syntax: (.+)$/, (message) => `不安全的写法（${translate(message, SHELL_ISSUES_ZH)}）`],
+]
+
+const SHELL_ISSUES_ZH: readonly Translation[] = [
+  [/^contains a carriage return$/, () => '含回车符'],
+  [/^contains a UNC-style path$/, () => '含 UNC 路径'],
+  [/^contains more than (\d+) shell segments$/, (count) => `超过 ${count} 段命令`],
+  [/^uses (.+) as a command prefix$/, (prefix) => `以 ${prefix} 作为命令前缀`],
+  [/^uses dangerous zsh builtin (.+)$/, (name) => `使用危险的 zsh 内建命令 ${name}`],
+  [/^contains a newline inside double quotes$/, () => '双引号内有换行'],
+  [/^contains command substitution$/, () => '命令替换'],
+  [/^contains backtick command substitution$/, () => '反引号命令替换'],
+  [/^contains ANSI-C shell quoting$/, () => 'ANSI-C 引号'],
+  [/^contains a standalone empty quoted argument$/, () => '单独的空引号参数'],
+  [/^contains quote characters after a shell comment$/, () => '注释后有引号'],
+  [/^contains shell redirection$/, () => '重定向'],
+  [/^contains an unclosed shell quote$/, () => '未闭合的引号'],
+]
+
+/** `services/fileToolPreview.ts`'s degraded-preview messages. */
+const PREVIEW_MESSAGES_ZH: readonly Translation[] = [
+  [/^File is too large to preview\.$/, () => '文件太大，无法预览。'],
+  [/^Preview omitted: the file is too large to display \((.+)\)\.$/, (size) => `文件太大（${size}），不显示预览。`],
+  [/^File content is not available for preview\.$/, () => '读不到文件内容，无法预览。'],
+  [/^Missing string content\.$/, () => '缺少要写入的内容，无法预览。'],
+  [/^Missing oldString or newString\.$/, () => '缺少 oldString 或 newString，无法预览。'],
+  [/^Missing edits array\.$/, () => '缺少 edits 数组，无法预览。'],
+  [/^Expected exactly one match for (.+), found (\d+)\.$/, (field, count) =>
+    `${field} 应恰好匹配一处，实际匹配 ${count} 处，无法预览。`],
+  [/^Overlapping edits: (.+) overlaps with (.+)\.$/, (a, b) => `${a} 与 ${b} 重叠，无法预览。`],
+]
+
+function translateReason(reason: string): string {
+  return translate(reason.trim(), REASONS_ZH)
+}
+
+function translateCategories(list: string): string {
+  return list.split(', ').map((category) => translate(category, CATEGORIES_ZH)).join('、')
 }
 
 function isFileTool(toolName: string): boolean {

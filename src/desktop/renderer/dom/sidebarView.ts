@@ -4,6 +4,7 @@ import {
   SIDEBAR_EMPTY_TEXT,
   sidebarHint,
   SIDEBAR_NO_MATCHES_TEXT,
+  CREATE_BLOCKED_HINT,
   SIDEBAR_RECENT_LABEL,
   activateRow,
   newSessionIntent,
@@ -558,7 +559,7 @@ export function createSidebarView(
       // Replaces the session count. A number told the user something they could
       // already see; this is the action they came to the heading for.
       actions.appendChild(
-        button('project-new', '', `在 ${group.projectName} 新建会话`, () =>
+        button('project-new', '', canCreate ? `在 ${group.projectName} 新建会话` : CREATE_BLOCKED_HINT, () =>
           onIntent(newSessionIntent(group.projectRoot)),
           { enabled: canCreate, icon: 'plus' },
         ),
@@ -679,7 +680,7 @@ export function createSidebarView(
         button(
           'sidebar-nav-item',
           '新建会话',
-          `在当前项目里新建会话（${desktopShortcut(platform, 'new-session')}）`,
+          view.canCreate ? `在当前项目里新建会话（${desktopShortcut(platform, 'new-session')}）` : CREATE_BLOCKED_HINT,
           // Through the model, so this and `Ctrl+T` cannot disagree about *which*
           // project — the same rule the row buttons follow via `activateRow`.
           () => onIntent(newSessionIntent(view.activeProjectRoot)),
@@ -688,7 +689,7 @@ export function createSidebarView(
         button(
           'sidebar-nav-item',
           '打开项目…',
-          `打开另一个项目（${desktopShortcut(platform, 'open-project')}）`,
+          view.canCreate ? `打开另一个项目（${desktopShortcut(platform, 'open-project')}）` : CREATE_BLOCKED_HINT,
           () => onIntent({ kind: 'open-project' }),
           { enabled: view.canCreate, icon: 'folder' },
         ),

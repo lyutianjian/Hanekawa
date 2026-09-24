@@ -9,6 +9,7 @@ import { buildSkillCommandPrompt, buildSkillPrompt, registerSkillCommands } from
 import { SkillsService } from '../src/services/skills/skillsService.js'
 import { importSkill } from '../src/services/skills/importSkill.js'
 import { createSkillTool } from '../src/tools/SkillTool/SkillTool.js'
+import { localSettingsPath } from '../src/config/settings.js'
 
 test('SkillsService.list() returns empty array when directory does not exist', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-skills-'))
@@ -259,8 +260,9 @@ async function withDisabledSkill(run: (dir: string) => Promise<void>): Promise<v
         'utf8',
       )
     }
+    await mkdir(path.dirname(localSettingsPath(dir)), { recursive: true })
     await writeFile(
-      path.join(dir, '.myagent', 'settings.local.json'),
+      localSettingsPath(dir),
       JSON.stringify({ skills: { disabled: ['gone'] } }),
       'utf8',
     )

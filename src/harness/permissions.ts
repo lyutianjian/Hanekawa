@@ -694,7 +694,7 @@ export class PermissionGate {
     this.recordPromptDecision(tool.name, approved, previousStreak)
 
     // 6. If user chose "always allow", add session rule and persist it so the
-    //    rule survives restarts (writes to .myagent/settings.local.json).
+    //    rule survives restarts (writes to the project's settings.local.json).
     if (approved && alwaysAllow && alwaysAllowRule) {
       this.addSessionRule(alwaysAllowRule)
       if (this.persistRule) {

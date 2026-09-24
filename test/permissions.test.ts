@@ -14,7 +14,7 @@ import {
   type DenialState,
   type PermissionRule,
 } from '../src/harness/permissions.js'
-import { persistPermissionRule } from '../src/config/settings.js'
+import { localSettingsPath, persistPermissionRule } from '../src/config/settings.js'
 import { analyzeShellCommand } from '../src/harness/commandAnalysis.js'
 import { bashTool } from '../src/tools/BashTool/BashTool.js'
 import type { Tool } from '../src/harness/types.js'
@@ -2097,7 +2097,7 @@ test('persistPermissionRule writes deduped entries into settings.local.json', as
     const rule2: PermissionRule = { toolName: 'Bash', contentPattern: 'git commit:*', behavior: 'allow', source: 'session' }
     await persistPermissionRule(dir, rule)
     await persistPermissionRule(dir, rule2)
-    const settingsPath = path.join(dir, '.myagent', 'settings.local.json')
+    const settingsPath = localSettingsPath(dir)
     const saved = JSON.parse(await readFile(settingsPath, 'utf-8'))
     assert.deepEqual(saved.permissions.allow, ['Bash(git commit:*)'])
 

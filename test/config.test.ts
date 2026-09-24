@@ -6,6 +6,7 @@ import { z } from 'zod/v3'
 import { ConfigService, carryJsonOnlyModelFields, type ModelConfig } from '../src/config/service.js'
 import {
   loadMergedSettings,
+  localSettingsPath,
   trustMcpServerLocally,
   validateSettings,
 } from '../src/config/settings.js'
@@ -772,8 +773,7 @@ test('trustMcpServerLocally writes only project local settings', async () => {
     await trustMcpServerLocally(dir, 'github')
     await trustMcpServerLocally(dir, 'filesystem')
 
-    const localSettingsPath = path.join(dir, '.myagent', 'settings.local.json')
-    const content = await readFile(localSettingsPath, 'utf-8')
+    const content = await readFile(localSettingsPath(dir), 'utf-8')
     const parsed = JSON.parse(content) as { mcp?: { trustedServers?: string[] } }
     assert.deepEqual(parsed.mcp?.trustedServers, ['filesystem', 'github'])
   } finally {
@@ -785,7 +785,8 @@ test('loadMergedSettings ignores legacy permissionMode from local settings', asy
   const dir = await mkdtemp(path.join(process.env.TEMP ?? '/tmp', 'myagent-settings-'))
   try {
     await mkdir(path.join(dir, '.myagent'), { recursive: true })
-    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+    await mkdir(path.dirname(localSettingsPath(dir)), { recursive: true })
+    await writeFile(localSettingsPath(dir), JSON.stringify({
       defaultModel: 'local',
       permissionMode: 'plan',
     }), 'utf8')
@@ -809,7 +810,8 @@ test('loadMergedSettings merges permission rules and overrides startup mode', as
         deny: ['Delete'],
       },
     }), 'utf8')
-    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+    await mkdir(path.dirname(localSettingsPath(dir)), { recursive: true })
+    await writeFile(localSettingsPath(dir), JSON.stringify({
       permissions: {
         mode: 'bypass',
         allow: ['Grep'],
@@ -836,7 +838,8 @@ test('loadMergedSettings concatenates permissions.additionalDirectories across l
     await writeFile(path.join(dir, '.myagent', 'settings.json'), JSON.stringify({
       permissions: { additionalDirectories: ['../shared'] },
     }), 'utf8')
-    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+    await mkdir(path.dirname(localSettingsPath(dir)), { recursive: true })
+    await writeFile(localSettingsPath(dir), JSON.stringify({
       permissions: { additionalDirectories: ['../scratch'] },
     }), 'utf8')
 
@@ -865,7 +868,8 @@ test('loadMergedSettings folds legacy mcp.json before local settings overrides',
         },
       },
     }), 'utf8')
-    await writeFile(path.join(dir, '.myagent', 'settings.local.json'), JSON.stringify({
+    await mkdir(path.dirname(localSettingsPath(dir)), { recursive: true })
+    await writeFile(localSettingsPath(dir), JSON.stringify({
       mcpServers: {
         filesystem: {
           transport: 'stdio',

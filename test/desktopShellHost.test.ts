@@ -28,7 +28,7 @@ import type { RuntimeChannel } from '../src/runtime/protocol/channel.js'
 import { SessionStore, type SessionMeta } from '../src/sessions/service.js'
 import type { Config, ModelConfig } from '../src/config/service.js'
 import { mergeRouting, type Endpoint, type Routing } from '../src/config/routing.js'
-import { loadMergedSettings, type MyAgentSettings } from '../src/config/settings.js'
+import { loadMergedSettings, localSettingsPath, type MyAgentSettings } from '../src/config/settings.js'
 import type { ContextManagementConfig } from '../src/prompts/budget.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../src/tools/AgentTool/AgentTool.js'
 import type { McpConnectionStatus } from '../src/runtime/types.js'
@@ -2109,7 +2109,7 @@ async function withSettingsDir(
 }
 
 async function readLocalLayer(cwd: string): Promise<Record<string, unknown>> {
-  return JSON.parse(await readFile(path.join(cwd, '.myagent', 'settings.local.json'), 'utf8')) as Record<
+  return JSON.parse(await readFile(localSettingsPath(cwd), 'utf8')) as Record<
     string,
     unknown
   >

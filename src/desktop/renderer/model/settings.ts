@@ -1454,7 +1454,7 @@ function skillsCard(snapshot: WireSettingsSnapshot): SettingsCard {
     id: 'skills',
     title: '技能',
     note: `内容来自本项目的技能文件夹，这里只读；开关${SAVED_LOCAL}`,
-    noteHint: `技能：${snapshot.skillsDir}\n开关：.myagent/settings.local.json`,
+    noteHint: `技能：${snapshot.skillsDir}\n开关：本项目的 settings.local.json（在 ~/.myagent/projects/ 下）`,
     empty: '还没有技能。可以从别处导入一个技能文件夹。',
     rows: snapshot.skills.map((skill) => ({
       id: `skill:${skill.name}`,
@@ -1512,7 +1512,7 @@ function mcpCard(snapshot: WireSettingsSnapshot): SettingsCard {
     id: 'mcp',
     title: 'MCP 服务器',
     note: `信任${SAVED_LOCAL}上层设置里已经信任的服务器，在这里关不掉。`,
-    noteHint: '信任写入 .myagent/settings.local.json。各层的信任列表会合并，所以只能在授予信任的那一层撤销。',
+    noteHint: '信任写入本项目的 settings.local.json（在 ~/.myagent/projects/ 下）。各层的信任列表会合并，所以只能在授予信任的那一层撤销。',
     empty: '没有配置 MCP 服务器。',
     rows: snapshot.mcpServers.map((server) => {
       const toggle = {

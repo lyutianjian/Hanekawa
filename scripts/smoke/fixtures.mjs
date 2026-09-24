@@ -57,8 +57,9 @@ export function projectDataDir(home, root) {
  * A scratch project directory.
  *
  * Config belongs in the disposable home; a project `config.json` would only be
- * migrated aside on first load. `myagent` is the project's own `.myagent/`
- * (local settings); `data` is where its sessions live, under `home`.
+ * migrated aside on first load. `myagent` is the project's own `.myagent/`,
+ * which the app never writes; `data` is where its sessions and local settings
+ * live, under `home`.
  */
 export function makeProject(runDir, name, home) {
   const root = join(runDir, name)
@@ -149,12 +150,11 @@ export function assertArtifactsGone(project, sessionId) {
 }
 
 export function seedLocalSettings(project, settings) {
-  mkdirSync(project.myagent, { recursive: true })
-  writeFileSync(join(project.myagent, 'settings.local.json'), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
+  writeFileSync(join(project.data, 'settings.local.json'), `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 })
 }
 
 export function readLocalSettings(project) {
-  const path = join(project.myagent, 'settings.local.json')
+  const path = join(project.data, 'settings.local.json')
   if (!existsSync(path)) return undefined
   return JSON.parse(readFileSync(path, 'utf8'))
 }

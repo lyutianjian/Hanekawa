@@ -120,11 +120,12 @@ Everything defaults to `inherit`, so a one-model setup needs no `routing` block 
 > downgrades it. Set `routing.plan` / `routing.compact` (or the standalone `compactModel`) to get
 > either back.
 
-A project's `.myagent/` holds only configuration you put there (settings, skills, agents, rules, MCP).
-Sessions and other runtime state — spilled tool output, image attachments, plan files — are kept per
-project under `~/.myagent/projects/<key>/`, where `<key>` is derived from the project's path, so
-opening a folder never creates anything inside it. Renaming or moving a project gives it a new key and
-an empty history; the old history stays under the old key. A project whose sessions still sit in its
+A project's `.myagent/` holds only shared configuration you put there (settings, skills, agents, rules,
+MCP). Sessions and other runtime state (spilled tool output, image attachments, plan files) and your
+personal per-project settings (`settings.local.json`, `agents.local/`) are kept under
+`~/.myagent/projects/<key>/`, where `<key>` is derived from the project's path, so nothing the app
+writes on its own ever appears in the project. Renaming or moving a project gives it a new key and
+an empty history; the old history stays under the old key. A project whose sessions or local settings still sit in its
 own `.myagent/` (from earlier versions) has them moved on the next open: each file is copied and
 verified before the original is removed, an emptied `.myagent/` is deleted, and anything that could not
 be moved stays where it was with a startup warning.
@@ -146,7 +147,7 @@ is shown as unavailable in the picker and moves to the nearest supported one bel
 ```
 
 `/thinking off` turns it off — requests then carry no `thinking` parameter at all — and `/thinking on`
-turns it back on. Either form writes `thinking` to `<project>/.myagent/settings.local.json` and applies
+turns it back on. Either form writes `thinking` to the project's `settings.local.json` and applies
 to the session you are in; the desktop settings screen has the same switch under 通用 › 扩展思考. The
 switch is read when a runtime is built, so it also covers subagents.
 
@@ -163,7 +164,7 @@ about to change:
 | Page | Writes |
 |---|---|
 | Models and providers, subagent routing, context management | `~/.myagent/config.json` |
-| Permission rules, startup permission mode, extended thinking, prompt-cache TTL, MCP trust | `<project>/.myagent/settings.local.json` |
+| Permission rules, startup permission mode, extended thinking, prompt-cache TTL, MCP trust | `~/.myagent/projects/<key>/settings.local.json` (per project, never inside it) |
 
 Two consequences worth knowing:
 

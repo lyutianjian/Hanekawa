@@ -12,6 +12,7 @@ import type { SessionRecord, Tool } from '../src/harness/types.js'
 import type { McpServerConfig } from '../src/services/mcp/index.js'
 import { createSessionPane } from '../src/runtime/sessionWorkspace.js'
 import { refreshRuntimeSlot } from '../src/runtime/providerRuntime.js'
+import { localSettingsPath } from '../src/config/settings.js'
 
 // `config.json` lives in `~/.myagent` alone and `loadMergedSettings` layers a
 // shared `~/.myagent` beneath the project one, so every test needs its own home.
@@ -499,8 +500,9 @@ test('getSettings answers with the merge the loop is running on, not the startup
 
   assert.deepEqual(host.getSettings().permissions?.ask, ['Bash(git push:*)'])
 
+  await mkdir(path.dirname(localSettingsPath(cwd)), { recursive: true })
   await writeFile(
-    path.join(cwd, '.myagent', 'settings.local.json'),
+    localSettingsPath(cwd),
     JSON.stringify({ permissions: { ask: ['Bash(rm:*)'] } }),
     'utf8',
   )
@@ -562,8 +564,9 @@ test('reloadMcpServers re-runs the trust check without ever asking again', async
   assert.deepEqual(host.mcp.failed, [{ name: 'untrusted', error: 'not trusted' }])
   assert.equal(prompts, 1)
 
+  await mkdir(path.dirname(localSettingsPath(cwd)), { recursive: true })
   await writeFile(
-    path.join(cwd, '.myagent', 'settings.local.json'),
+    localSettingsPath(cwd),
     JSON.stringify({ mcp: { trustedServers: ['untrusted'] } }),
     'utf8',
   )

@@ -85,6 +85,12 @@ interface TabEntry {
   takenOver: boolean
   /** A session has addressed this tab, so a takeover has someone to interrupt. */
   agentControlled: boolean
+  /**
+   * The generation of a `navigate()` the page refused to leave for: its
+   * `beforeunload` said no. Equal to `generation` only while nothing has
+   * navigated since, which keeps `refusedUnload()` about *this* attempt.
+   */
+  refusedUnload: number | undefined
 }
 
 /**
@@ -157,6 +163,7 @@ export class BrowserTabHost {
       favicon: undefined,
       takenOver: false,
       agentControlled: false,
+      refusedUnload: undefined,
     }
     this.tabs.set(entry.tabId, entry)
     // The view is built eagerly rather than on first paint: a tab the agent
@@ -192,13 +199,41 @@ export class BrowserTabHost {
     const entry = this.require(tabId)
     const target = assertNavigable(url)
     const view = this.ensureView(entry)
+    // `beginNavigation` clears the icon; a refused navigation puts it back.
+    const favicon = entry.favicon
     this.beginNavigation(entry)
+    const generation = entry.generation
     this.emitChange()
     // `loadURL` rejects on a failed navigation *and* reports the same failure
-    // through `did-fail-load`. The event is the one that carries the tab's row,
-    // so the rejection is swallowed rather than becoming an unhandled rejection
-    // that says nothing the panel has not already been told.
-    void view.webContents.loadURL(target).catch(() => {})
+    // through `did-fail-load`, which carries the tab's row — so most rejections
+    // are swallowed. One is not reported anywhere else: a page whose
+    // `beforeunload` refuses to be left aborts the load (-3, which
+    // `did-fail-load` ignores) before `did-start-navigation` ever fires. This
+    // is the only navigation that bumps the generation up front, so without
+    // this the tab would read "loading" forever over a document that never
+    // left.
+    view.webContents.loadURL(target).catch((error: unknown) => {
+      if (this.tabs.get(tabId) !== entry || entry.view !== view) return
+      // Overtaken by a newer navigation: that one owns the row now.
+      if (entry.generation !== generation) return
+      if (!isAbort(error) || entry.committedGeneration === generation) return
+      // The page stayed. The document the tab shows is loaded — it never
+      // stopped being — so the new generation is marked as such.
+      entry.url = view.webContents.getURL()
+      entry.loading = false
+      entry.committedGeneration = generation
+      entry.domReadyGeneration = generation
+      entry.completeGeneration = generation
+      entry.favicon = favicon
+      entry.refusedUnload = generation
+      this.emitChange()
+    })
+  }
+
+  /** The latest `navigate()` was refused by the page it tried to leave. */
+  refusedUnload(tabId: string): boolean {
+    const entry = this.tabs.get(tabId)
+    return entry !== undefined && entry.refusedUnload === entry.generation
   }
 
   /** Whether there was a page to go back to. The panel ignores it; the agent is told. */
@@ -639,6 +674,13 @@ export class BrowserTabHost {
       for (const listener of [...this.listeners]) listener(tabs)
     })
   }
+}
+
+/** Chromium's ERR_ABORTED, as `loadURL` reports it. */
+function isAbort(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const { code, errno } = error as { code?: unknown; errno?: unknown }
+  return code === 'ERR_ABORTED' || errno === -3
 }
 
 function isNavigable(url: string): boolean {

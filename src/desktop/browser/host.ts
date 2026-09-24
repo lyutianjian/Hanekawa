@@ -165,7 +165,15 @@ export class DesktopBrowserHost implements BrowserHost {
       // cannot observe the *previous* document's finished state. A tab that has
       // never navigated is not loading either — it is already as loaded as it
       // will get, and saying so beats timing out.
-      if (!row.loading) return toState(row)
+      if (!row.loading) {
+        if (this.deps.tabs.refusedUnload(tabId)) {
+          throw new BrowserHostError(
+            'NAVIGATION_FAILED',
+            `The page refused to be left (it may hold unsaved input), so the navigation did not happen and the tab still shows ${row.url || '(blank)'}. Ask the user before retrying.`,
+          )
+        }
+        return toState(row)
+      }
       if (performance.now() > deadline) {
         throw new BrowserHostError(
           'WAIT_TIMEOUT',

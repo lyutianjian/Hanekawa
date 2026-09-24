@@ -205,7 +205,8 @@ export function hkName(el: InjElement, doc: InjDocument, sensitive: boolean, max
     if (value.trim() !== '') return hkTrim(value, max)
   }
 
-  return sensitive ? '' : hkText(el, max)
+  // A select's text is every option run together, which names nothing.
+  return sensitive || hkTag(el) === 'select' ? '' : hkText(el, max)
 }
 
 /**

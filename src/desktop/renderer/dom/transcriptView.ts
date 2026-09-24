@@ -34,6 +34,7 @@ import { anchorPadding, anchorTopGap, TRANSCRIPT_PAD_VARIABLE, viewportPolicy } 
 import { PRESENCE_FALLBACK_MS } from '../model/presence.js'
 import { splitFileMentions } from '../model/userMessage.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
+import type { ToolErrorCode } from '../../../harness/types.js'
 import {
   turnActivity,
   waitingElapsedLabel,
@@ -1118,6 +1119,22 @@ function shellOutput(step: Extract<ToolLike, { kind: 'tool' }>): string | undefi
   return stripAnsi(raw)
 }
 
+/** What `BashTool` prints when a command wrote nothing to either stream. */
+const SHELL_NO_OUTPUT = '(no output)'
+
+/** A failed call's `errorCode`, in the interface's own language (§6.2 共通). */
+const TOOL_ERROR_LABELS: Record<ToolErrorCode, string> = {
+  invalid_input: '参数无效',
+  permission_denied: '权限被拒绝',
+  precondition_failed: '前置条件不满足',
+  stale_file: '文件已被外部修改',
+  not_found: '未找到',
+  timeout: '超时',
+  command_failed: '命令失败（非零退出）',
+  execution_failed: '执行出错',
+  aborted: '已中断',
+}
+
 /** The search family (§6.2): the two tools whose result is a list of files. */
 const SEARCH_TOOLS = new Set(['Grep', 'Glob'])
 
@@ -1178,8 +1195,22 @@ function readRows(step: ToolLike): readonly CodeRow[] | undefined {
   const content = step.tool.content
   if (content === undefined || content.length === 0) return undefined
   const lines = (content.endsWith('\n') ? content.slice(0, -1) : content).split('\n')
-  return lines.map((text, index) => ({ line: index + 1, text: text.endsWith('\r') ? text.slice(0, -1) : text }))
+    .map((text) => (text.endsWith('\r') ? text.slice(0, -1) : text))
+  // The tool numbers its own lines (`     20\tline`), from the offset it read at.
+  // Those numbers are the file's, so they are the gutter; the prefix goes. What
+  // carries none — the `[Showing lines …]` notice and the blank line before it —
+  // is the tool talking, not the file. An image read has no numbering at all and
+  // keeps counting from 1.
+  const numbered = lines.flatMap((text) => {
+    const match = READ_LINE_PREFIX.exec(text)
+    return match ? [{ line: Number(match[1]), text: text.slice(match[0].length) }] : []
+  })
+  if (numbered.length > 0) return numbered
+  return lines.map((text, index) => ({ line: index + 1, text }))
 }
+
+/** `FileReadTool`'s line prefix: the number right-aligned in six columns, then a tab. */
+const READ_LINE_PREFIX = /^ *(\d+)\t/
 
 /** The Agent family's run facts, when this step is one of its calls. */
 function agentRun(step: ToolLike): SubagentRun | undefined {
@@ -1283,7 +1314,10 @@ function headParts(step: ToolLike, stats: string | undefined): Child[] {
     useSummary ? el('span', 'step-summary', useSummary) : undefined,
     stats === undefined ? undefined : el('span', 'step-suffix', stats),
     headerSuffix === undefined || agentUnit ? undefined : el('span', 'step-suffix', headerSuffix),
-    durationMs === undefined ? undefined : el('span', 'step-duration', formatWorkedDuration(durationMs)),
+    // Under a second is not worth a number: every quick Read would carry a `0s`.
+    durationMs === undefined || durationMs < 1000
+      ? undefined
+      : el('span', 'step-duration', formatWorkedDuration(durationMs)),
   ]
 }
 
@@ -1347,10 +1381,16 @@ function stepBody(step: ToolLike, family: FamilyData, painter: Painter): HTMLEle
   const terminal = shellOutput(step)
   if (terminal !== undefined) {
     const { errorCode } = step.tool
+    const error = errorCode === undefined ? undefined : TOOL_ERROR_LABELS[errorCode]
+    // The shell's `(no output)` placeholder is not output: one line, no empty box.
+    if (terminal.trim() === SHELL_NO_OUTPUT) {
+      return el('div', 'step-body', el('div', error === undefined ? 'step-body-head' : 'step-error',
+        error === undefined ? '无输出' : `${error}，无输出`))
+    }
     return el(
       'div',
       'step-body',
-      errorCode === undefined ? undefined : el('div', 'step-error', `错误码 ${errorCode}`),
+      error === undefined ? undefined : el('div', 'step-error', error),
       el('pre', 'step-terminal', terminal),
     )
   }

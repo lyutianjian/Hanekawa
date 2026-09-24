@@ -688,7 +688,7 @@ test('a step head is a button whose body exists only while it is open', (t) => {
   assert.equal(head?.attributes.get('aria-label'), 'Read · a.ts · 240 行 · 完成')
   assert.deepEqual(
     head?.children.slice(1).map((part) => [part.className, part.text]),
-    [['step-name', 'Read'], ['step-summary', 'a.ts'], ['step-suffix', '240 行'], ['step-duration', '0.4s']],
+    [['step-name', 'Read'], ['step-summary', 'a.ts'], ['step-suffix', '240 行']],
   )
   // 兜底 body: the result's own summary over `detail ?? content` (§6.2).
   assert.deepEqual(
@@ -933,7 +933,7 @@ test('an edit step carries its patch counts in the head and a real diff below', 
   // because for this family they *are* the result's note.
   assert.deepEqual(
     head?.children.slice(1).map((part) => [part.className, part.text]),
-    [['step-name', 'Edit'], ['step-summary', 'a.ts'], ['step-suffix', '+1 −1'], ['step-duration', '0.2s']],
+    [['step-name', 'Edit'], ['step-summary', 'a.ts'], ['step-suffix', '+1 −1']],
   )
   assert.equal(head?.attributes.get('aria-label'), 'Edit · a.ts · +1 −1 · 完成')
 
@@ -1005,7 +1005,7 @@ test('skipped lines draw as dashed rules with the count, never as glyphs', (t) =
   const diff = groupOf(view).children[1]?.children[0]?.children[1]?.children[0]
   const elided = diff?.children.filter((row) => row.classes.includes('elided'))
   // Both the file head the first hunk skipped and the gap between the hunks.
-  assert.deepEqual(elided?.map((row) => row.text), ['9 more lines not shown', '27 more lines not shown'])
+  assert.deepEqual(elided?.map((row) => row.text), ['省略 9 行', '省略 27 行'])
   for (const row of elided ?? []) {
     // The rule is a span the sheet paints, and no gutter — an elided row is not
     // a line of the file.
@@ -1081,7 +1081,21 @@ test('a failed Bash step names its error code on its own line and reddens the wh
   const body = step?.children[1]
   assert.deepEqual(
     body?.children.map((child) => [child.className, child.text]),
-    [['step-error', '错误码 command_failed'], ['step-terminal', 'ok 42 passed\n3 failed']],
+    [['step-error', '命令失败（非零退出）'], ['step-terminal', 'ok 42 passed\n3 failed']],
+  )
+})
+
+test('a failed Bash step with no output is one line, not an empty terminal', (t) => {
+  const view = mount(t)
+  view.render(
+    transcript([bashStep({ failed: true, errorCode: 'command_failed', content: '(no output)' })]),
+    new Map([['t1', true], ['bash-1', true]]),
+  )
+
+  const body = groupOf(view).children[1]?.children[0]?.children[1]
+  assert.deepEqual(
+    body?.children.map((child) => [child.className, child.text]),
+    [['step-error', '命令失败（非零退出），无输出']],
   )
 })
 
@@ -1135,7 +1149,7 @@ function searchStep(overrides: {
       useSummary: 'pattern: "turnId"',
       resultSummary: 'Found 3 matches across 2 files',
       content: overrides.content ?? GREP_CONTENT,
-      durationMs: 900,
+      durationMs: 1200,
     },
   }
 }
@@ -1156,7 +1170,7 @@ test('a Grep step carries its counts in the head and its hits grouped by file be
       ['step-name', 'Search'],
       ['step-summary', 'pattern: "turnId"'],
       ['step-suffix', '3 处 / 2 文件'],
-      ['step-duration', '0.9s'],
+      ['step-duration', '1s'],
     ],
   )
   assert.equal(head?.attributes.get('aria-label'), 'Search · pattern: "turnId" · 3 处 / 2 文件 · 完成')
@@ -1290,7 +1304,7 @@ test('a Read step opens into the file as a line-numbered code block', (t) => {
   const head = step?.children[0]
   assert.deepEqual(
     head?.children.slice(1).map((part) => [part.className, part.text]),
-    [['step-name', 'Read'], ['step-summary', 'src/a.ts'], ['step-suffix', '2 行'], ['step-duration', '0.4s']],
+    [['step-name', 'Read'], ['step-summary', 'src/a.ts'], ['step-suffix', '2 行']],
   )
   assert.equal(head?.attributes.get('aria-label'), 'Read · src/a.ts · 2 行 · 完成')
 
@@ -1309,6 +1323,18 @@ test('a Read step opens into the file as a line-numbered code block', (t) => {
       row.children[1]?.className,
     ]),
     [['1', 'one', 'step-code-text'], ['2', 'two', 'step-code-text']],
+  )
+})
+
+test('a Read step numbers its rows from the tool’s own prefix, offset included', (t) => {
+  const view = mount(t)
+  const content = '    20\tone\n    21\ttwo\n\n[Showing lines 20-21 of 40. Use offset/limit to read another range.]'
+  view.render(transcript([readStep({ content })]), new Map([['t1', true], ['read-1', true]]))
+
+  const block = groupOf(view).children[1]?.children[0]?.children[1]?.children[0]
+  assert.deepEqual(
+    block?.children.map((row) => [row.children[0]?.text, row.children[1]?.text]),
+    [['20', 'one'], ['21', 'two']],
   )
 })
 

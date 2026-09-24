@@ -777,9 +777,10 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
 
     case 'tool_use': {
       const dto = context.toolDisplays?.(record.id)
+      const search = searchCaption(record.tool, record.input)
       const tool: ToolStepDetail = {
-        displayName: dto?.displayName ?? record.tool,
-        useSummary: dto?.useSummary ?? toolCallDetail(record.input),
+        displayName: search?.displayName ?? dto?.displayName ?? record.tool,
+        useSummary: search?.useSummary ?? dto?.useSummary ?? toolCallDetail(record.input),
         ...(record.createdAt === undefined ? {} : { startedAt: record.createdAt }),
         // Recorded, not yet approved. The approval record clears it; a call the
         // gate waved through clears it just as fast, so the state is only ever
@@ -1113,6 +1114,24 @@ export function messageText(record: Extract<SessionRecord, { type: 'message' }>)
 export function toolCallSummary(tool: string, input: unknown): string {
   const detail = toolCallDetail(input)
   return detail ? `${tool}(${detail})` : tool
+}
+
+/**
+ * Grep and Glob share the TUI's `Search` name and its `pattern: "…"` caption.
+ * The desktop head names the tool itself and shows the bare values — the pattern,
+ * then the glob and path it was narrowed to — leaving the shared display alone.
+ */
+function searchCaption(tool: string, input: unknown): { displayName: string; useSummary: string } | undefined {
+  if (tool !== 'Grep' && tool !== 'Glob') return undefined
+  if (typeof input !== 'object' || input === null) return undefined
+  const record = input as Record<string, unknown>
+  if (typeof record.pattern !== 'string') return undefined
+  const parts = [truncate(record.pattern, 100)]
+  for (const key of ['glob', 'path']) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim().length > 0 && value.trim() !== '.') parts.push(truncate(value.trim(), 60))
+  }
+  return { displayName: tool, useSummary: parts.join(' · ') }
 }
 
 function toolCallDetail(input: unknown): string {

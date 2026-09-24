@@ -211,14 +211,14 @@ export function droppedLines(elided: { oldLines: number; newLines: number }): nu
 
 function summaryFor(preview: Extract<FileToolPreview, { kind: 'diff' }>): string {
   return preview.elided
-    ? `${preview.summary} (${droppedLines(preview.elided)} more lines not shown)`
+    ? `${preview.summary}（省略 ${droppedLines(preview.elided)} 行）`
     : preview.summary
 }
 
 function elidedRow(count: number): DiffRow {
   // Words, not glyphs: §3 replaces the `…` this used to start with — the rule is
   // the indicator now, and the count is what it is worth saying out loud.
-  return { kind: 'elided', text: `${count} more line${count === 1 ? '' : 's'} not shown` }
+  return { kind: 'elided', text: `省略 ${count} 行` }
 }
 
 /**

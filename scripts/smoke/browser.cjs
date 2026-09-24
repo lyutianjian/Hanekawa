@@ -16,7 +16,7 @@
  * a headless Linux container, while this one runs everywhere.
  */
 
-const { app, BaseWindow } = require('electron')
+const { app, BaseWindow, nativeImage } = require('electron')
 const { createServer } = require('node:http')
 
 const profile = process.argv.find((arg) => arg.startsWith('--smoke-profile='))?.slice('--smoke-profile='.length)
@@ -270,6 +270,40 @@ async function run() {
   check('the tab still shows the page it was on', listed?.url === `${origin}/next`, listed?.url)
   const settled = await host.waitForLoad(downloader, second.tabId, { timeoutMs: 3000 }).then(() => 'none', (error) => error?.code ?? String(error))
   check('wait_for_load after a download link does not hang', settled !== 'TIMEOUT', settled)
+
+  // L: a tab the panel is not showing is parked, still painting, so a
+  // screenshot is of the page as it is now rather than the last shown frame.
+  host.turnEnded(caller.sessionId)
+  const shooter = { sessionId: caller.sessionId, turnId: 'turn-5' }
+  const centre = (shot) => {
+    const image = nativeImage.createFromBuffer(shot.bytes)
+    const { width, height } = image.getSize()
+    const bitmap = image.crop({ x: Math.floor(width / 2), y: Math.floor(height / 2), width: 1, height: 1 }).toBitmap()
+    return `${bitmap[2]},${bitmap[1]},${bitmap[0]}` // BGRA
+  }
+  const paint = async (colour) => {
+    await contents.executeJavaScript(`document.documentElement.style.background = '${colour}'; document.body.style.visibility = 'hidden'`)
+    await settle()
+  }
+  const visibleShot = await host.screenshot(shooter, tab.tabId)
+  check('a shown tab is captured at its size', visibleShot.width === 1000 && visibleShot.height === 800, `${visibleShot.width}x${visibleShot.height}`)
+  tabs.setBounds(tab.tabId, { x: 0, y: 0, width: 1000, height: 800 }, false)
+  await paint('rgb(255, 0, 0)')
+  const red = await host.screenshot(shooter, tab.tabId).catch((error) => error)
+  check('a hidden tab can still be captured', red?.bytes !== undefined, red?.message)
+  check('the hidden capture keeps the last shown size', red?.width === 1000 && red?.height === 800, `${red?.width}x${red?.height}`)
+  check('the hidden capture shows the page as it is now', red?.bytes !== undefined && centre(red) === '255,0,0', red?.bytes && centre(red))
+  await paint('rgb(0, 0, 255)')
+  const blue = await host.screenshot(shooter, tab.tabId).catch((error) => error)
+  check('a second hidden capture is a fresh frame', blue?.bytes !== undefined && centre(blue) === '0,0,255', blue?.bytes && centre(blue))
+  window.hide()
+  await paint('rgb(0, 255, 0)')
+  const green = await host.screenshot(shooter, tab.tabId).catch((error) => error)
+  check('a capture works with the main window hidden', green?.bytes !== undefined && centre(green) === '0,255,0', green?.bytes ? centre(green) : green?.message)
+  window.show()
+  tabs.setBounds(tab.tabId, { x: 0, y: 0, width: 1000, height: 800 }, true)
+  const shownAgain = await host.screenshot(shooter, tab.tabId).catch((error) => error)
+  check('the tab captures again once shown', shownAgain?.bytes !== undefined && centre(shownAgain) === '0,255,0', shownAgain?.bytes ? centre(shownAgain) : shownAgain?.message)
 
   host.dispose()
   tabs.dispose()

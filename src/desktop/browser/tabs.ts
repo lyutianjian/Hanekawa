@@ -25,7 +25,7 @@
  *   a new document.
  */
 
-import { WebContentsView, session, type BaseWindow, type Session, type WebContents } from 'electron'
+import { BaseWindow, WebContentsView, session, type Session, type WebContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { WireBrowserRect, WireBrowserTabInfo } from '../shellProtocol.js'
 import { BrowserHostError } from './errors.js'
@@ -57,6 +57,9 @@ export const AUTOMATION_WORLD_ID = 1001
 
 /** A new tab's bounds until the renderer has measured its hole. */
 const INITIAL_RECT: WireBrowserRect = { x: 0, y: 0, width: 1280, height: 720 }
+/** A parked tab that was never measured (or measured at zero) is laid out at this size. */
+const PARKED_WIDTH = INITIAL_RECT.width
+const PARKED_HEIGHT = INITIAL_RECT.height
 
 /** How many blocked downloads a tab remembers; older ones fall off the front. */
 const BLOCKED_DOWNLOADS_KEPT = 5
@@ -133,6 +136,14 @@ export class BrowserTabHost {
   private readonly releaseListeners = new Set<(tabId: string) => void>()
   private readonly inputListeners = new Set<(tabId: string, intent: boolean) => void>()
   private window: BaseWindow | undefined
+  /**
+   * Where hidden tabs live: a window that is never shown. A view removed from
+   * every window stops painting, and a page that does not paint cannot be
+   * screenshotted — so a tab the panel is not showing is reparented here
+   * instead, still sized and still drawing. Created on the first hidden tab,
+   * destroyed with the main window.
+   */
+  private parking: BaseWindow | undefined
   private changePending = false
   private disposed = false
   private sessionWired = false
@@ -158,6 +169,8 @@ export class BrowserTabHost {
   detachWindow(): void {
     this.window = undefined
     for (const entry of this.tabs.values()) this.destroyView(entry)
+    // Last: a live hidden window would keep `window-all-closed` from firing.
+    this.destroyParking()
   }
 
   // --- tabs ------------------------------------------------------------------
@@ -416,22 +429,6 @@ export class BrowserTabHost {
     }
   }
 
-  /**
-   * Whether the compositor is drawing this tab right now.
-   *
-   * `capturePage()` only answers honestly for a view that is on screen. With the
-   * panel closed it hands back the frame it painted last — byte-identical to the
-   * visible capture, with no hint that it is stale — and with the window hidden
-   * it never settles at all. Neither is a picture worth attaching, so the
-   * screenshot path asks this first instead of trusting the image it gets.
-   */
-  isDisplayed(tabId: string): boolean {
-    const entry = this.tabs.get(tabId)
-    if (entry === undefined || entry.view === undefined || !entry.requestedVisible) return false
-    const window = this.window
-    return window !== undefined && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
-  }
-
   onChanged(listener: (tabs: WireBrowserTabInfo[]) => void): () => void {
     this.listeners.add(listener)
     return () => {
@@ -449,6 +446,7 @@ export class BrowserTabHost {
     this.releaseListeners.clear()
     this.inputListeners.clear()
     this.window = undefined
+    this.destroyParking()
   }
 
   // --- internals -------------------------------------------------------------
@@ -730,10 +728,24 @@ export class BrowserTabHost {
     if (window === undefined || window.isDestroyed()) return
 
     if (!entry.requestedVisible) {
-      view.setVisible(false)
       window.contentView.removeChildView(view)
+      // Parked rather than dropped: off the panel, but still laid out at the
+      // size it was last shown at, so a screenshot sees the page the user
+      // would see if they opened the panel again.
+      const parking = this.ensureParking()
+      const width = entry.rect.width >= 1 ? Math.round(entry.rect.width) : PARKED_WIDTH
+      const height = entry.rect.height >= 1 ? Math.round(entry.rect.height) : PARKED_HEIGHT
+      const [parkedWidth, parkedHeight] = parking.getContentSize()
+      if (parkedWidth < width || parkedHeight < height) {
+        parking.setContentSize(Math.max(parkedWidth, width), Math.max(parkedHeight, height))
+      }
+      view.setBounds({ x: 0, y: 0, width, height })
+      parking.contentView.addChildView(view)
+      view.setVisible(true)
       return
     }
+
+    this.parking?.contentView.removeChildView(view)
 
     // `setBounds` takes device-independent pixels, which are CSS pixels at the
     // window's default zoom — the same units the renderer measured the hole in.
@@ -758,7 +770,30 @@ export class BrowserTabHost {
       view.setVisible(false)
       window.contentView.removeChildView(view)
     }
+    const parking = this.parking
+    if (parking !== undefined && !parking.isDestroyed()) parking.contentView.removeChildView(view)
     if (!view.webContents.isDestroyed()) view.webContents.close()
+  }
+
+  private ensureParking(): BaseWindow {
+    const existing = this.parking
+    if (existing !== undefined && !existing.isDestroyed()) return existing
+    const parking = new BaseWindow({
+      show: false,
+      width: PARKED_WIDTH,
+      height: PARKED_HEIGHT,
+      frame: false,
+      focusable: false,
+      skipTaskbar: true,
+    })
+    this.parking = parking
+    return parking
+  }
+
+  private destroyParking(): void {
+    const parking = this.parking
+    this.parking = undefined
+    if (parking !== undefined && !parking.isDestroyed()) parking.destroy()
   }
 
   /**

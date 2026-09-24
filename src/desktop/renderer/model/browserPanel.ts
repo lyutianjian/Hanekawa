@@ -204,7 +204,7 @@ export function browserControlState(tab: WireBrowserTabInfo | undefined): Browse
   if (tab?.takenOver === true) {
     return { label: '交还', title: '把此标签页交还给 agent', disabled: false, action: 'release' }
   }
-  if (tab === undefined || tab.agentControlled !== true) {
+  if (tab === undefined || tab.agentActive !== true) {
     return { label: '接管', title: '当前没有 agent 在操作此标签页', disabled: true, action: 'none' }
   }
   return {
@@ -213,6 +213,18 @@ export function browserControlState(tab: WireBrowserTabInfo | undefined): Browse
     disabled: false,
     action: 'take-over',
   }
+}
+
+/**
+ * The line drawn above the page while the agent is driving it, or `undefined`.
+ *
+ * It is there so a press is not an accident: while it shows, touching the page
+ * stops the agent's turn. Gone once the user holds the tab — the badge and
+ *「交还」say that — and between turns, when the tab is the user's anyway.
+ */
+export function browserBanner(tab: WireBrowserTabInfo | undefined): string | undefined {
+  if (tab?.agentActive !== true || tab.takenOver === true) return undefined
+  return 'agent 正在操作此标签页 · 点击或输入会暂停它'
 }
 
 // --- the address bar -------------------------------------------------------------

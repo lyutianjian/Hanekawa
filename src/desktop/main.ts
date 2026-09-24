@@ -483,6 +483,14 @@ async function ensureShell(): Promise<Shell> {
     directory,
     nextLaneKey: () => `${++laneCounter}`,
     createOccupant: (attach) => {
+      // A finished turn hands the session's browser tabs back to the user: the
+      // 「agent 正在操作」banner goes, and touching the page stops counting as
+      // a takeover. The id is read at the event, not captured here — the pane
+      // outlives any one session in it.
+      const controller = attach.pane.controller
+      const offTurnEnd = controller.onEvent((event) => {
+        if (event.type === 'turn-end') browserHost.turnEnded(controller.getSessionId())
+      })
       const sessionHost = new SessionHost({
         channel: attach.channel,
         controller: attach.pane.controller,
@@ -532,7 +540,10 @@ async function ensureShell(): Promise<Shell> {
       // lane, and keeping it a three-method view is what stops the shell from
       // reaching into a session's runtime.
       return {
-        dispose: () => sessionHost.dispose(),
+        dispose: () => {
+          offTurnEnd()
+          sessionHost.dispose()
+        },
         refreshAfterConfigChange: (options) => {
           sessionHost.refreshAfterConfigChange(options)
         },

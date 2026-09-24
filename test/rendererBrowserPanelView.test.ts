@@ -39,7 +39,14 @@ function tab(overrides: Partial<WireBrowserTabInfo> & { tabId: string; lane: str
 interface Rendered {
   stub: DomStub
   view: BrowserPanelView
-  nodes: { panel: HTMLElement; resizer: HTMLElement; tabs: HTMLElement; address: HTMLElement; hole: HTMLElement }
+  nodes: {
+    panel: HTMLElement
+    resizer: HTMLElement
+    tabs: HTMLElement
+    address: HTMLElement
+    banner: HTMLElement
+    hole: HTMLElement
+  }
   bounds: Array<{ tabId: string; rect: WireBrowserRect; visible: boolean }>
   closed: string[]
   selected: string[]
@@ -56,6 +63,7 @@ function render(t: { after(fn: () => void): void }, options: { measurable?: bool
     resizer: stub.createContainer('resizer'),
     tabs: stub.createContainer('tabs'),
     address: stub.createContainer('address'),
+    banner: stub.createContainer('banner'),
     hole: stub.createContainer('hole'),
   }
   // A rule keyed off what the node *is*, because the nodes a view builds do not
@@ -340,14 +348,14 @@ test('the control takes the tab over, then hands it back', (t) => {
     r.stub.inspect(r.nodes.address).children.find((child) => child.classes.includes('browser-takeover'))!
 
   // A tab a session has driven: there is something to take.
-  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentControlled: true })] })
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentActive: true })] })
   assert.equal(control().disabled, false)
   r.stub.click(control().node)
   assert.deepEqual(r.tookOver, ['t1'])
 
   // And back: the same button, now saying the other thing. One control rather
   // than two, so「已接管」cannot sit beside a tab that is no longer taken.
-  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentControlled: true, takenOver: true })] })
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentActive: true, takenOver: true })] })
   assert.equal(control().text, '交还')
   assert.equal(control().disabled, false)
   r.stub.click(control().node)
@@ -364,6 +372,19 @@ test('a tab no agent is driving says so instead of swallowing the press', (t) =>
   assert.equal(control().disabled, true)
   assert.equal(control().attributes.get('aria-label'), '当前没有 agent 在操作此标签页')
 
-  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentControlled: true })] })
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentActive: true })] })
   assert.equal(control().disabled, false)
+})
+
+test('the banner shows while the agent drives the tab, and not once the user holds it', (t) => {
+  const r = render(t)
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1' })] })
+  assert.equal(r.stub.inspect(r.nodes.banner).hidden, true)
+
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentActive: true })] })
+  assert.equal(r.stub.inspect(r.nodes.banner).hidden, false)
+  assert.match(r.stub.inspect(r.nodes.banner).text, /agent 正在操作/)
+
+  r.paint({ tabs: [tab({ tabId: 't1', lane: '1', agentActive: false, takenOver: true })] })
+  assert.equal(r.stub.inspect(r.nodes.banner).hidden, true)
 })

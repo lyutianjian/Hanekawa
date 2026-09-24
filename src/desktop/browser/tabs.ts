@@ -35,6 +35,14 @@ import { isInputActive } from './input.js'
 export { BrowserHostError }
 
 /**
+ * Keys that are only ever half a chord: pressing one alone is not typing. DOM
+ * `key` names, which is what `input-event` reports for a real keystroke — its
+ * typed `keyCode` field is the accelerator name `sendInputEvent` takes, and
+ * arrives empty.
+ */
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'OS', 'Super', 'Hyper', 'Fn', 'FnLock', 'CapsLock'])
+
+/**
  * The browser's own storage, separate from the app renderer's.
  *
  * Persistent on purpose: an agent that cannot stay logged in can only visit the
@@ -83,8 +91,8 @@ interface TabEntry {
   /** The site's icon as a data URL, read through `favicon.ts`. */
   favicon: string | undefined
   takenOver: boolean
-  /** A session has addressed this tab, so a takeover has someone to interrupt. */
-  agentControlled: boolean
+  /** The tab's session is mid-turn, so a takeover has something to interrupt. */
+  agentActive: boolean
   /**
    * The generation of an agent navigation (`navigate`, back, forward, reload) the page refused to leave for: its
    * `beforeunload` said no. Equal to `generation` only while nothing has
@@ -118,6 +126,7 @@ export class BrowserTabHost {
   private readonly listeners = new Set<(tabs: WireBrowserTabInfo[]) => void>()
   private readonly takeOverListeners = new Set<(tabId: string) => void>()
   private readonly releaseListeners = new Set<(tabId: string) => void>()
+  private readonly inputListeners = new Set<(tabId: string, intent: boolean) => void>()
   private window: BaseWindow | undefined
   private changePending = false
   private disposed = false
@@ -166,7 +175,7 @@ export class BrowserTabHost {
       errorUrl: undefined,
       favicon: undefined,
       takenOver: false,
-      agentControlled: false,
+      agentActive: false,
       refusedUnload: undefined,
       agentGeneration: undefined,
       pendingFavicon: undefined,
@@ -249,13 +258,13 @@ export class BrowserTabHost {
   }
 
   /**
-   * The user took this tab back — from the panel's button, or by touching the
-   * page itself.
+   * The user pressed「接管」on this tab. Touching the page itself is reported
+   * through `onUserInput` instead, because there only some input counts.
    *
    * It only *reports*. Whether a takeover has anyone to block, and therefore
    * whether the tab should be drawn as taken over, is `ownership.ts`'s answer,
-   * and it comes back through `setTakenOver`. A tab no session has driven is not
-   * a tab anyone is being taken away from.
+   * and it comes back through `setTakenOver`. A tab whose session is not mid-turn
+   * is not a tab anyone is being taken away from.
    */
   takeOver(tabId: string): void {
     const entry = this.require(tabId)
@@ -284,14 +293,14 @@ export class BrowserTabHost {
   }
 
   /**
-   * A session claimed this tab. Sticky for the tab's life: a session that has
-   * driven a tab once is the one a takeover interrupts until the tab closes,
-   * and the panel draws its control as available on that basis.
+   * The tab's session is mid-turn and driving the browser: the panel draws the
+   * 「agent 正在操作」banner and makes「接管」pressable. Cleared when the turn
+   * ends or the user takes the tab.
    */
-  setAgentControlled(tabId: string): void {
+  setAgentActive(tabId: string, active: boolean): void {
     const entry = this.tabs.get(tabId)
-    if (entry === undefined || entry.agentControlled) return
-    entry.agentControlled = true
+    if (entry === undefined || entry.agentActive === active) return
+    entry.agentActive = active
     this.emitChange()
   }
 
@@ -299,6 +308,18 @@ export class BrowserTabHost {
     this.takeOverListeners.add(listener)
     return () => {
       this.takeOverListeners.delete(listener)
+    }
+  }
+
+  /**
+   * The person used the page itself. `intent` is a press or a keystroke that is
+   * not a lone modifier; a wheel is reported too, as merely looking. What that
+   * amounts to depends on who is driving, which is `ownership.ts`'s answer.
+   */
+  onUserInput(listener: (tabId: string, intent: boolean) => void): () => void {
+    this.inputListeners.add(listener)
+    return () => {
+      this.inputListeners.delete(listener)
     }
   }
 
@@ -354,7 +375,7 @@ export class BrowserTabHost {
       if (entry.errorUrl !== undefined) info.errorUrl = entry.errorUrl
       if (entry.favicon !== undefined) info.favicon = entry.favicon
       if (entry.takenOver) info.takenOver = true
-      if (entry.agentControlled) info.agentControlled = true
+      if (entry.agentActive) info.agentActive = true
       return info
     })
   }
@@ -418,6 +439,7 @@ export class BrowserTabHost {
     this.listeners.clear()
     this.takeOverListeners.clear()
     this.releaseListeners.clear()
+    this.inputListeners.clear()
     this.window = undefined
   }
 
@@ -540,13 +562,19 @@ export class BrowserTabHost {
     // The person reached into the page. `input-event` sees everything the view
     // receives, including what CDP dispatches, so the guard is what tells the
     // two apart: a keystroke that arrives while the agent is mid-burst is the
-    // echo of our own typing, and treating it as a takeover would abort every
-    // automation sequence halfway through. Only the three kinds that mean
-    // intent count — a mouse merely crossing the page does not.
+    // echo of our own typing, and reporting it would abort every automation
+    // sequence halfway through. Only presses, keystrokes and wheels are
+    // reported — a mouse merely crossing the page is nothing.
     contents.on('input-event', (_event, input) => {
       if (!alive() || isInputActive(contents)) return
-      if (input.type !== 'keyDown' && input.type !== 'mouseDown' && input.type !== 'mouseWheel') return
-      this.takeOver(entry.tabId)
+      let intent: boolean
+      if (input.type === 'mouseDown') intent = true
+      else if (input.type === 'keyDown' || input.type === 'rawKeyDown') {
+        intent = !MODIFIER_KEYS.has((input as { key?: string }).key ?? '')
+      }
+      else if (input.type === 'mouseWheel') intent = false
+      else return
+      for (const listener of [...this.inputListeners]) listener(entry.tabId, intent)
     })
 
     // No `preventDefault`: the page's refusal stands. A navigation the agent

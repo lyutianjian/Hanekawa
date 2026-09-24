@@ -157,6 +157,7 @@
   --motion-scrim-out: 180ms;
   --motion-complete: 180ms;
   --motion-running: 2800ms;
+  --motion-label-sheen: 3200ms;
   --motion-locate: 600ms;
   --motion-hover-delay: 500ms;
   --presence-x: 0px;
@@ -1928,10 +1929,16 @@ body.settings-open #browser-resizer { display: none; }
 }
 /* The words carry the thinking row's old sheen, now that the tail row is where
    「正在思考」 is read: a band of `--text-primary` travelling through
-   `--text-secondary` letters, on `sheen`'s own keyframes and duration. The band
+   `--text-secondary` letters, drawn like `sheen`. The band
    is a text highlight, not an accent, so it holds in both themes — brighter on
    dark, deeper on light. Reduced motion stops it on its last frame, which is
-   plain secondary text. */
+   plain secondary text.
+
+   Its own keyframes rather than `sheen`, because it rests between passes. The
+   band enters at 120% and leaves at -20% — the positions where it first and
+   last touches the letters — so the whole sweep is visible: about 1.4s, a fifth
+   quicker than `sheen`'s pace, then 1.8s of plain text, in one
+   `--motion-label-sheen` loop. */
 .waiting-label {
   color: var(--text-secondary);
   background: linear-gradient(90deg, var(--text-secondary) 35%, var(--text-primary) 50%, var(--text-secondary) 65%);
@@ -1939,7 +1946,11 @@ body.settings-open #browser-resizer { display: none; }
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  animation: sheen var(--motion-running) linear infinite;
+  animation: label-sheen var(--motion-label-sheen) linear infinite;
+}
+@keyframes label-sheen {
+  from { background-position: 120% 0; }
+  44%, to { background-position: -20% 0; }
 }
 /* The counter, in the digits that do not jitter as they climb. Monospaced for
    the same reason the meta row's time is: it changes ten times a second. */

@@ -41,6 +41,7 @@ const MOTION_TOKENS = {
   "--motion-scrim-out": "180ms",
   "--motion-complete": "180ms",
   "--motion-running": "2800ms",
+  "--motion-label-sheen": "3200ms",
   "--motion-locate": "600ms",
   "--motion-hover-delay": "500ms"
 }
@@ -1623,7 +1624,7 @@ test('running signals stay readable, and completion never scales', () => {
   // The tail row's words carry the thinking row's sheen, over secondary text so
   // every frame stays readable.
   const label = blockFor('.waiting-label')
-  assert.match(label.decls.find((decl) => decl.prop === 'animation')!.value, /^sheen /)
+  assert.match(label.decls.find((decl) => decl.prop === 'animation')!.value, /^label-sheen /)
   assert.ok(declares(label, 'background-clip', 'text'))
   assert.match(label.decls.find((decl) => decl.prop === 'background')!.value, /var\(--text-secondary\)/)
   assert.doesNotMatch(source, /\.waiting-bead::after|@keyframes (?:halo|sweep)\b/)

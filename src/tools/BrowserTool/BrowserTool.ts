@@ -111,6 +111,10 @@ export function createBrowserTool(host: BrowserHost): Tool {
       const operation = (input as { operation?: unknown })?.operation
       return typeof operation === 'string' && READ_ONLY_OPERATIONS.has(operation)
     },
+    classifyRisk(input) {
+      const operation = (input as { operation?: unknown })?.operation
+      return typeof operation === 'string' && READ_ONLY_OPERATIONS.has(operation) ? 'readonly' : 'normal'
+    },
     userFacingName: () => 'Browser',
     getToolUseSummary(input) {
       const parsed = asInput(input)

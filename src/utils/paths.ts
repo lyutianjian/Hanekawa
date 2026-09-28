@@ -95,7 +95,7 @@ function relativeSegments(from: string, to: string): string[] {
   return relative === '' ? [] : relative.split(path.sep)
 }
 
-function resolveExistingPrefix(absolute: string): string {
+export function resolveExistingPrefix(absolute: string): string {
   try {
     return realpathSync(absolute)
   } catch {

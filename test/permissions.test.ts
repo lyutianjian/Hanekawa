@@ -746,7 +746,7 @@ test('PermissionGate allows bash reading .gitconfig without prompting', async ()
     return true
   })
 
-  const approved = await gate.approve(bashTool, { command: 'cat ~/.gitconfig' })
+  const approved = await gate.approve(bashTool, { command: 'cat .gitconfig' })
 
   assert.equal(approved, true)
   assert.equal(prompted, false)
@@ -1007,7 +1007,7 @@ test('PermissionGate checks protected paths in each bash segment', async () => {
   assert.equal(prompted, true)
 
   prompted = false
-  assert.equal(await gate.approve(bashTool, { command: 'echo ok && cat ~/.gitconfig' }), true)
+  assert.equal(await gate.approve(bashTool, { command: 'echo ok && cat .gitconfig' }), true)
   assert.equal(prompted, false)
 })
 

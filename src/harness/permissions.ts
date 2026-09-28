@@ -10,6 +10,7 @@ import {
 } from './commandAnalysis.js'
 import { matchBashRule, bashCommandSegments, suggestBashPrefix } from './shellRuleMatching.js'
 import { shellWords } from './bashSafety.js'
+import { classifyToolCall, createRiskContext, type RiskContext } from './risk/index.js'
 import type { RiskLevel, Tool, ToolApprovalRecord } from './types.js'
 import { isProtectedPath, checkWindowsPathSafety, isDangerousRemovalPath } from '../utils/permissions/protectedPaths.js'
 import { isPreapprovedUrl, matchesDomainRule, urlHostname } from '../utils/permissions/webFetchDomains.js'
@@ -384,6 +385,7 @@ export class PermissionGate {
   /** Extra workspace roots for accept-edits, from `permissions.additionalDirectories`. */
   private readonly additionalDirectories: string[]
   private denialStateLoaded = false
+  private riskContext?: RiskContext
   private readonly modeListeners = new Set<PermissionModeListener>()
 
   constructor(
@@ -426,11 +428,13 @@ export class PermissionGate {
     // 1. Safe tools are approved unless shell/path safety found a reason to
     //    deny or force a prompt first.
     const commandAnalysis = this.commandAnalysisFor(tool.name, input)
+    const bashReadOnly = commandAnalysis !== undefined
+      && classifyToolCall(tool, input, this.riskContextFor()).level === 'readonly'
     const path = extractFilePath(input)
     // Protected paths guard *edits* (the list is Claude Code's
     // isDangerousFilePathToAutoEdit). Reading .git/config or grepping
     // .myagent/ is ordinary work and must not be gated.
-    const isWrite = this.isWriteOperation(tool, commandAnalysis)
+    const isWrite = tool.name === 'Bash' ? !bashReadOnly : tool.isReadOnly !== true
     const hasProtectedPath = isWrite && (
       (commandAnalysis?.hasProtectedPath ?? false)
       || (path !== '' && isProtectedPath(path))
@@ -555,7 +559,7 @@ export class PermissionGate {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(approvedDecision('mode'))
       }
-      if (tool.name === 'Bash' && commandAnalysis && !blocksAutoApproval && commandAnalysis.isReadOnly) {
+      if (bashReadOnly && !blocksAutoApproval) {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(approvedDecision('mode'))
       }
@@ -604,8 +608,7 @@ export class PermissionGate {
     // Aligned with Claude Code step 7: read-only Bash is auto-allowed.
     if (
       (this.mode === 'default' || this.mode === 'acceptEdits')
-      && tool.name === 'Bash'
-      && commandAnalysis?.isReadOnly
+      && bashReadOnly
       && !blocksAutoApproval
     ) {
       this.denialStreaks.set(tool.name, 0)
@@ -655,18 +658,6 @@ export class PermissionGate {
       false,
       { matchedRule: allowedByRule, commandAnalysis },
     )
-  }
-
-  /**
-   * Whether this call can change anything. Protected paths only gate writes;
-   * Bash answers through its shell analysis rather than its tool metadata.
-   */
-  private isWriteOperation(
-    tool: Tool,
-    commandAnalysis: ReturnType<typeof analyzeShellCommand> | undefined,
-  ): boolean {
-    if (tool.name === 'Bash') return !(commandAnalysis?.isReadOnly ?? false)
-    return tool.isReadOnly !== true
   }
 
   private async promptForDecision(
@@ -912,6 +903,11 @@ export class PermissionGate {
         this.sessionRuleStore.add(rule)
       }
     }
+  }
+
+  private riskContextFor(): RiskContext {
+    this.riskContext ??= createRiskContext({ cwd: this.cwd, additionalDirectories: this.additionalDirectories })
+    return this.riskContext
   }
 
   private commandAnalysisFor(toolName: string, input: unknown): ReturnType<typeof analyzeShellCommand> | undefined {

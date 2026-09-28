@@ -157,6 +157,7 @@ export const configTool: Tool = {
   }).strict(),
   riskLevel: 'safe',
   isReadOnly: false,
+  classifyRisk: (input) => ((input as { action?: unknown }).action === 'set' ? 'normal' : 'readonly'),
   isConcurrencySafe: false,
   shouldDefer: true,
   maxResultSizeChars: 10_000,

@@ -3,6 +3,7 @@ import type { CacheBreakResult, CacheBreakSource } from './cacheBreakDetection.j
 import type { CacheRuntime } from './cacheControl.js'
 import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
+import type { RiskContext, RiskTier } from './risk/types.js'
 import type { SessionMetricInput } from './metrics.js'
 import type { ImageAttachmentMetadata, ImageAttachmentRef, ImageInputErrorReason, ImageMimeType } from '../media/types.js'
 
@@ -632,6 +633,11 @@ export interface Tool {
   isReadOnly?: boolean
   /** Input-sensitive `isReadOnly`, for tools whose effect depends on the call. */
   isReadOnlyInput?(input: unknown): boolean
+  /**
+   * The call's risk tier (`harness/risk/`), for tools whose metadata cannot
+   * say it: without it the tier follows `isReadOnly`/`riskLevel`.
+   */
+  classifyRisk?(input: unknown, context: RiskContext): RiskTier
   isDestructive?: boolean
   /**
    * Maximum persisted tool result content size. This is applied once when the

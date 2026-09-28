@@ -156,7 +156,12 @@ export function permissionOptions(locale: Locale = DEFAULT_LOCALE): readonly Per
 export const PERMISSION_OPTIONS: readonly PermissionOption[] = permissionOptions('en')
 
 export type PermissionInputBlock =
-  | { kind: 'bash'; label: string; content: string }
+  /**
+   * `description` is the model's own account of the command, so a view draws
+   * it as a caption to `content`, never in its place and never above the
+   * destructive warnings: the command is what actually runs.
+   */
+  | { kind: 'bash'; label: string; content: string; description?: string }
   | { kind: 'file'; label: string; content: string }
   | { kind: 'json'; label: string; content: string }
   | { kind: 'none'; label: string; content: string }
@@ -333,7 +338,8 @@ export function formatPermissionInputBlock(
     const command = isRecord(request.input) && typeof request.input.command === 'string'
       ? request.input.command
       : stringifyInput(request.input, 500)
-    return { kind: 'bash', label: labels.command, content: command }
+    const description = commandDescription(request.input)
+    return { kind: 'bash', label: labels.command, content: command, ...(description ? { description } : {}) }
   }
 
   const filePath = getFilePath(request.input)
@@ -480,6 +486,15 @@ function normalizeSentence(value: string, locale: Locale = DEFAULT_LOCALE): stri
   if (!trimmed) return ''
   const strings = STRINGS[locale]
   return strings.terminators.test(trimmed) ? trimmed : `${trimmed}${strings.sentenceTerminator}`
+}
+
+const MAX_DESCRIPTION_CHARS = 200
+
+/** One line, bounded: a multi-line or runaway caption would bury the command. */
+function commandDescription(input: unknown): string | undefined {
+  if (!isRecord(input) || typeof input.description !== 'string') return undefined
+  const text = input.description.replace(/\s+/g, ' ').trim()
+  return text.length > MAX_DESCRIPTION_CHARS ? `${text.slice(0, MAX_DESCRIPTION_CHARS - 1)}…` : text || undefined
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

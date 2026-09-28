@@ -121,6 +121,8 @@ export function createPermissionRequestView(
         el('div', 'request-question', view.reason),
         view.denialStreakNote !== undefined && el('div', 'request-streak', view.denialStreakNote),
         ...view.warnings.map((warning) => el('div', 'request-warning', warning.message)),
+        view.inputBlock.kind === 'bash' && view.inputBlock.description !== undefined
+          && el('div', 'request-description', view.inputBlock.description),
         view.inputBlock.kind !== 'none' && el('div', 'request-block', view.inputBlock.content),
         view.preview !== undefined && previewNode(view.preview),
         view.alsoWaiting.length > 0

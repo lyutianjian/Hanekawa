@@ -3346,6 +3346,9 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 .request-streak { color: var(--text-warn); font-size: var(--type-meta); }
 .request-warning { color: var(--text-danger); font-size: var(--type-meta); }
 .request-waiting { color: var(--text-secondary); font-size: var(--type-meta); }
+/* The model's caption for the command below it: secondary, because the command
+   is what runs and the caption is only the model's word for it. */
+.request-description { color: var(--text-secondary); margin-bottom: var(--space-1); }
 /* The exact bytes being approved — the same inset well the dialog's `.block` is,
    and capped, because a request can carry a heredoc and the composer must not
    grow past the transcript it is anchored under. */

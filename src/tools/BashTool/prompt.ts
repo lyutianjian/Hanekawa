@@ -25,7 +25,8 @@ export function buildBashDescription(): string {
   const defaultTimeout = resolveBashTimeoutMs()
   return `Executes a bash command and returns its output.
 
-- Parameters are \`command\` (required), \`timeout\`, \`run_in_background\`, and optional \`env\` (key-value object). Any other key is rejected.
+- Parameters are \`command\` (required), \`description\`, \`timeout\`, \`run_in_background\`, and optional \`env\` (key-value object). Any other key is rejected.
+- Always pass \`description\`: what the command does, in active voice, shown to the user when they approve it. Do not echo the command, its flags or paths. Keep simple commands to 5-10 words ("List files in current directory", "Install package dependencies"); for piped or obscure commands, add enough context to say what they achieve ("Find and delete all .tmp files recursively").
 - Each call starts in the session working directory. \`cd\` affects only that one command and does NOT carry over to the next Bash call. Use absolute paths, or chain with \`&&\` inside a single call.
 - Shell state (environment variables, functions, aliases) does not persist between calls either.
 - stdin is closed. Interactive commands (password prompts, pagers, editors, \`-i\` flags) will hang or fail. Pass flags that avoid interaction, such as \`--no-pager\`.

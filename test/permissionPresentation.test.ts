@@ -277,6 +277,17 @@ describe('permission dialog formatters', () => {
     )
   })
 
+  it('carries a bash description as one line, dropping a blank one', () => {
+    assert.deepEqual(
+      formatPermissionInputBlock(request('Bash', { command: 'npm ci', description: '  Install\n  dependencies ' })),
+      { kind: 'bash', label: 'Command', content: 'npm ci', description: 'Install dependencies' },
+    )
+    assert.equal(
+      'description' in formatPermissionInputBlock(request('Bash', { command: 'npm ci', description: ' \n' })),
+      false,
+    )
+  })
+
   it('formats file tools as a path-first input block', () => {
     assert.deepEqual(
       formatPermissionInputBlock(request('Delete', { filePath: 'src/old.ts' }, 'mode', 'dangerous')),

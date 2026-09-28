@@ -237,7 +237,10 @@ function PermissionContentBlock({
         </Box>
       ) : null}
       {inputBlock.kind !== 'none' && inputBlock.kind !== 'file' ? (
-        <Box marginTop={1} paddingX={1}>
+        <Box marginTop={1} paddingX={1} flexDirection="column">
+          {inputBlock.kind === 'bash' && inputBlock.description ? (
+            <Text color={theme.dimText} wrap="truncate-end">{inputBlock.description}</Text>
+          ) : null}
           <Text color={inputBlock.kind === 'bash' ? theme.assistantText : theme.dimText} wrap="truncate-end">
             <Text color={theme.dimText}>{inputBlock.label}: </Text>
             {inputBlock.content}

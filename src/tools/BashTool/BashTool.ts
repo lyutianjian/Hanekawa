@@ -33,6 +33,7 @@ interface BashInput {
   timeout?: number
   run_in_background?: boolean
   env?: Record<string, string | number | boolean>
+  description?: string
 }
 
 /**
@@ -311,6 +312,8 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
       .describe('Set to true to run this command in the background immediately. Use BashOutput to read output later.'),
     env: z.record(z.union([z.string(), z.number(), z.boolean()])).optional()
       .describe('Optional environment variables to set for this command execution.'),
+    description: z.string().optional()
+      .describe('Clear, concise description of what this command does, in active voice. Shown to the user when approving the command.'),
   }).strict(),
   riskLevel: 'dangerous',
   isDestructive: true,
@@ -323,9 +326,10 @@ export function createBashTool(backgroundTasks: BackgroundTaskRegistry = default
     return typeof command === 'string' ? summarizeCommand(command) : null
   },
   getActivityDescription(input) {
-    const command = typeof input === 'object' && input !== null
-      ? (input as { command?: unknown }).command
-      : undefined
+    const { command, description } = typeof input === 'object' && input !== null
+      ? input as { command?: unknown; description?: unknown }
+      : {}
+    if (typeof description === 'string' && description.trim()) return description
     return typeof command === 'string' ? `Running ${summarizeCommand(command)}` : 'Running command'
   },
   shouldDisplayResult: () => true,

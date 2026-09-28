@@ -44,8 +44,8 @@ export const COMMAND_DESCRIPTIONS: Readonly<Record<string, Caption>> = {
 export const AGENT_DESCRIPTIONS: Readonly<Record<string, Caption>> = {
   general: { en: 'General-purpose read-only sub-agent for isolated research tasks.', zh: '通用只读子代理，用于独立的调研任务' },
   fork: {
-    en: 'Read-only sub-agent fork that preloads the parent transcript and shares the parent fork prompt-cache stream.',
-    zh: '只读分叉子代理，预先载入主对话记录，并与主对话共用提示缓存',
+    en: 'Read-only sub-agent fork that continues from the parent transcript, reading the parent\'s prompt cache when its request fits.',
+    zh: '只读分叉子代理，接着主对话记录继续工作；上下文放得下时直接读取主对话的提示缓存',
   },
   explore: {
     en: 'Fast read-only code exploration agent for broad search, navigation, and codebase questions.',

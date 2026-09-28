@@ -103,6 +103,23 @@ function findAnchorIndex(messages: ContentMessage[]): number {
   return -1
 }
 
+/**
+ * Where the previous request of this conversation put its breakpoint: the
+ * last durable message before the latest assistant reply. The API finds an
+ * earlier write only by looking back ~20 blocks from a breakpoint, and one
+ * step of a tool loop can add more than that (a thinking block, text, and a
+ * tool_use plus tool_result per parallel call). A second marker exactly on the
+ * previous write turns that lookback into a direct hit. -1 when there is none.
+ */
+function findPreviousAnchorIndex(messages: ContentMessage[], anchorIndex: number): number {
+  let index = anchorIndex - 1
+  while (index >= 0 && messages[index]?.role !== 'assistant') index--
+  for (index--; index >= 0; index--) {
+    if (messages[index]?.[TRANSIENT_MESSAGE_KEY] !== true) return index
+  }
+  return -1
+}
+
 function withoutTransientKey(msg: ContentMessage): ContentMessage {
   if (!(TRANSIENT_MESSAGE_KEY in msg)) return msg
   const { [TRANSIENT_MESSAGE_KEY]: _transient, ...rest } = msg
@@ -116,9 +133,10 @@ export function addCacheBreakpoints(
 ): ContentMessage[] {
   if (messages.length === 0) return messages
   const anchorIndex = enablePromptCaching ? findAnchorIndex(messages) : -1
+  const marked = new Set([anchorIndex, findPreviousAnchorIndex(messages, anchorIndex)])
 
   return messages.map((msg, index) => {
-    if (index !== anchorIndex) return withoutTransientKey(msg)
+    if (!marked.has(index)) return withoutTransientKey(msg)
 
     const rawContent = Array.isArray(msg.content)
       ? msg.content

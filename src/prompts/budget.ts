@@ -232,7 +232,7 @@ export function countSessionRecordTokens(
   }
 
   if (record.type === 'compact_boundary') {
-    return countTextTokens(record.summary)
+    return countTextTokens(record.summary) + (record.restoredContext ? countTextTokens(record.restoredContext) : 0)
   }
 
   if (record.type === 'tool_approval') {

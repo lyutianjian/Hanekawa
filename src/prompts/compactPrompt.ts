@@ -83,8 +83,8 @@ When you are using compact - please focus on test output and code changes. Inclu
 
 /**
  * Returns the full structured compact prompt for LLM-based summarization.
- * The summarization request is built with `tools: []`, so the prompt says
- * nothing about tool use.
+ * The text-path summarization request is built with `tools: []`, so the
+ * prompt says nothing about tool use; see `getSharedPrefixCompactPrompt`.
  *
  * @param customInstructions - Optional user-provided instructions appended after the
  *   base prompt (e.g. from CLI args `/compact [instructions]` or pre-compact hook output).
@@ -95,6 +95,18 @@ export function getCompactPrompt(customInstructions?: string): string {
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`
   }
   return prompt
+}
+
+/**
+ * The compact prompt for a request that reuses the conversation itself as its
+ * context — same system, same tools, same history — so the summary reads the
+ * cached prefix instead of paying for the conversation again as text. The
+ * tools are there only to keep that prefix identical, hence the instruction.
+ */
+export function getSharedPrefixCompactPrompt(customInstructions?: string): string {
+  return `${getCompactPrompt(customInstructions)}
+
+Respond with the summary as plain text. Do not call any tools.`
 }
 
 /**

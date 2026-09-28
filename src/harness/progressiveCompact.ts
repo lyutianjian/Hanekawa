@@ -9,6 +9,7 @@ import type { SessionRecord } from './types.js'
 import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { getRecordsAfterLastCompact } from './requestPrep.js'
 import { projectRecordImagesToText } from './turnImages.js'
+import type { ToolResultTrimState } from './toolResultTrimState.js'
 
 /** Text a cleared tool result carries; image placeholders may follow it. */
 const CLEARED_TOOL_RESULT_CONTENT = '[Old tool result content cleared]'
@@ -23,6 +24,13 @@ export interface ProgressiveCompactInput {
   /** Image-token strategy of the model serving the request being sized. */
   imageTokenStrategy?: ImageTokenStrategy
   now?: Date
+  /**
+   * The session's trim ledger. A clear is recorded there so the next request
+   * replays it; without that the very next iteration sends the originals back
+   * and pays a second full-prefix cache write.
+   */
+  trimState?: ToolResultTrimState
+  turnId?: string
 }
 
 export interface ProgressiveCompactResult {
@@ -39,7 +47,7 @@ export function applyProgressiveCompaction(input: ProgressiveCompactInput): Prog
 
   // Keep active request prefixes stable. Only clear old tool results after
   // a long idle gap; capacity-based compaction is handled by autoCompact.
-  const timeBased = applyTimeBasedMicrocompact(records, input.now)
+  const timeBased = applyTimeBasedMicrocompact(records, input.now, input.trimState, input.turnId)
   if (timeBased.changed) {
     records = timeBased.records
     tokenCount = estimateCurrentTokens({ ...input, records })
@@ -91,6 +99,8 @@ export function estimateCurrentTokens(input: ProgressiveCompactInput): number {
 function applyTimeBasedMicrocompact(
   records: SessionRecord[],
   now?: Date,
+  trimState?: ToolResultTrimState,
+  turnId?: string,
 ): { records: SessionRecord[]; changed: boolean } {
   // Only fire when the caller explicitly provides a timestamp (loop.ts does).
   // Without an explicit `now`, tests and internal callers are not affected.
@@ -141,6 +151,7 @@ function applyTimeBasedMicrocompact(
     const hasImages = record.images !== undefined && record.images.length > 0
     if (record.content.startsWith(CLEARED_TOOL_RESULT_CONTENT) && !hasImages) return record
     changed = true
+    trimState?.recordTrim(record.toolUseId, CLEARED_TOOL_RESULT_CONTENT, turnId)
     // Clearing the text but keeping `images` would go on uploading the pixels
     // this pass exists to reclaim (design §11.3) — the shared projection drops
     // them and leaves a placeholder naming what was there.

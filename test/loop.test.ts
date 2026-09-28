@@ -1965,7 +1965,8 @@ test('agent loop consumes pending post-compact restore after a successful build'
       const contextItems = request.contextItems ?? []
       assert.ok(contextItems.some(
         (item) => item.kind === 'message'
-          && item.message.id === 'meta:post-compact-restore'
+          && item.message.id === 'compact-1:restore'
+          && !item.message.transient
           && /# restoredSkill debugging\nDebug skill body/.test(item.message.content),
       ))
       return { content: 'done', toolCalls: [] }
@@ -1994,6 +1995,7 @@ test('agent loop consumes pending post-compact restore after a successful build'
   const boundary = records.find((record) => record.id === 'compact-1')
   assert.equal(boundary?.type, 'compact_boundary')
   assert.equal(boundary?.type === 'compact_boundary' ? boundary.postCompactRestore : undefined, 'consumed')
+  assert.match(boundary?.type === 'compact_boundary' ? boundary.restoredContext ?? '' : '', /Debug skill body/)
 })
 
 test('agent loop preserves tool result association for mixed safe and unsafe order', async () => {
@@ -2460,6 +2462,62 @@ test('agent loop auto-compacts without preparing records twice in the same itera
   assert.ok(records.some((record) => record.type === 'compact_boundary'))
 })
 
+test('auto-compaction sends the conversation\'s own request with the compact prompt last', async () => {
+  resetAutoCompactFailureState()
+  const records: SessionRecord[] = [
+    { type: 'message', id: 'old-user', role: 'user', content: 'old context '.repeat(200), createdAt: '2026-05-10T00:00:00.000Z' },
+    { type: 'message', id: 'old-assistant', role: 'assistant', content: 'old answer '.repeat(200), createdAt: '2026-05-10T00:01:00.000Z' },
+  ]
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      const last = request.contextItems?.at(-1)
+      const isCompact = last?.kind === 'message' && last.message.id === 'compact-request'
+      return { content: isCompact ? '<summary>shared summary</summary>' : 'done', toolCalls: [] }
+    },
+  }
+  const tools: Tool[] = [{
+    name: 'echo',
+    description: 'echo',
+    inputSchema: z.object({ value: z.string() }).strict(),
+    riskLevel: 'safe',
+    execute: async () => ({ ok: true, content: '' }),
+  }]
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools,
+    contextBuilder: new ContextBuilder(),
+    toolRunner: new ToolRunner(tools, new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    }),
+    toolContext: { cwd: process.cwd(), sessionId: 'shared-prefix-compact', readFiles: new Set() },
+    contextWindow: 10_000,
+    contextManagement: { contextWindow: 10_000, summaryOutputTokens: 100, autoCompactBufferTokens: 50, autoCompactThresholdRatio: 0.05 },
+    recordStream: recordStreamFor(records),
+  })
+
+  await loop.run({ text: 'latest request' })
+
+  const [compact, main] = requests
+  assert.equal(displayCacheSource(compact!.cacheSource!), 'compact')
+  const compactPrompt = compact!.contextItems!.at(-1)
+  assert.ok(compactPrompt?.kind === 'message' && compactPrompt.message.transient === true)
+  assert.match(compactPrompt.kind === 'message' ? compactPrompt.message.content : '', /Do not call any tools/)
+  // Same system, tools, and history as the main request: the prefix it reads.
+  assert.deepEqual(compact!.systemBlocks, main!.systemBlocks)
+  assert.deepEqual(compact!.tools?.map((tool) => tool.name), ['echo'])
+  const durable = (request: ModelRequest) => request.contextItems!
+    .filter((item) => !(item.kind === 'message' && item.message.transient))
+    .map((item) => item.kind === 'message' ? item.message.id : item.kind)
+  assert.deepEqual(durable(compact!), durable(main!))
+  assert.ok(durable(compact!).includes('old-user'))
+  const boundary = records.find((record) => record.type === 'compact_boundary')
+  assert.match(boundary?.type === 'compact_boundary' ? boundary.summary : '', /shared summary/)
+})
+
 test('agent loop includes compact summary on the next user turn after compaction', async () => {
   const records: SessionRecord[] = [
     {
@@ -2865,7 +2923,8 @@ test('agent loop continues the turn when auto-compact summary fails', async () =
   const response = await loop.run({ text: 'latest request' })
 
   assert.equal(response.content, 'main response')
-  assert.deepEqual(providerCalls, ['compact', 'main'])
+  // The shared-prefix summary fails, then the text fallback does.
+  assert.deepEqual(providerCalls, ['compact', 'compact', 'main'])
   assert.equal(records.filter((record) => record.type === 'compact_attempt_failed').length, 1)
   assert.equal(records.some((record) => record.type === 'compact_boundary'), false)
 })

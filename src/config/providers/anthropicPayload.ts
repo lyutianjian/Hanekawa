@@ -273,17 +273,22 @@ export function buildAnthropicPayload(request: ModelRequest, maxOutputTokens?: n
   // ALL deferred tool names from the full (unfiltered) tool list for <available-deferred-tools>.
   const allDeferredNames = request.allDeferredToolNames
   const tools = buildAnthropicTools(request.tools, enableCaching, request.cacheRuntime, deferLoadingNames)
-  let messages = buildAnthropicMessages(request)
+  let messages: Array<Record<string, unknown>> = buildAnthropicMessages(request)
   const systemBlocks = request.systemBlocks ?? (request.system ? [request.system] : [])
 
-  // Inject <available-deferred-tools> as the first user message.
-  // Uses ALL deferred tool names (not just discovered ones) so the model
-  // knows the full set of tools available via ToolSearch.
+  // Announce ALL deferred tool names (not just discovered ones) so the model
+  // knows the full set reachable via ToolSearch. The list moves whenever an
+  // MCP server connects or drops, so it rides the per-request tail: as the
+  // first message, every such change would void the whole cached history.
   if (dynamicToolSearch && allDeferredNames && allDeferredNames.size > 0) {
     const deferredList = [...allDeferredNames].sort().join('\n')
     messages = [
-      { role: 'user', content: `<available-deferred-tools>\n${deferredList}\n</available-deferred-tools>` },
       ...messages,
+      {
+        role: 'user',
+        content: anthropicContent(`<available-deferred-tools>\n${deferredList}\n</available-deferred-tools>`),
+        [TRANSIENT_MESSAGE_KEY]: true,
+      },
     ]
   }
 

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { applyProgressiveCompaction, estimateCurrentTokens } from '../src/harness/progressiveCompact.js'
 import type { SessionRecord } from '../src/harness/types.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
+import { ToolResultTrimState } from '../src/harness/toolResultTrimState.js'
+import { prepareRecordsForRequestWithDiagnostics } from '../src/harness/requestPrep.js'
 
 function userTurn(index: number, content = `user ${index}`): SessionRecord {
   return {
@@ -208,6 +210,22 @@ test('applyProgressiveCompaction triggers time-based microcompact when gap excee
   // Older ones should be cleared
   assert.match(toolResultContent(result.records, 'result-0'), /Old tool result content cleared/)
   assert.match(toolResultContent(result.records, 'result-2'), /Old tool result content cleared/)
+})
+
+test('a time-based clear is recorded in the trim ledger so the next request replays it', () => {
+  const records: SessionRecord[] = []
+  for (let index = 0; index < 8; index++) {
+    records.push(userTurn(index), ...toolPair(index, 'large output '.repeat(500)), assistantTurn(index))
+  }
+  const trimState = ToolResultTrimState.fromRecords(records)
+
+  applyProgressiveCompaction({ records, now: new Date('2026-05-10T02:00:00.000Z'), trimState })
+  assert.equal(trimState.takePendingRecords().length, 3)
+
+  // The next iteration starts from the untouched log, a moment after a reply.
+  const next = prepareRecordsForRequestWithDiagnostics(records, {}, new Date(), { trimState }).records
+  assert.match(toolResultContent(next, 'result-0'), /Old tool result content cleared/)
+  assert.doesNotMatch(toolResultContent(next, 'result-7'), /Old tool result/)
 })
 
 test('applyProgressiveCompaction skips time-based microcompact when gap is under threshold', () => {

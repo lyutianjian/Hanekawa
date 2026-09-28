@@ -260,23 +260,29 @@ test('ContextBuilder build input can override enabled system sections', async ()
   assert.match(built.system ?? '', /# Using your tools/)
 })
 
-test('ContextBuilder adds a dynamic plan mode reminder', async () => {
+test('ContextBuilder puts the permission mode reminder on the tail, not in the system prompt', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000))
-
-  const built = await builder.build({
-    records: [],
+  const build = (permissionMode: 'plan' | 'acceptEdits' | 'default') => builder.build({
+    records: [{ type: 'message', id: 'u1', role: 'user', content: 'hi', createdAt: '2026-05-10T00:00:00.000Z' }],
     tools: [],
     includeUserContext: false,
-    permissionMode: 'plan',
+    permissionMode,
   })
 
-  assert.match(built.system ?? '', /Plan mode is active/)
-  assert.match(built.system ?? '', /AskUserQuestion for unresolved requirements/)
-  assert.match(built.system ?? '', /ExitPlanMode when the plan is ready for approval/)
-  assert.match(built.system ?? '', /always use ExitPlanMode/)
-  assert.equal(built.systemBlocks?.at(-2), '__MYAGENT_SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')
-  assert.match(built.systemBlocks?.at(-1) ?? '', /Plan mode/)
-  assert.match(built.systemBlocks?.at(-1) ?? '', /ExitPlanMode/)
+  const plan = await build('plan')
+  const tail = plan.contextItems.at(-1)
+  assert.equal(tail?.kind === 'message' ? tail.message.transient : undefined, true)
+  const reminder = tail?.kind === 'message' ? tail.message.content : ''
+  assert.match(reminder, /Plan mode is active/)
+  assert.match(reminder, /AskUserQuestion for unresolved requirements/)
+  assert.match(reminder, /always use ExitPlanMode/)
+  assert.doesNotMatch(plan.system ?? '', /Plan mode/)
+
+  const acceptEdits = await build('acceptEdits')
+  const normal = await build('default')
+  assert.equal(acceptEdits.system, plan.system)
+  assert.equal(normal.system, plan.system)
+  assert.equal(normal.contextItems.length, 1)
 })
 
 test('ContextBuilder injects available skills as system reminder', async () => {
@@ -372,63 +378,31 @@ test('ContextBuilder activates file-matched skills from read files', async () =>
     assert.match(userContext.message.content, /## react/)
     assert.match(userContext.message.content, /Prefer small components\./)
     assert.doesNotMatch(userContext.message.content, /Use parameterized queries/)
-    assert.equal(toolContext.invokedSkills.get('react')?.content, 'Prefer small components.')
-    assert.equal(toolContext.invokedSkills.has('sql'), false)
     assert.doesNotMatch(built.system ?? '', /react: React guidance/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ContextBuilder gives file-matched skills lower restore priority than manual skills', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
-  const originalNow = Date.now
-  Date.now = () => 1_000_000_000
-  try {
-    const file = path.join(dir, 'src', 'App.tsx')
-    const toolContext = {
-      cwd: dir,
+test('ContextBuilder keeps always and invoked skills out of the uncached tail', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  const built = await builder.build({
+    records: [],
+    tools: [],
+    skills: [{ name: 'house-style', description: 'House style', content: 'Always use tabs.', inclusion: 'always' }],
+    toolContext: {
+      cwd: process.cwd(),
       sessionId: 's1',
-      readFiles: new Set<string>([file]),
-      invokedSkills: new Map<string, { content: string; timestamp: number }>([
-        ['manual', { content: 'Manual content.', timestamp: 900_000_000 }],
-        ['react', { content: 'Previously manual react content.', timestamp: 800_000_000 }],
-      ]),
-    }
-    const builder = new ContextBuilder(undefined, contextWindow(5000))
+      readFiles: new Set(),
+      invokedSkills: new Map([['debugging', { content: 'Debug skill body', timestamp: 1 }]]),
+    },
+  })
 
-    await builder.build({
-      records: [],
-      tools: [],
-      skills: [
-        {
-          name: 'react',
-          description: 'React guidance',
-          content: 'Prefer small components.',
-          inclusion: 'fileMatch',
-          paths: ['src/**/*.tsx'],
-        },
-        {
-          name: 'sql',
-          description: 'SQL guidance',
-          content: 'Use parameterized queries.',
-          inclusion: 'fileMatch',
-          paths: ['src/**/*.tsx'],
-        },
-      ],
-      toolContext,
-      includeUserContext: false,
-    })
-
-    assert.equal(toolContext.invokedSkills.get('react')?.timestamp, 800_000_000)
-    assert.equal(toolContext.invokedSkills.get('sql')?.timestamp, 913_600_000)
-    assert.equal(toolContext.invokedSkills.get('manual')?.timestamp, 900_000_000)
-  } finally {
-    Date.now = originalNow
-    await rm(dir, { recursive: true, force: true })
-  }
+  assert.match(built.system ?? '', /## house-style\nAlways use tabs\./)
+  const tail = built.contextItems.at(-1)
+  assert.equal(tail?.kind === 'message' ? tail.message.id : undefined, 'meta:user-context')
+  assert.doesNotMatch(tail?.kind === 'message' ? tail.message.content : '', /Always use tabs|Debug skill body|activeSkills/)
 })
-
 test('ContextBuilder budgets messages and tool records together', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(7000))
   const records: SessionRecord[] = [
@@ -548,20 +522,12 @@ test('ContextBuilder uses latest compact boundary as prior context summary', asy
   assert.ok(built.contextItems.some((item) => item.kind === 'message' && item.message.id === 'new'))
 })
 
-test('ContextBuilder restores recent file and skill context after compact boundary', async () => {
+test('ContextBuilder builds the post-compact restore from recent files and skills', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
   const builder = new ContextBuilder(undefined, contextWindow(50_000))
   try {
     const file = path.join(dir, 'a.ts')
     await writeFile(file, 'export const a = 2', 'utf8')
-    const records: SessionRecord[] = [{
-      type: 'compact_boundary',
-      id: 'compact-1',
-      summary: 'summary',
-      preTokens: 1234,
-      createdAt: '2026-05-10T00:01:00.000Z',
-    }]
-
     const toolContext = {
       cwd: dir,
       sessionId: 's1',
@@ -573,28 +539,20 @@ test('ContextBuilder restores recent file and skill context after compact bounda
         ['debugging', { content: 'Debug skill body', timestamp: 20 }],
       ]),
     }
-    const built = await builder.build({
-      records,
-      tools: [],
-      includeUserContext: false,
-      toolContext,
-      includePostCompactRestore: true,
-    })
-
-    const restore = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'meta:post-compact-restore')
-    assert.equal(restore?.kind, 'message')
-    assert.ok(restore.message.content.includes(`# restoredFile ${file}`))
-    assert.match(restore.message.content, /export const a = 2/)
-    assert.doesNotMatch(restore.message.content, /export const a = 1/)
+    const restore = await builder.buildPostCompactRestore(toolContext)
+    assert.ok(restore)
+    assert.ok(restore.includes(`# restoredFile ${file}`))
+    assert.match(restore, /export const a = 2/)
+    assert.doesNotMatch(restore, /export const a = 1/)
     assert.equal(toolContext.readFileState.get(file)?.content, 'export const a = 2')
-    assert.match(restore.message.content, /restoredSkill debugging/)
-    assert.match(restore.message.content, /Debug skill body/)
+    assert.match(restore, /restoredSkill debugging/)
+    assert.match(restore, /Debug skill body/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
 })
 
-test('ContextBuilder does not restore compact context unless explicitly requested', async () => {
+test('ContextBuilder renders a boundary\'s stored restore without rebuilding it', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-context-'))
   const builder = new ContextBuilder(undefined, contextWindow(50_000))
   try {
@@ -615,6 +573,8 @@ test('ContextBuilder does not restore compact context unless explicitly requeste
         id: 'compact-1',
         summary: 'summary',
         preTokens: 1234,
+        postCompactRestore: 'consumed',
+        restoredContext: 'stored restore',
         createdAt: '2026-05-10T00:01:00.000Z',
       }],
       tools: [],
@@ -622,7 +582,9 @@ test('ContextBuilder does not restore compact context unless explicitly requeste
       toolContext,
     })
 
-    assert.ok(!built.contextItems.some((item) => item.kind === 'message' && item.message.id === 'meta:post-compact-restore'))
+    const restore = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'compact-1:restore')
+    assert.equal(restore?.kind === 'message' ? restore.message.content : undefined, 'stored restore')
+    assert.equal(restore?.kind === 'message' ? restore.message.transient : undefined, undefined)
     assert.equal(toolContext.readFileState.get(file)?.content, 'export const a = 1')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -645,31 +607,17 @@ test('ContextBuilder limits restored files by recency and budget', async () => {
       })
     }
 
-    const built = await builder.build({
-      records: [{
-        type: 'compact_boundary',
-        id: 'compact-1',
-        summary: 'summary',
-        preTokens: 1234,
-        createdAt: '2026-05-10T00:01:00.000Z',
-      }],
-      tools: [],
-      includeUserContext: false,
-      toolContext: {
-        cwd: dir,
-        sessionId: 's1',
-        readFiles: new Set(),
-        readFileState,
-      },
-      includePostCompactRestore: true,
+    const restore = await builder.buildPostCompactRestore({
+      cwd: dir,
+      sessionId: 's1',
+      readFiles: new Set(),
+      readFileState,
     })
-
-    const restore = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'meta:post-compact-restore')
-    assert.equal(restore?.kind, 'message')
-    assert.equal((restore.message.content.match(/# restoredFile/g) ?? []).length, 5)
-    assert.match(restore.message.content, /file-6/)
-    assert.doesNotMatch(restore.message.content, /file-0/)
-    assert.doesNotMatch(restore.message.content, /stale 6/)
+    assert.ok(restore)
+    assert.equal((restore.match(/# restoredFile/g) ?? []).length, 5)
+    assert.match(restore, /file-6/)
+    assert.doesNotMatch(restore, /file-0/)
+    assert.doesNotMatch(restore, /stale 6/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -682,31 +630,17 @@ test('ContextBuilder applies restore file budget after refreshing from disk', as
     const file = path.join(dir, 'large.ts')
     await writeFile(file, 'x'.repeat(30_000), 'utf8')
 
-    const built = await builder.build({
-      records: [{
-        type: 'compact_boundary',
-        id: 'compact-1',
-        summary: 'summary',
-        preTokens: 1234,
-        createdAt: '2026-05-10T00:01:00.000Z',
-      }],
-      tools: [],
-      includeUserContext: false,
-      toolContext: {
-        cwd: dir,
-        sessionId: 's1',
-        readFiles: new Set(),
-        readFileState: new Map<string, ReadFileState>([
-          [file, { content: 'small cached content', timestamp: 1, mtimeMs: 1, size: 20 }],
-        ]),
-      },
-      includePostCompactRestore: true,
+    const restore = await builder.buildPostCompactRestore({
+      cwd: dir,
+      sessionId: 's1',
+      readFiles: new Set(),
+      readFileState: new Map<string, ReadFileState>([
+        [file, { content: 'small cached content', timestamp: 1, mtimeMs: 1, size: 20 }],
+      ]),
     })
-
-    const restore = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'meta:post-compact-restore')
-    assert.equal(restore?.kind, 'message')
-    assert.match(restore.message.content, /\[\.\.\. restored content truncated for context budget \.\.\.\]/)
-    assert.ok(restore.message.content.length < 30_000)
+    assert.ok(restore)
+    assert.match(restore, /\[\.\.\. restored content truncated for context budget \.\.\.\]/)
+    assert.ok(restore.length < 30_000)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -726,23 +660,9 @@ test('ContextBuilder notes restored files that are no longer accessible', async 
       ]),
     }
 
-    const built = await builder.build({
-      records: [{
-        type: 'compact_boundary',
-        id: 'compact-1',
-        summary: 'summary',
-        preTokens: 1234,
-        createdAt: '2026-05-10T00:01:00.000Z',
-      }],
-      tools: [],
-      includeUserContext: false,
-      toolContext,
-      includePostCompactRestore: true,
-    })
-
-    const restore = built.contextItems.find((item) => item.kind === 'message' && item.message.id === 'meta:post-compact-restore')
-    assert.equal(restore?.kind, 'message')
-    assert.match(restore.message.content, new RegExp(`previously read file ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is no longer accessible`))
+    const restore = await builder.buildPostCompactRestore(toolContext)
+    assert.ok(restore)
+    assert.match(restore, new RegExp(`previously read file ${file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} is no longer accessible`))
     assert.equal(toolContext.readFiles.has(file), false)
     assert.equal(toolContext.readFileState.has(file), false)
   } finally {

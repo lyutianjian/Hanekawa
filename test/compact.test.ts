@@ -38,7 +38,8 @@ test('autoCompactIfNeeded writes compact boundary when threshold is exceeded', a
     async createMessage(request) {
       assert.equal(request.tools?.length, 0)
       assert.match(request.messages[0]?.content ?? '', /old context/)
-      assert.doesNotMatch(request.messages[0]?.content ?? '', /latest request/)
+      // The boundary lands after the latest user message, so the summary must carry it.
+      assert.match(request.messages[0]?.content ?? '', /latest request/)
       return {
         content: 'compact summary',
         toolCalls: [],
@@ -993,9 +994,10 @@ test('the summary request is text only: images become placeholders naming name, 
   assert.match(seenPrompt, /shot\.png, sent 800x600, original 1600x1200, cached at \/cache\/img-shot\/original\.png/)
   assert.match(seenPrompt, /diagram\.png, sent 400x300, original 1600x1200, cached at \/cache\/img-diagram\/original\.png/)
   assert.match(seenPrompt, /do not describe or infer what the image shows/)
-  // The latest user message — text *and* image — is never summarized away.
-  assert.doesNotMatch(seenPrompt, /latest request/)
-  assert.doesNotMatch(seenPrompt, /latest\.png/)
+  // The latest user message — text and image — goes into the summary too:
+  // the boundary lands after it, so nothing else would carry it forward.
+  assert.match(seenPrompt, /latest request/)
+  assert.match(seenPrompt, /latest\.png/)
   // A pure projection: the records keep their refs for the request itself.
   assert.deepEqual(records[2] && 'images' in records[2] ? records[2].images : undefined, [latest])
   assert.deepEqual(records[0] && 'images' in records[0] ? records[0].images : undefined, [shot])

@@ -617,6 +617,13 @@ test('explicit off and the global kill switch omit cache markers', async () => {
   assert.equal(collectCacheControlTelemetry(onRequests[0]!.payload).total, 0)
 })
 
+test('a one-shot request sends no cache markers even with caching explicitly on', async () => {
+  const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key', promptCaching: 'on' })
+  const requests = captureRequests(provider, () => ({ input_tokens: 10, output_tokens: 1 }))
+  await provider.createMessage(cacheRequest({ promptCaching: false }))
+  assert.equal(collectCacheControlTelemetry(requests[0]!.payload).total, 0)
+})
+
 test('explicit on reports unsupported caching instead of silently disabling it', async () => {
   const provider = new AnthropicProvider({ model: 'claude-sonnet', apiKey: 'test-key', promptCaching: 'on' })
   const rejected = Object.assign(new Error('Unknown parameter: cache_control'), { status: 400 })

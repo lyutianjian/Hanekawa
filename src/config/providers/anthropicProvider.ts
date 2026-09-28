@@ -121,6 +121,7 @@ export class AnthropicProvider implements ModelProvider {
       async (attempt) => {
         const key = rejectionKey(this.endpoint, request.model)
         const enableCaching = this.promptCaching !== 'off'
+          && request.promptCaching !== false
           && getPromptCachingEnabled()
           && (this.promptCaching === 'on' || !rejectedPromptCaching.has(key))
 

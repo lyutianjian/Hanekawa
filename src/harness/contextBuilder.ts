@@ -10,7 +10,6 @@ import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './cacheControl.js'
 import { SystemPromptSectionCache } from './sections.js'
 import { captureReadFileStateFromStat, readFileAndRemember } from '../tools/fileState.js'
 import type { SkillDefinition } from '../services/skills/skillsService.js'
-import { evictOldestIfNeeded } from '../utils/cache.js'
 import { wrapInSystemReminder } from './systemReminder.js'
 
 const require = createRequire(import.meta.url)
@@ -37,7 +36,6 @@ export interface BuildContextInput {
   env?: EnvironmentInfo
   permissionMode?: PermissionMode
   transientUserContext?: string[]
-  includePostCompactRestore?: boolean
   enabledSections?: SectionKey[]
   dynamicToolSearchEnabled?: boolean
 }
@@ -76,8 +74,6 @@ const DEFAULT_SECTION_KEYS: readonly SectionKey[] = [
   'tone-and-style',
   'output-efficiency',
 ]
-
-const AUTO_ACTIVATED_SKILL_TIMESTAMP_OFFSET_MS = 24 * 60 * 60 * 1000
 
 const INTRO_SECTION = `You are Hanekawa, an interactive CLI agent developed by lyutianjian for software engineering tasks.
 
@@ -136,6 +132,8 @@ Don't create planning or analysis documents unless the user asks.
 const PLAN_MODE_SYSTEM_REMINDER = wrapInSystemReminder(
   'Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received. To take action you must first present the plan to the user via ExitPlanMode. Your turn must end only by using AskUserQuestion for unresolved requirements, or by calling ExitPlanMode when the plan is ready for approval. Do NOT ask about plan approval via text or AskUserQuestion — always use ExitPlanMode.',
 )
+
+const ACCEPT_EDITS_REMINDER = wrapInSystemReminder('You are in accept-edits mode. File edits inside the working directory are auto-approved, as are simple workspace file operations run through Bash (mkdir, touch, rm, rmdir, mv, cp, sed -i). Everything else — other shell commands, paths outside the working directory, and protected paths — still uses the normal permission gate.')
 
 function systemPromptSection(
   sections: SystemPromptSectionCache,
@@ -196,27 +194,26 @@ export class ContextBuilder {
       input.tools,
       input.skills ?? [],
       input.env,
-      input.permissionMode,
       input.dynamicToolSearchEnabled ?? false,
     )
     const system = systemBlocks
       .filter((b) => b !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
       .join('\n\n')
-    const activeSkills = this.activateSkills(input.skills ?? [], input.toolContext)
-    const postCompactRestoreContext = input.includePostCompactRestore
-      ? await this.buildPostCompactRestoreContext(input.toolContext)
-      : []
+    const activeSkills = matchFileSkills(input.skills ?? [], input.toolContext)
     // Everything that can change between turns lives *after* the history
     // (spec §6.2). The date rolls over, a fileMatch skill activates from a
-    // file the loop just read, a compact restores files — in front of the
-    // history each of those rewrites the first message and voids the whole
-    // cached prefix; at the tail they are an append, which costs nothing.
+    // file the loop just read, the user cycles the permission mode — in front
+    // of the history each of those rewrites the first message (or the system
+    // prompt) and voids the whole cached prefix; at the tail they are an
+    // append, which costs nothing.
     const allContextItems = [
       ...this.recordsToContextItems(input.preloadRecords ?? []),
       ...this.recordsToContextItems(input.records),
-      ...postCompactRestoreContext,
       ...(input.includeUserContext === false ? [] : this.buildUserContext(input.now ?? new Date(), activeSkills)),
-      ...this.buildTransientUserContext(input.transientUserContext ?? [], input.now ?? new Date()),
+      ...this.buildTransientUserContext(
+        [permissionModeReminder(input.permissionMode), ...(input.transientUserContext ?? [])],
+        input.now ?? new Date(),
+      ),
     ]
 
     const built = this.composer.composeContextItems(allContextItems, {
@@ -233,10 +230,10 @@ export class ContextBuilder {
     }
   }
 
-  private buildTransientUserContext(items: readonly string[], now: Date): ModelContextItem[] {
+  private buildTransientUserContext(items: ReadonlyArray<string | undefined>, now: Date): ModelContextItem[] {
     const contextItems: ModelContextItem[] = []
     for (const [index, content] of items.entries()) {
-      if (content.trim().length === 0) continue
+      if (!content?.trim()) continue
       contextItems.push({
         kind: 'message',
         message: {
@@ -262,6 +259,17 @@ export class ContextBuilder {
           kind: 'message',
           message: compactBoundaryToMessage(record),
         })
+        if (record.restoredContext) {
+          contextItems.push({
+            kind: 'message',
+            message: {
+              id: `${record.id}:restore`,
+              role: 'user',
+              content: record.restoredContext,
+              createdAt: record.createdAt,
+            },
+          })
+        }
         continue
       }
 
@@ -342,7 +350,6 @@ export class ContextBuilder {
     tools: readonly Tool[] = [],
     skills: readonly SkillDefinition[] = [],
     env?: EnvironmentInfo,
-    permissionMode?: PermissionMode,
     dynamicToolSearchEnabled = false,
   ): string[] {
     const staticSections = [
@@ -359,7 +366,6 @@ export class ContextBuilder {
       // Critical reminders are intentionally dynamic: they can be reasserted
       // every turn, at the cost of staying outside prompt-cache markers.
       criticalSystemReminder?.trim(),
-      this.buildPlanModeSystemReminder(permissionMode),
     ].filter((s): s is string => Boolean(s))
 
     if (dynamicSections.length > 0) {
@@ -402,11 +408,15 @@ export class ContextBuilder {
 
   private buildSkillsSystemSection(skills: readonly SkillDefinition[]): string | undefined {
     // Skill inclusion is split across system and user context:
-    // - always skills are listed in system blocks so the model sees them every turn.
-    // - manual skills are listed in system blocks as available for explicit Skill calls.
+    // - always skills are listed here with their full content, inside the cache.
+    // - manual skills are listed here as available for explicit Skill calls.
     // - fileMatch skills are omitted here and activated from readFiles in user context.
     const userInvocableSkills = skills.filter((skill) => skill.inclusion !== 'fileMatch')
-    const fingerprint = JSON.stringify(userInvocableSkills.map((skill) => [skill.name, skill.description]))
+    const alwaysSkills = skills.filter((skill) => skill.inclusion === 'always')
+    const fingerprint = JSON.stringify([
+      userInvocableSkills.map((skill) => [skill.name, skill.description]),
+      alwaysSkills.map((skill) => skill.content),
+    ])
     if (fingerprint !== this.skillsSystemSectionFingerprint) {
       this.clearCachedSections('system-prompt:skills')
       this.skillsSystemSectionFingerprint = fingerprint
@@ -418,18 +428,9 @@ export class ContextBuilder {
         '# Available skills',
         'The following skills are available for use with the Skill tool:',
         userInvocableSkills.map((skill) => `- ${skill.name}: ${skill.description}`).join('\n'),
+        ...alwaysSkills.map((skill) => `\n## ${skill.name}\n${skill.content}`),
       ].join('\n'),
     )
-  }
-
-  private buildPlanModeSystemReminder(permissionMode?: PermissionMode): string | undefined {
-    if (permissionMode === 'plan') {
-      return PLAN_MODE_SYSTEM_REMINDER
-    }
-    if (permissionMode === 'acceptEdits') {
-      return wrapInSystemReminder('You are in accept-edits mode. File edits inside the working directory are auto-approved, as are simple workspace file operations run through Bash (mkdir, touch, rm, rmdir, mv, cp, sed -i). Everything else — other shell commands, paths outside the working directory, and protected paths — still uses the normal permission gate.')
-    }
-    return undefined
   }
 
   private buildUserContext(now: Date, activeSkills: readonly ActiveSkill[]): ModelContextItem[] {
@@ -460,39 +461,6 @@ export class ContextBuilder {
     }]
   }
 
-  private activateSkills(skills: readonly SkillDefinition[], toolContext: ToolContext | undefined): ActiveSkill[] {
-    // Skill inclusion is split across system and user context:
-    // - always/manual skills are exposed by buildSkillsSystemSection.
-    // - explicitly invoked skills remain in invokedSkills with their original timestamp.
-    // - fileMatch skills activate from readFiles and are injected through user context.
-    if (skills.length === 0) return []
-
-    const active = new Map<string, ActiveSkill>()
-    for (const skill of skills) {
-      const invoked = toolContext?.invokedSkills?.get(skill.name)
-      if (invoked) {
-        active.set(skill.name, { name: skill.name, content: invoked.content })
-      }
-    }
-
-    for (const skill of skills) {
-      if (!shouldActivateSkill(skill, toolContext)) continue
-      if (toolContext) {
-        toolContext.invokedSkills ??= new Map()
-        if (!toolContext.invokedSkills.has(skill.name)) {
-          evictOldestIfNeeded(toolContext.invokedSkills, 50)
-          toolContext.invokedSkills.set(skill.name, {
-            content: skill.content,
-            timestamp: Date.now() - AUTO_ACTIVATED_SKILL_TIMESTAMP_OFFSET_MS,
-          })
-        }
-      }
-      active.set(skill.name, { name: skill.name, content: skill.content })
-    }
-
-    return [...active.values()]
-  }
-
   private buildActiveSkillUserContext(activeSkills: readonly ActiveSkill[]): string | undefined {
     if (activeSkills.length === 0) return undefined
     return [
@@ -507,7 +475,11 @@ export class ContextBuilder {
     this.sections.clear('system-prompt:skills')
   }
 
-  private async buildPostCompactRestoreContext(toolContext: ToolContext | undefined): Promise<ModelContextItem[]> {
+  /**
+   * The post-compact restore, built once and stored on the boundary record so
+   * every later request replays the same bytes as part of the cached prefix.
+   */
+  async buildPostCompactRestore(toolContext: ToolContext | undefined): Promise<string | undefined> {
     const fileRestoreLimits = {
       maxEntries: 5,
       maxTokensPerEntry: 5_000,
@@ -528,7 +500,7 @@ export class ContextBuilder {
       ? `Previously discovered tools via ToolSearch (available for immediate use): ${[...discoveredNames].join(', ')}`
       : undefined
 
-    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0 && !discoveredBlock) return []
+    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0 && !discoveredBlock) return undefined
 
     const innerContent = [
       'Prior conversation was compacted. The following recently used context has been restored for continuity:',
@@ -537,19 +509,19 @@ export class ContextBuilder {
       ...restoredSkills.map((entry) => `# restoredSkill ${entry.name}\n${entry.content}`),
       ...(discoveredBlock ? [discoveredBlock] : []),
     ].join('\n\n')
-    const content = wrapInSystemReminder(innerContent)
-
-    return [{
-      kind: 'message',
-      message: {
-        id: 'meta:post-compact-restore',
-        role: 'user',
-        content,
-        createdAt: new Date().toISOString(),
-        transient: true,
-      },
-    }]
+    return wrapInSystemReminder(innerContent)
   }
+}
+
+/**
+ * The standing reminder for the current permission mode. It rides the uncached
+ * tail rather than the system prompt: the user cycles modes mid-session, and a
+ * system-prompt edit invalidates every cached message behind it.
+ */
+function permissionModeReminder(permissionMode: PermissionMode | undefined): string | undefined {
+  if (permissionMode === 'plan') return PLAN_MODE_SYSTEM_REMINDER
+  if (permissionMode === 'acceptEdits') return ACCEPT_EDITS_REMINDER
+  return undefined
 }
 
 interface ActiveSkill {
@@ -557,10 +529,18 @@ interface ActiveSkill {
   content: string
 }
 
-function shouldActivateSkill(skill: SkillDefinition, toolContext: ToolContext | undefined): boolean {
-  if (skill.inclusion === 'always') return true
-  if (skill.inclusion !== 'fileMatch' || !skill.paths || skill.paths.length === 0 || !toolContext) return false
-  return [...toolContext.readFiles].some((file) => skillMatchesReadFile(skill, file, toolContext.cwd))
+/**
+ * fileMatch skills whose paths match a file this session has read. They ride
+ * the per-request tail, uncached, so only they belong there: an `always`
+ * skill lives in the cached system prompt, and an invoked skill's content is
+ * already in history as its Skill tool_result.
+ */
+function matchFileSkills(skills: readonly SkillDefinition[], toolContext: ToolContext | undefined): ActiveSkill[] {
+  if (!toolContext) return []
+  return skills
+    .filter((skill) => skill.inclusion === 'fileMatch' && skill.paths && skill.paths.length > 0
+      && [...toolContext.readFiles].some((file) => skillMatchesReadFile(skill, file, toolContext.cwd)))
+    .map((skill) => ({ name: skill.name, content: skill.content }))
 }
 
 function skillMatchesReadFile(skill: SkillDefinition, file: string, cwd: string): boolean {

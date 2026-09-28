@@ -9,6 +9,7 @@ import {
   addTokenUsage,
   cacheCreationTokens,
   cacheHitRate,
+  promptTokens,
   reportsCacheCreation,
 } from './usage.js'
 import { autoCompactIfNeeded, summarizeRecordsForContinuation } from './compact.js'
@@ -18,7 +19,7 @@ import {
 } from './requestPrep.js'
 import { applyProgressiveCompaction } from './progressiveCompact.js'
 import { summarizeToolUse } from './toolUseSummary.js'
-import { agentCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection, type CacheBreakSource } from './cacheBreakDetection.js'
+import { agentCacheSource, compactCacheSource, formatCacheHitRate, notifyCompaction, resetCacheBreakDetection, type CacheBreakSource } from './cacheBreakDetection.js'
 import { logDiagnostics, type RuntimeDiagnostic } from './diagnostics.js'
 import type { SessionMetricInput } from './metrics.js'
 import type { RecordStream } from './recordStream.js'
@@ -37,7 +38,7 @@ import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
-import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelStreamEvent, RequestImageBytes, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
@@ -211,6 +212,13 @@ export interface AgentLoopOptions {
   hooks?: Hooks
   cacheRuntime?: CacheRuntime
   cacheSource?: CacheBreakSource
+  /**
+   * A fork's inherited prefix: every request sends the parent's system, tools
+   * and history byte for byte ahead of this loop's own records, so it reads
+   * the parent's cache. The loop never auto-compacts under one — compacting
+   * its own records cannot shrink what it inherited.
+   */
+  inheritedRequest?: ModelRequest
   preloadRecords?: SessionRecord[]
   permissionMode?(): PermissionMode
   planModeManager?: PlanModeManager
@@ -649,10 +657,14 @@ export class AgentLoop {
           lastResponseRecordId,
           imageTokenStrategy,
           now: new Date(),
+          trimState: this.trimState,
+          turnId,
         })
+        await this.appendPendingTrimRecords()
         let recordsBeforeCompact = progressive.records
+        const recordsToSummarize = recordsBeforeCompact
         const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
-        const compactResult = await autoCompactIfNeeded({
+        const compactResult = this.options.inheritedRequest ? { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } } : await autoCompactIfNeeded({
           records: recordsBeforeCompact,
           provider: this.activeModel.provider,
           model: this.activeModel.model,
@@ -672,6 +684,13 @@ export class AgentLoop {
           ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
           getCompactFailureCount: this.options.getCompactFailureCount,
           setCompactFailureCount: this.options.setCompactFailureCount,
+          ...(this.compactSharesPrefix()
+            ? {
+                summarizeWithSharedPrefix: (prompt: string) =>
+                  this.summarizeWithSharedPrefix(recordsToSummarize, prompt, turnId, userMessage.id, signal),
+              }
+            : {}),
+          ...(signal ? { signal } : {}),
           appendRecord: (record) => this.appendRecord(record),
           onBeforeCompact: (event) => this.runCompactHooks('preCompact', event, turnId, signal),
           onAfterCompact: (event) => this.runCompactHooks('postCompact', event, turnId, signal),
@@ -700,123 +719,24 @@ export class AgentLoop {
         if (this.consumeImageRequestStateChanged()) resetModelRequestState()
       }
 
-      const records = recordsBeforeCompact
-      // The inherited half of the request, re-derived per iteration for the
-      // same reason the session records are: the model serving this attempt
-      // decides what its images become.
-      const preloadRecords = await this.projectPreloadImages(turnId)
-      // Final image-byte loading (design §11.1 step 5): after every projection,
-      // cap, and compaction decision above, load the send-version bytes the
-      // request will actually carry. Current-turn files that cannot be loaded
-      // stop the request; unloadable history degrades to placeholders here.
-      const imageSend = await this.prepareRequestImages(records, turnId, userMessage.id, preloadRecords)
-      const pendingRestoreRecordIds = this.pendingPostCompactRestoreRecordIds(records)
-      const planAttachment = this.options.planModeManager?.getActivePlanAttachment()
-      const env: EnvironmentInfo = {
-        cwd: this.options.toolContext.cwd,
-        platform: process.platform,
-        // Asked of the Bash tool rather than guessed: on Windows it resolves Git
-        // Bash before PowerShell, and this line is what the model writes syntax
-        // for.
-        shell: describeShell(),
-        osVersion: `${os.type()} ${os.release()}`,
-        isGitRepo: this.options.isGitRepo ?? false,
-        model: this.activeModel.model,
-      }
-
-      const providerSupportsDynamicToolSearch =
-        this.activeModel.provider.supportsDynamicToolSearch?.() ?? false
-      const toolSearchState = resolveToolSearchState({
-        tools: this.currentTools,
-        contextWindowSize: getContextWindowForModel(this.activeContextManagement),
-        providerSupportsDynamicToolSearch,
-      })
-      const toolsForContext = toolSearchState.enabled
-        ? this.currentTools
-        : this.currentTools.filter((tool) => tool.name !== TOOL_SEARCH_TOOL_NAME)
-
-      const built = await this.options.contextBuilder.build({
-        preloadRecords: imageSend.preloadRecords,
-        records: imageSend.records,
-        tools: toolsForContext,
-        system: this.options.system,
-        projectContext: this.options.projectContext,
-        criticalSystemReminder: this.options.criticalSystemReminder,
-        skills: this.options.skills,
-        contextManagement: this.activeContextManagement,
-        toolContext: this.options.toolContext,
-        env,
+      const records = await this.materializePostCompactRestore(recordsBeforeCompact)
+      const baseRequest = await this.buildModelRequest(records, turnId, userMessage.id, cacheSource, {
+        includeUserContext: true,
         permissionMode: this.options.permissionMode?.(),
-        transientUserContext: [planAttachment, interruptionContext].filter((item): item is string => Boolean(item)),
-        includePostCompactRestore: pendingRestoreRecordIds.length > 0,
-        dynamicToolSearchEnabled: toolSearchState.enabled,
+        // Called once the images are in: a one-shot attachment is not spent on
+        // a request that never got built.
+        transientUserContext: () => [this.options.planModeManager?.getActivePlanAttachment(), interruptionContext]
+          .filter((item): item is string => Boolean(item)),
       })
-      await this.consumePostCompactRestoreRecords(pendingRestoreRecordIds)
-
       const requestRecordCount = records.length
       const canReuseResponseTokenEstimate = useCachedTokenEstimate && !compactResult.compacted
       pendingAssistantStreamContent = ''
 
-      // Set provider name on tool context for ToolSearchTool dual-provider support
-      this.options.toolContext.providerName = this.activeModel.providerName
-      // Inject full tool list for ToolSearchTool scoring
-      this.options.toolContext._allTools = this.currentTools
-
-      const hasDeferred = toolSearchState.enabled
-      const allDeferredToolNames = toolSearchState.allDeferredToolNames
-
-      // Filter tools: only include deferred tools that have been discovered
-      // via tool_reference blocks in message history. Non-deferred tools and
-      // ToolSearch itself are always included.
-      const discoveredNames = extractDiscoveredToolNames(records)
-
-      // Separate pre-compact vs post-compact discovered tools.
-      // After compaction, tool_reference blocks from pre-compact messages are lost.
-      // Tools discovered before compaction should NOT have defer_loading; their
-      // schema was already loaded and the tool_reference is no longer in history.
-      const preCompactDiscoveredNames = new Set<string>()
-      for (const record of records) {
-        if (record.type === 'compact_boundary' && record.preCompactDiscoveredTools) {
-          for (const name of record.preCompactDiscoveredTools) preCompactDiscoveredNames.add(name)
-        }
-      }
-      // Post-compact discovered = all discovered minus pre-compact
-      const postCompactDiscoveredNames = new Set<string>()
-      for (const name of discoveredNames) {
-        if (!preCompactDiscoveredNames.has(name)) postCompactDiscoveredNames.add(name)
-      }
-      // Store for the payload builder to use as defer_loading candidates
-      this.options.toolContext._postCompactDiscoveredNames = postCompactDiscoveredNames
-      // Sync back to toolContext for post-compact restore
-      if (discoveredNames.size > 0) {
-        this.options.toolContext.discoveredToolNames ??= new Set()
-        for (const name of discoveredNames) {
-          this.options.toolContext.discoveredToolNames.add(name)
-        }
-      }
-      const filteredTools = hasDeferred
-        ? filterToolsForRequest(this.currentTools, discoveredNames)
-        : toolsForContext
-
-      const modelRequest = {
-        system: built.system,
-        systemBlocks: built.systemBlocks,
-        messages: built.messages,
-        contextItems: built.contextItems,
-        tools: filteredTools,
-        model: this.activeModel.model,
-        promptCacheRetention: this.activeModel.promptCacheRetention,
+      const modelRequest: ModelRequest = {
+        ...baseRequest,
         maxOutputTokens: maxOutputTokensOverride,
-        thinking: this.options.thinking,
-        effort: this.currentEffort,
         previousRequestId: lastRequestId,
         retry: { signal },
-        cacheSource,
-        cacheRuntime: this.options.cacheRuntime,
-        hasDeferredTools: hasDeferred,
-        allDeferredToolNames,
-        postCompactDiscoveredNames: this.options.toolContext._postCompactDiscoveredNames,
-        ...(imageSend.imageBytes ? { imageBytes: imageSend.imageBytes } : {}),
         onTextDelta: (delta: string) => {
           pendingAssistantStreamContent += delta
         },
@@ -850,6 +770,13 @@ export class AgentLoop {
       }
 
       usage = addTokenUsage(usage, response.usage)
+      if (response.usage) {
+        this.options.toolContext._forkPrefix = {
+          request: durablePrefix(modelRequest),
+          promptTokens: promptTokens(response.usage),
+          usableContextWindow: this.getContextBudget().usableContextWindow,
+        }
+      }
       lastForegroundResponseUsage = response.usage
       // Per request, not per turn: this is the only point where the provider's
       // own count for the context just sent is known, and a multi-step turn
@@ -1370,6 +1297,16 @@ export class AgentLoop {
     return projection.records
   }
 
+  /**
+   * Straight to the stream: a trim record is request-prep bookkeeping, not
+   * transcript content, so it stays out of the records cache and the UI.
+   */
+  private async appendPendingTrimRecords(): Promise<void> {
+    for (const record of this.trimState?.takePendingRecords() ?? []) {
+      await this.options.recordStream.append(record)
+    }
+  }
+
   private async loadPreparedRecords(turnId?: string, userMessageId?: string): Promise<SessionRecord[]> {
     const loaded = await this.loadRecordsOnce()
     const imageTokenStrategy = resolveImageTokenStrategy(
@@ -1392,11 +1329,7 @@ export class AgentLoop {
         ...(this.stripAllThinkingBlocksFromRequests ? { stripAllThinkingBlocks: true } : {}),
       },
     )
-    // Straight to the stream: a trim record is request-prep bookkeeping, not
-    // transcript content, so it stays out of the records cache and the UI.
-    for (const record of this.trimState.takePendingRecords()) {
-      await this.options.recordStream.append(record)
-    }
+    await this.appendPendingTrimRecords()
     if (!prepared.diagnostics.some((diagnostic) => diagnostic.code === 'tool_protocol_repaired')) {
       this.recordsCacheHasCleanToolProtocol = true
     }
@@ -1620,38 +1553,200 @@ export class AgentLoop {
     }
   }
 
-  private pendingPostCompactRestoreRecordIds(records: SessionRecord[]): string[] {
-    const loadedRecords = this.recordsCache ?? records
-    return loadedRecords
-      .filter((record) => record.type === 'compact_boundary' && record.postCompactRestore === 'pending')
-      .map((record) => record.id)
+  /**
+   * The request this loop sends for `records` — system, tools and history built
+   * exactly as the main path builds them, so a request that must share the
+   * main conversation's cached prefix (a compaction) gets it byte for byte.
+   * The caller adds the per-attempt fields: streaming, retry, output limit.
+   */
+  private async buildModelRequest(
+    records: SessionRecord[],
+    turnId: string,
+    userMessageId: string,
+    cacheSource: CacheBreakSource,
+    tail: { includeUserContext: boolean; permissionMode?: PermissionMode; transientUserContext?: () => string[] },
+  ): Promise<ModelRequest> {
+    // The inherited half of the request, re-derived per iteration for the
+    // same reason the session records are: the model serving this attempt
+    // decides what its images become.
+    const preloadRecords = await this.projectPreloadImages(turnId)
+    // Final image-byte loading (design §11.1 step 5): after every projection,
+    // cap, and compaction decision above, load the send-version bytes the
+    // request will actually carry. Current-turn files that cannot be loaded
+    // stop the request; unloadable history degrades to placeholders here.
+    const imageSend = await this.prepareRequestImages(records, turnId, userMessageId, preloadRecords)
+    const env: EnvironmentInfo = {
+      cwd: this.options.toolContext.cwd,
+      platform: process.platform,
+      // Asked of the Bash tool rather than guessed: on Windows it resolves Git
+      // Bash before PowerShell, and this line is what the model writes syntax
+      // for.
+      shell: describeShell(),
+      osVersion: `${os.type()} ${os.release()}`,
+      isGitRepo: this.options.isGitRepo ?? false,
+      model: this.activeModel.model,
+    }
+
+    const providerSupportsDynamicToolSearch =
+      this.activeModel.provider.supportsDynamicToolSearch?.() ?? false
+    const toolSearchState = resolveToolSearchState({
+      tools: this.currentTools,
+      contextWindowSize: getContextWindowForModel(this.activeContextManagement),
+      providerSupportsDynamicToolSearch,
+    })
+    const toolsForContext = toolSearchState.enabled
+      ? this.currentTools
+      : this.currentTools.filter((tool) => tool.name !== TOOL_SEARCH_TOOL_NAME)
+
+    const built = await this.options.contextBuilder.build({
+      preloadRecords: imageSend.preloadRecords,
+      records: imageSend.records,
+      tools: toolsForContext,
+      system: this.options.system,
+      projectContext: this.options.projectContext,
+      criticalSystemReminder: this.options.criticalSystemReminder,
+      skills: this.options.skills,
+      contextManagement: this.activeContextManagement,
+      toolContext: this.options.toolContext,
+      env,
+      includeUserContext: tail.includeUserContext,
+      permissionMode: tail.permissionMode,
+      transientUserContext: tail.transientUserContext?.() ?? [],
+      dynamicToolSearchEnabled: toolSearchState.enabled,
+    })
+
+    // Set provider name on tool context for ToolSearchTool dual-provider support
+    this.options.toolContext.providerName = this.activeModel.providerName
+    // Inject full tool list for ToolSearchTool scoring
+    this.options.toolContext._allTools = this.currentTools
+
+    const hasDeferred = toolSearchState.enabled
+    const allDeferredToolNames = toolSearchState.allDeferredToolNames
+
+    // Filter tools: only include deferred tools that have been discovered
+    // via tool_reference blocks in message history. Non-deferred tools and
+    // ToolSearch itself are always included.
+    const discoveredNames = extractDiscoveredToolNames(records)
+
+    // Separate pre-compact vs post-compact discovered tools.
+    // After compaction, tool_reference blocks from pre-compact messages are lost.
+    // Tools discovered before compaction should NOT have defer_loading; their
+    // schema was already loaded and the tool_reference is no longer in history.
+    const preCompactDiscoveredNames = new Set<string>()
+    for (const record of records) {
+      if (record.type === 'compact_boundary' && record.preCompactDiscoveredTools) {
+        for (const name of record.preCompactDiscoveredTools) preCompactDiscoveredNames.add(name)
+      }
+    }
+    // Post-compact discovered = all discovered minus pre-compact
+    const postCompactDiscoveredNames = new Set<string>()
+    for (const name of discoveredNames) {
+      if (!preCompactDiscoveredNames.has(name)) postCompactDiscoveredNames.add(name)
+    }
+    // Store for the payload builder to use as defer_loading candidates
+    this.options.toolContext._postCompactDiscoveredNames = postCompactDiscoveredNames
+    // Sync back to toolContext for post-compact restore
+    if (discoveredNames.size > 0) {
+      this.options.toolContext.discoveredToolNames ??= new Set()
+      for (const name of discoveredNames) {
+        this.options.toolContext.discoveredToolNames.add(name)
+      }
+    }
+    const filteredTools = hasDeferred
+      ? filterToolsForRequest(this.currentTools, discoveredNames)
+      : toolsForContext
+
+    const request: ModelRequest = {
+      system: built.system,
+      systemBlocks: built.systemBlocks,
+      messages: built.messages,
+      contextItems: built.contextItems,
+      tools: filteredTools,
+      model: this.activeModel.model,
+      promptCacheRetention: this.activeModel.promptCacheRetention,
+      thinking: this.options.thinking,
+      effort: this.currentEffort,
+      cacheSource,
+      cacheRuntime: this.options.cacheRuntime,
+      hasDeferredTools: hasDeferred,
+      allDeferredToolNames,
+      postCompactDiscoveredNames: this.options.toolContext._postCompactDiscoveredNames,
+      ...(imageSend.imageBytes ? { imageBytes: imageSend.imageBytes } : {}),
+    }
+    return this.options.inheritedRequest ? withInheritedPrefix(this.options.inheritedRequest, request) : request
   }
 
-  private async consumePostCompactRestoreRecords(recordIds: string[]): Promise<void> {
-    for (const recordId of recordIds) {
-      let persisted = false
+  /** A compact model other than the active one cannot read the active model's cache. */
+  private compactSharesPrefix(): boolean {
+    const compact = this.options.compactModel
+    return !compact || compact.model === this.activeModel.model
+  }
+
+  /**
+   * The compaction request as the conversation's own request with the compact
+   * prompt as its last message: every byte ahead of that message is the prefix
+   * the main loop already cached. The prompt is marked transient so the cache
+   * write stops at the history, not at a message no one will send again.
+   */
+  private async summarizeWithSharedPrefix(
+    records: SessionRecord[],
+    prompt: string,
+    turnId: string,
+    userMessageId: string,
+    signal: AbortSignal | undefined,
+  ): Promise<ModelResponse> {
+    const base = await this.buildModelRequest(
+      records,
+      turnId,
+      userMessageId,
+      compactCacheSource(this.options.toolContext.cwd),
+      { includeUserContext: false },
+    )
+    const message: ChatMessage = {
+      id: 'compact-request',
+      role: 'user',
+      content: prompt,
+      createdAt: new Date().toISOString(),
+      transient: true,
+    }
+    return this.activeModel.provider.createMessage({
+      ...base,
+      messages: [...base.messages, message],
+      contextItems: [...(base.contextItems ?? []), { kind: 'message', message }],
+      retry: { callerKind: 'background', persistent: true, signal },
+    })
+  }
+
+  /**
+   * Build the post-compact restore once and store it on the pending boundary,
+   * so it becomes part of the durable, cached prefix instead of a one-request
+   * tail. Returns `records` with the stored form applied — even when the write
+   * failed, this request still carries it (the next one rebuilds).
+   */
+  private async materializePostCompactRestore(records: SessionRecord[]): Promise<SessionRecord[]> {
+    const pendingIds = new Set((this.recordsCache ?? records)
+      .filter((record) => record.type === 'compact_boundary' && record.postCompactRestore === 'pending')
+      .map((record) => record.id))
+    if (pendingIds.size === 0) return records
+
+    const restoredContext = await this.options.contextBuilder.buildPostCompactRestore(this.options.toolContext)
+    const consume = (record: SessionRecord): SessionRecord => {
+      if (!pendingIds.has(record.id) || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
+      return { ...record, postCompactRestore: 'consumed', ...(restoredContext ? { restoredContext } : {}) }
+    }
+    for (const recordId of pendingIds) {
       try {
-        await this.options.recordStream.update?.(recordId, (record) => {
-          if (record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
-          return { ...record, postCompactRestore: 'consumed' }
-        })
-        persisted = true
+        await this.options.recordStream.update?.(recordId, consume)
+        // Only update in-memory cache if persistence succeeded, to avoid
+        // state divergence between memory and disk.
+        this.recordsCache = this.recordsCache?.map((record) => record.id === recordId ? consume(record) : record)
       } catch (error) {
         if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
           console.error(`[hanekawa][compact] failed to persist consumed restore record ${recordId}:`, error)
         }
       }
-      // Only update in-memory cache if persistence succeeded, to avoid
-      // state divergence between memory and disk.
-      if (persisted) {
-        this.recordsCache = this.recordsCache?.map((record) => {
-          if (record.id !== recordId || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') {
-            return record
-          }
-          return { ...record, postCompactRestore: 'consumed' }
-        })
-      }
     }
+    return records.map(consume)
   }
 
   private async runToolCallsInOrder(calls: ToolCall[], signal?: AbortSignal, turnId?: string): Promise<ToolResultRecord[]> {
@@ -2141,4 +2236,51 @@ function startsWithInterruptionCommand(input: string, commands: readonly string[
 
 function isUserCancelAbort(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true && signal.reason === 'user-cancel'
+}
+
+/** The cacheable half of a request: no per-request tail, no per-attempt fields. */
+function durablePrefix(request: ModelRequest): ModelRequest {
+  const isTransient = (message: ChatMessage) => message.transient === true
+  return {
+    system: request.system,
+    systemBlocks: request.systemBlocks,
+    messages: request.messages.filter((message) => !isTransient(message)),
+    contextItems: request.contextItems?.filter((item) => !(item.kind === 'message' && isTransient(item.message))),
+    tools: request.tools,
+    model: request.model,
+    promptCacheRetention: request.promptCacheRetention,
+    thinking: request.thinking,
+    effort: request.effort,
+    cacheSource: request.cacheSource,
+    cacheRuntime: request.cacheRuntime,
+    hasDeferredTools: request.hasDeferredTools,
+    allDeferredToolNames: request.allDeferredToolNames,
+    postCompactDiscoveredNames: request.postCompactDiscoveredNames,
+    ...(request.imageBytes ? { imageBytes: request.imageBytes } : {}),
+  }
+}
+
+/**
+ * `own` behind the inherited prefix. Everything that renders ahead of the
+ * history comes from the parent, so the bytes match; a tool this loop found
+ * that the parent's request lacked trails the parent's list.
+ */
+function withInheritedPrefix(inherited: ModelRequest, own: ModelRequest): ModelRequest {
+  const inheritedTools = inherited.tools ?? []
+  const inheritedNames = new Set(inheritedTools.map((tool) => tool.name))
+  const imageBytes = new Map([...(inherited.imageBytes ?? []), ...(own.imageBytes ?? [])])
+  return {
+    ...own,
+    system: inherited.system,
+    systemBlocks: inherited.systemBlocks,
+    thinking: inherited.thinking,
+    effort: inherited.effort,
+    tools: [...inheritedTools, ...(own.tools ?? []).filter((tool) => !inheritedNames.has(tool.name))],
+    hasDeferredTools: inherited.hasDeferredTools,
+    allDeferredToolNames: inherited.allDeferredToolNames,
+    postCompactDiscoveredNames: new Set([...(inherited.postCompactDiscoveredNames ?? []), ...(own.postCompactDiscoveredNames ?? [])]),
+    messages: [...inherited.messages, ...own.messages],
+    contextItems: [...(inherited.contextItems ?? []), ...(own.contextItems ?? [])],
+    ...(imageBytes.size > 0 ? { imageBytes } : {}),
+  }
 }

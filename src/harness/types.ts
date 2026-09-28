@@ -153,6 +153,11 @@ export interface CompactBoundaryRecord {
   summary: string
   preTokens: number
   postCompactRestore?: 'pending' | 'consumed'
+  /**
+   * The restore built when this boundary was consumed, stored verbatim so every
+   * later request (and a resumed session) replays the same cached bytes.
+   */
+  restoredContext?: string
   createdAt: string
   turnId?: string
   /** Tool names discovered via ToolSearch before compaction — survives compaction. */
@@ -524,6 +529,8 @@ export interface ToolContext {
   discoveredToolNames?: Set<string>
   /** Tool names discovered AFTER the last compaction — these still have tool_reference blocks in history. */
   _postCompactDiscoveredNames?: Set<string>
+  /** The durable prefix of this loop's latest request, for a fork to inherit. */
+  _forkPrefix?: ForkPrefix
   /** Current skill slash command invocation metadata, attached only for the active turn. */
   skillInvocation?: {
     skillName: string
@@ -780,6 +787,18 @@ export interface ContextToolResult {
 
 export type ModelContextItem = ContextChatMessage | ContextToolUse | ContextToolResult
 
+/**
+ * A request's cacheable half — system, tools and history, minus the tail
+ * rebuilt per request — with what a fork needs to judge whether it fits.
+ */
+export interface ForkPrefix {
+  request: ModelRequest
+  /** Prompt tokens the provider counted for that request. */
+  promptTokens: number
+  /** Where the parent loop would auto-compact. */
+  usableContextWindow: number
+}
+
 export interface ModelRequest {
   system?: string
   systemBlocks?: string[]
@@ -788,6 +807,12 @@ export interface ModelRequest {
   tools?: Tool[]
   model: string
   promptCacheRetention?: 'in_memory' | '24h'
+  /**
+   * `false` sends no `cache_control` at all. For one-shot requests (compaction,
+   * summaries, extraction) whose prefix nothing reads back: a marker there only
+   * buys a cache write, billed above the plain input rate.
+   */
+  promptCaching?: false
   maxOutputTokens?: number
   previousRequestId?: string
   thinking?: { type: 'adaptive' } | { type: 'enabled'; budgetTokens: number } | { type: 'disabled' }

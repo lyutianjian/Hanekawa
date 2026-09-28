@@ -40,6 +40,7 @@ export async function summarizeToolUse(params: SummarizeToolUseParams): Promise<
   const request: ModelRequest = {
     model,
     promptCacheRetention,
+    promptCaching: false,
     cacheSource: toolUseSummaryCacheSource(params.cwd),
     system: 'You are a summarizer. Produce a single concise line (max 120 chars) describing what these tool calls accomplished. No preamble, no explanation — just the summary line.',
     messages: [

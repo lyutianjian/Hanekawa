@@ -1254,6 +1254,10 @@ test('buildAnthropicPayload gates dynamic ToolSearch independently of caching', 
 
   const nativePayload = buildAnthropicPayload(request, undefined, { dynamicToolSearch: true }) as unknown as { messages: Array<Record<string, unknown>>; tools: Array<Record<string, unknown>> }
   assert.equal(JSON.stringify(nativePayload.messages).includes('<available-deferred-tools>'), true)
+  // The list rides the tail, uncached, so a changed list never moves the history ahead of it.
+  assert.match(JSON.stringify(nativePayload.messages.at(-1)), /<available-deferred-tools>/)
+  assert.doesNotMatch(JSON.stringify(nativePayload.messages.at(-1)), /cache_control|__myagentTransient/)
+  assert.match(JSON.stringify(nativePayload.messages[0]), /hello.*cache_control/)
   assert.equal(nativePayload.tools.find((tool) => tool.name === 'DeferredTool')?.defer_loading, true)
   assert.deepEqual(getAnthropicBetaHeaders(request, { dynamicToolSearch: true }), ['advanced-tool-use-2025-11-20'])
 

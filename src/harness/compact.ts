@@ -13,7 +13,7 @@ import { getRecordsAfterLastCompact } from './requestPrep.js'
 import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { compactCacheSource } from './cacheBreakDetection.js'
 import { wrapInSystemReminder } from './systemReminder.js'
-import { getCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
+import { getCompactPrompt, getSharedPrefixCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
 import {
   projectRecordsImagesToText,
   resolveAttachmentFactsForRecords,
@@ -54,6 +54,16 @@ export interface CompactCheckInput {
   attachmentFacts?: AttachmentFactsResolver
   getCompactFailureCount?(): Promise<number>
   setCompactFailureCount?(count: number): Promise<void>
+  /**
+   * Sends `prompt` as the last message of the conversation's own request, so
+   * the summary reads the main cached prefix. Absent when the compact model
+   * differs from the active one — then the prefix cannot be shared and the
+   * conversation goes out as text. A failure or an empty answer falls back to
+   * that text path.
+   */
+  summarizeWithSharedPrefix?(prompt: string): Promise<{ content: string; usage?: TokenUsage }>
+  /** Stops the shared-prefix summary; the text fallback runs in the background. */
+  signal?: AbortSignal
   appendRecord(record: SessionRecord): Promise<void>
   onBeforeCompact?(event: CompactHookEvent): Promise<void>
   onAfterCompact?(event: CompactHookEvent & { summary: string; postTokens: number; compactDurationMs: number }): Promise<void>
@@ -129,26 +139,19 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
   }
 
-  const recordsToCompact = selectRecordsToCompact(compactableRecords)
-  if (recordsToCompact.length === 0) {
+  if (!hasHistoryBeforeLatestUserMessage(compactableRecords)) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
   }
+  // Everything goes into the summary, the latest user message and this turn's
+  // work included: the boundary lands after all of it, so whatever the summary
+  // leaves out is gone from every later request.
+  const recordsToCompact = compactableRecords
 
   const compactStartedAt = Date.now()
   await runBeforeCompactHook(input, tokenCount, recordsToCompact.length)
 
   try {
-    const summary = await summarizeRecordsForContinuation({
-      records: recordsToCompact,
-      provider: input.provider,
-      model: input.model,
-      compactRuntime: input.compactRuntime,
-      promptCacheRetention: input.promptCacheRetention,
-      preTokens: tokenCount,
-      compactInstructions: input.compactInstructions,
-      ...(input.attachmentFacts ? { attachmentFacts: input.attachmentFacts } : {}),
-      cwd: input.cwd,
-    })
+    const summary = await summarizeForAutoCompact(input, recordsToCompact, tokenCount)
     const postTokens = countTextTokens(summary.content)
     const compactDurationMs = Date.now() - compactStartedAt
     await input.appendRecord({
@@ -189,6 +192,40 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
     await appendCompactFailureRecord(input, error, failureCount, tokenCount)
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
   }
+}
+
+async function summarizeForAutoCompact(
+  input: CompactCheckInput,
+  recordsToCompact: SessionRecord[],
+  tokenCount: number,
+): Promise<ContinuationSummaryResult> {
+  let sharedUsage: TokenUsage | undefined
+  if (input.summarizeWithSharedPrefix) {
+    try {
+      const response = await input.summarizeWithSharedPrefix(getSharedPrefixCompactPrompt(input.compactInstructions))
+      const content = formatCompactSummary(response.content.trim())
+      if (content) return { content, usage: response.usage, preTokens: tokenCount }
+      sharedUsage = response.usage
+    } catch (error) {
+      if (input.signal?.aborted) throw error
+      if (process.env.MYAGENT_DEBUG_PROVIDER === '1') {
+        console.error('[compact] shared-prefix summary failed; falling back to text:', error)
+      }
+    }
+  }
+
+  const summary = await summarizeRecordsForContinuation({
+    records: recordsToCompact,
+    provider: input.provider,
+    model: input.model,
+    compactRuntime: input.compactRuntime,
+    promptCacheRetention: input.promptCacheRetention,
+    preTokens: tokenCount,
+    compactInstructions: input.compactInstructions,
+    ...(input.attachmentFacts ? { attachmentFacts: input.attachmentFacts } : {}),
+    cwd: input.cwd,
+  })
+  return sharedUsage ? { ...summary, usage: addTokenUsage(sharedUsage, summary.usage) } : summary
 }
 
 async function runBeforeCompactHook(input: CompactCheckInput, tokenCount: number, recordCount: number): Promise<void> {
@@ -317,10 +354,8 @@ async function appendCompactFailureRecord(
   }
 }
 
-function selectRecordsToCompact(records: SessionRecord[]): SessionRecord[] {
-  const lastUserIndex = findLastRecordIndex(records, (record) => record.type === 'message' && record.role === 'user')
-  if (lastUserIndex <= 0) return []
-  return records.slice(0, lastUserIndex)
+function hasHistoryBeforeLatestUserMessage(records: SessionRecord[]): boolean {
+  return findLastRecordIndex(records, (record) => record.type === 'message' && record.role === 'user') > 0
 }
 
 function findLastRecordIndex(records: SessionRecord[], predicate: (record: SessionRecord) => boolean): number {
@@ -368,6 +403,7 @@ export async function summarizeRecordsForContinuation(input: ContinuationSummary
     tools: [],
     model,
     promptCacheRetention,
+    promptCaching: false,
     cacheSource: compactCacheSource(input.cwd),
     retry: { callerKind: 'background', persistent: true },
   })

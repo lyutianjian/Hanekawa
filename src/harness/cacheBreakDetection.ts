@@ -97,8 +97,9 @@ export function toolUseSummaryCacheSource(root?: string): CacheBreakSource {
   return bindRoot('tool_use_summary', root)
 }
 
-export function forkCacheSource(parentSessionId: string, root?: string): CacheBreakSource {
-  const normalized = parentSessionId.trim() || 'unknown'
+/** One per fork run: concurrent forks must not share a cache-read baseline. */
+export function forkCacheSource(forkId: string, root?: string): CacheBreakSource {
+  const normalized = forkId.trim() || 'unknown'
   return bindRoot(`agent:fork:${normalized}`, root)
 }
 

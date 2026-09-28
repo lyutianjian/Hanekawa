@@ -39,14 +39,6 @@ export class ToolResultTrimState {
     return state
   }
 
-  /** A child loop that shares its parent's prefix needs its parent's decisions. */
-  clone(): ToolResultTrimState {
-    const copy = new ToolResultTrimState()
-    for (const id of this.seen) copy.seen.add(id)
-    for (const [id, content] of this.trimmed) copy.trimmed.set(id, content)
-    return copy
-  }
-
   isSeen(toolUseId: string): boolean {
     return this.seen.has(toolUseId)
   }

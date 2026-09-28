@@ -128,7 +128,7 @@ You are running as an isolated fork of the parent conversation. The parent trans
 
 const FORK_AGENT: BaseAgentDefinition = {
   type: 'fork',
-  description: 'Read-only sub-agent fork that preloads the parent transcript and shares the parent fork prompt-cache stream.',
+  description: 'Read-only sub-agent fork that continues from the parent transcript, reading the parent\'s prompt cache when its request fits.',
   disallowedTools: ALL_AGENT_DISALLOWED_TOOLS,
   maxTurns: FORK_AGENT_MAX_TURNS,
   maxResultSizeChars: AGENT_MAX_RESULT_SIZE_CHARS,
@@ -580,7 +580,7 @@ async function runSubagent({
   }
 
   const cacheSource = isForkAgent
-    ? forkCacheSource(context.sessionId, context.cwd)
+    ? forkCacheSource(subAgentId, context.cwd)
     : agentCacheSource(subAgentId, context.cwd)
   const abortController = new AbortController()
   const timeout = options.agentTimeoutMs === undefined
@@ -607,6 +607,10 @@ async function runSubagent({
     const effectiveCwd = worktree?.path ?? options.cwd
     const subagentRuntime = resolveSubagentRuntime(options, parsed.subagent_type, agentDefinition)
     const subTools = filterToolsForSubAgent(options.tools(), agentDefinition, { isBackground })
+    const inheritedRequest = isForkAgent ? inheritableForkPrefix(context, subagentRuntime.model, worktree !== undefined) : undefined
+    // An inheriting fork advertises the parent's whole tool list (the bytes
+    // its cache hit depends on); anything beyond its own set answers "unavailable".
+    const runnerTools = inheritedRequest ? withUnavailableTools(subTools, inheritedRequest.tools ?? []) : subTools
     const sessionRuleStore = options.getSessionRuleStore?.()
     const permissionGate = new PermissionGate(options.permissionPrompt, options.getConfigRules?.(), {
       mode: resolveSubagentPermissionMode(options, agentDefinition, isBackground),
@@ -618,7 +622,7 @@ async function runSubagent({
     if (!sessionRuleStore) {
       permissionGate.addSessionRules(options.getSessionRules?.() ?? [])
     }
-    const createToolRunner = () => new ToolRunner(subTools, permissionGate, {
+    const createToolRunner = () => new ToolRunner(runnerTools, permissionGate, {
       onRecord: async (record) => {
         await recordStream.append(record)
       },
@@ -649,7 +653,11 @@ async function runSubagent({
       attachments,
     )
     if (isForkAgent) {
-      const forkUserPrefix = buildForkAgentUserPrefix(parsed.systemPrompt, parsed.maxOutputTokens)
+      const forkUserPrefix = buildForkAgentUserPrefix(
+        parsed.systemPrompt,
+        parsed.maxOutputTokens,
+        inheritedRequest ? subTools.map((tool) => tool.name) : undefined,
+      )
       if (forkUserPrefix) {
         await recordStream.append({
           id: randomUUID(),
@@ -685,7 +693,7 @@ async function runSubagent({
       ),
       'subagentStart',
     )
-    const preloadRecords = isForkAgent ? await loadForkPreloadRecords(options) : undefined
+    const preloadRecords = isForkAgent && !inheritedRequest ? await loadForkPreloadRecords(options) : undefined
     const createLoop = () => new AgentLoop({
       provider: subagentRuntime.provider,
       model: subagentRuntime.model,
@@ -715,6 +723,7 @@ async function runSubagent({
       cacheRuntime: options.cacheRuntime,
       cacheSource,
       preloadRecords,
+      ...(inheritedRequest ? { inheritedRequest } : {}),
       // A locked plan gate constrains tools without turning this child loop
       // into an interactive plan-mode workflow that waits for ExitPlanMode.
       permissionMode: () => agentDefinition.lockPermissionMode ? 'default' : permissionGate.getMode(),
@@ -732,7 +741,12 @@ async function runSubagent({
         ?.consumePendingAgentMessages(context.sessionId, subAgentId) ?? [],
     })
     const loop = createLoop()
-    const result = await loop.run({ text: parsed.task }, abortController.signal)
+    const result = await loop.run({ text: parsed.task }, abortController.signal).catch((error: unknown) => {
+      // The loop's own abort checks throw a bare AbortError; the controller's
+      // reason is what says why — a timeout, say.
+      const reason: unknown = abortController.signal.reason
+      throw abortController.signal.aborted && reason instanceof Error ? reason : error
+    })
     const transcriptRecords = await recordStream.load()
     const transcriptStats = summarizeTranscriptRecords(transcriptRecords)
     const verdict = extractVerdict(result.content)
@@ -906,7 +920,7 @@ async function runSubagent({
     if (timeout) clearTimeout(timeout)
     if (linkParentAbort) context.abortSignal?.removeEventListener('abort', forwardParentAbort)
     externalAbortSignal?.removeEventListener('abort', forwardExternalAbort)
-    if (!isForkAgent) resetCacheBreakDetection(cacheSource)
+    resetCacheBreakDetection(cacheSource)
     await stopSubagentShells(options, subAgentId)
   }
 }
@@ -1456,15 +1470,50 @@ function buildAgentSystemPrompt(
 function buildForkAgentUserPrefix(
   overrideSystemPrompt: string | undefined,
   maxOutputTokens: number | undefined,
+  usableTools?: readonly string[],
 ): string | undefined {
   const outputLimitPrompt = maxOutputTokens === undefined
     ? undefined
     : `Keep your final report under approximately ${maxOutputWords(maxOutputTokens)} words.`
   return joinPromptParts([
     FORK_AGENT_BOILERPLATE,
+    usableTools
+      ? `The tool list above is the parent's. This fork is read-only: only ${usableTools.join(', ') || 'no tools'} will run; any other tool call is refused.`
+      : undefined,
     overrideSystemPrompt ? `# Additional caller instructions\n${overrideSystemPrompt}` : undefined,
     outputLimitPrompt,
   ])
+}
+
+/**
+ * The parent's latest request prefix, when a fork can send it unchanged: the
+ * same model (the cache is per model), the same cwd (the system prompt names
+ * it), and room left for the fork's own work — otherwise the fork falls back
+ * to a bounded preload of the parent's records.
+ */
+function inheritableForkPrefix(context: ToolContext, model: string, hasWorktree: boolean) {
+  const prefix = context._forkPrefix
+  if (!prefix || hasWorktree || prefix.request.model !== model) return undefined
+  if (prefix.promptTokens + FORK_PRELOAD_TOKEN_BUDGET > prefix.usableContextWindow) return undefined
+  return prefix.request
+}
+
+function withUnavailableTools(own: Tool[], advertised: readonly Tool[]): Tool[] {
+  const ownNames = new Set(own.map((tool) => tool.name))
+  const unavailable = advertised
+    .filter((tool) => !ownNames.has(tool.name))
+    .map((tool): Tool => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: z.object({}).passthrough(),
+      riskLevel: 'safe',
+      isReadOnly: true,
+      execute: async () => ({
+        ok: false,
+        content: `${tool.name} is not available in this read-only fork. Use a read-only tool, or report back to the parent agent.`,
+      }),
+    }))
+  return [...own, ...unavailable]
 }
 
 export function prepareForkPreloadRecords(

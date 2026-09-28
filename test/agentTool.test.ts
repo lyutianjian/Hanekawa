@@ -566,9 +566,10 @@ test('Agent tool aborts sub-agent runs after agentTimeoutMs', async () => {
     name: 'fake',
     async createMessage(request) {
       await new Promise((_resolve, reject) => {
-        request.retry?.signal?.addEventListener('abort', () => {
-          reject(request.retry?.signal?.reason)
-        }, { once: true })
+        const signal = request.retry?.signal
+        // The 5ms timeout can fire before this request is even made.
+        if (signal?.aborted) reject(signal.reason)
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
       })
       return { content: 'unused', toolCalls: [] }
     },
@@ -774,9 +775,7 @@ test('custom agent skills are activated for the child context and missing skills
     const result = await agentTool.execute({ task: 'use skill', subagent_type: 'skilled' }, toolContext())
 
     assert.equal(result.ok, true)
-    const context = JSON.stringify(requests[0]!.contextItems)
-    assert.match(context, /activeSkills/)
-    assert.match(context, /Use focused repros/)
+    assert.match(requests[0]!.system ?? '', /## debugging\nUse focused repros/)
     assert.ok(warnings.some((warning) => warning.includes("Custom agent 'skilled' references missing skill 'missing'")))
   } finally {
     console.warn = originalWarn
@@ -1196,7 +1195,7 @@ test('Agent tool uses an isolated agent cache source', async () => {
   assert.notEqual(displayCacheSource(requests[0]!.cacheSource!), 'agent:parent-session')
 })
 
-test('fork Agent preloads bounded parent records and uses the parent fork cache source', async () => {
+test('fork Agent without a parent request prefix preloads bounded parent records under its own cache source', async () => {
   const requests: ModelRequest[] = []
   const provider: ModelProvider = {
     name: 'fake',
@@ -1234,7 +1233,7 @@ test('fork Agent preloads bounded parent records and uses the parent fork cache 
 
   assert.equal(result.ok, true)
   assert.equal(requests.length, 1)
-  assert.equal(displayCacheSource(requests[0]!.cacheSource!), 'agent:fork:parent-session')
+  assert.match(displayCacheSource(requests[0]!.cacheSource!), /^agent:fork:(?!parent-session$)/)
   assert.ok(requests[0]!.contextItems?.some(
     (item) => item.kind === 'message'
       && item.message.id === 'parent-1'
@@ -1250,6 +1249,80 @@ test('fork Agent preloads bounded parent records and uses the parent fork cache 
       && item.message.role === 'user'
       && /Forked Conversation Context/.test(item.message.content),
   ))
+})
+
+function forkParentContext(promptTokens: number): ToolContext {
+  const message = { id: 'parent-1', role: 'user' as const, content: 'parent context', createdAt: '2026-05-10T00:00:00.000Z' }
+  return {
+    ...toolContext('parent-session'),
+    _forkPrefix: {
+      request: {
+        system: 'PARENT SYSTEM',
+        systemBlocks: ['PARENT SYSTEM'],
+        messages: [message],
+        contextItems: [{ kind: 'message', message }],
+        tools: [readOnlyTool('Read'), safeTool('Edit')],
+        model: 'fake-model',
+        thinking: { type: 'adaptive' },
+        cacheSource: 'agent:parent-session',
+      },
+      promptTokens,
+      usableContextWindow: 200_000,
+    },
+  }
+}
+
+test('a fork sends the parent\'s request prefix unchanged and refuses the tools it lacks', async () => {
+  const requests: ModelRequest[] = []
+  let parentRecordLoads = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      return requests.length === 1
+        ? { content: '', toolCalls: [{ id: 'edit-1', name: 'Edit', input: {} }] }
+        : { content: 'done', toolCalls: [] }
+    },
+  }
+  const agentTool = createAgentTool({
+    provider,
+    model: 'fake-model',
+    tools: () => [readOnlyTool('Read'), safeTool('Edit')],
+    permissionPrompt: async () => true,
+    cwd: testCwd,
+    loadParentRecords: async () => { parentRecordLoads += 1; return [] },
+  })
+
+  const result = await agentTool.execute({ task: 'look around', subagent_type: 'fork' }, forkParentContext(1_000))
+
+  assert.equal(result.ok, true)
+  // One load is the recursion guard's; the preload would be a second.
+  assert.equal(parentRecordLoads, 1)
+  const first = requests[0]!
+  assert.deepEqual(first.systemBlocks, ['PARENT SYSTEM'])
+  assert.deepEqual(first.tools?.map((tool) => tool.name), ['Read', 'Edit'])
+  assert.equal(first.contextItems?.[0]?.kind === 'message' ? first.contextItems[0].message.id : undefined, 'parent-1')
+  assert.ok(first.contextItems?.some((item) => item.kind === 'message' && /only Read will run/.test(item.message.content)))
+  const refused = requests[1]!.contextItems?.find((item) => item.kind === 'tool_result')
+  assert.ok(refused?.kind === 'tool_result' && !refused.ok && /not available in this read-only fork/.test(refused.content))
+})
+
+test('a fork whose parent prefix leaves too little room falls back to the bounded preload', async () => {
+  let parentRecordLoads = 0
+  const requests: ModelRequest[] = []
+  const agentTool = createAgentTool({
+    provider: { name: 'fake', async createMessage(request) { requests.push(request); return { content: 'done', toolCalls: [] } } },
+    model: 'fake-model',
+    tools: () => [readOnlyTool('Read')],
+    permissionPrompt: async () => true,
+    cwd: testCwd,
+    loadParentRecords: async () => { parentRecordLoads += 1; return [] },
+  })
+
+  await agentTool.execute({ task: 'look around', subagent_type: 'fork' }, forkParentContext(190_000))
+
+  assert.equal(parentRecordLoads, 2)
+  assert.notDeepEqual(requests[0]!.systemBlocks, ['PARENT SYSTEM'])
 })
 
 test('prepareForkPreloadRecords keeps the recent tail within budget', () => {

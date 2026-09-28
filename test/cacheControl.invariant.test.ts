@@ -121,7 +121,7 @@ test('buildAnthropicPayload keeps cache_control markers within Anthropic limit f
   assertCacheControlDistribution(request(), {
     system: 1,
     tools: 1,
-    messages: 1,
+    messages: 2,
   })
 })
 
@@ -129,13 +129,13 @@ test('buildAnthropicPayload cache_control distribution follows available request
   assertCacheControlDistribution(request({ systemBlocks: undefined, system: undefined }), {
     system: 0,
     tools: 1,
-    messages: 1,
+    messages: 2,
   })
 
   assertCacheControlDistribution(request({ tools: [] }), {
     system: 1,
     tools: 0,
-    messages: 1,
+    messages: 2,
   })
 
   assertCacheControlDistribution(request({

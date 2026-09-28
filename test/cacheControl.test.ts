@@ -195,6 +195,40 @@ test('addCacheBreakpoints anchors ahead of trailing transient messages', () => {
   }
 })
 
+test('addCacheBreakpoints re-marks the previous request\'s anchor, however wide the step since', () => {
+  resetCacheTTLEvaluation()
+  const markedIndexes = (messages: Array<Record<string, unknown>>) =>
+    addCacheBreakpoints(messages, true, { env: {} }).flatMap((msg, index) =>
+      (msg.content as Array<Record<string, unknown>>).some((b) => b.cache_control) ? [index] : [],
+    )
+  const transient = { role: 'user', content: [{ type: 'text', text: 'user context' }], [TRANSIENT_MESSAGE_KEY]: true }
+  const history = [
+    { role: 'user', content: [{ type: 'text', text: 'task' }] },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 't0', name: 'Read', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't0', content: 'x' }] },
+  ]
+  const first = markedIndexes([...history, transient])
+
+  // Twelve parallel calls: 26 new blocks, past the API's ~20-block lookback.
+  const ids = Array.from({ length: 12 }, (_, i) => `t${i + 1}`)
+  const second = markedIndexes([
+    ...history,
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: '...', signature: 's' },
+        { type: 'text', text: 'reading' },
+        ...ids.map((id) => ({ type: 'tool_use', id, name: 'Read', input: {} })),
+      ],
+    },
+    { role: 'user', content: ids.map((id) => ({ type: 'tool_result', tool_use_id: id, content: 'x' })) },
+    transient,
+  ])
+
+  assert.deepEqual(first, [0, 2])
+  assert.deepEqual(second, [2, 4])
+})
+
 test('addCacheBreakpoints marks nothing when every message is transient', () => {
   resetCacheTTLEvaluation()
   const messages = [

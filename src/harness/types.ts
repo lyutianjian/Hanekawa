@@ -524,8 +524,6 @@ export interface ToolContext {
   discoveredToolNames?: Set<string>
   /** Tool names discovered AFTER the last compaction — these still have tool_reference blocks in history. */
   _postCompactDiscoveredNames?: Set<string>
-  /** Last record ID incorporated into session memory (for session memory compaction). */
-  lastSummarizedRecordId?: string
   /** Current skill slash command invocation metadata, attached only for the active turn. */
   skillInvocation?: {
     skillName: string

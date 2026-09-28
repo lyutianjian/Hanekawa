@@ -18,8 +18,7 @@ import { getProjectDataDir, getToolResultSpillDir } from '../src/utils/paths.js'
  *
  * The reason it exists is the reason these cases matter: the list used to be
  * spelled inline in `ShellHost.deleteSession` with two of the four entries, so
- * `session-memory/<id>.json` and `sessions/subagents/<id>/` (and later
- * `tool-results/<id>/`) outlived every other
+ * `sessions/subagents/<id>/` (and later `tool-results/<id>/`) outlived every other
  * trace of a deleted session. A test per artifact is what makes the fifth one
  * someone adds get noticed.
  */
@@ -31,10 +30,6 @@ async function makeCwd(): Promise<string> {
   return mkdtemp(path.join(os.tmpdir(), 'myagent-delete-session-'))
 }
 
-function memoryPath(cwd: string, sessionId: string): string {
-  return path.join(getProjectDataDir(cwd), 'session-memory', `${sessionId}.json`)
-}
-
 /**
  * Every project-local artifact for one session, so a removal can be checked to
  * be complete. The file history is deliberately absent: it lives under the
@@ -42,20 +37,17 @@ function memoryPath(cwd: string, sessionId: string): string {
  */
 async function seed(cwd: string, sessionId: string): Promise<string[]> {
   const subagents = getSubagentTranscriptDir(cwd, sessionId)
-  const memory = memoryPath(cwd, sessionId)
   const attachments = sessionAttachmentsDir(cwd, sessionId)
   const spill = getToolResultSpillDir(cwd, sessionId)
 
   await mkdir(subagents, { recursive: true })
   await writeFile(path.join(subagents, 'agent-1.jsonl'), '{}\n', 'utf8')
-  await mkdir(path.dirname(memory), { recursive: true })
-  await writeFile(memory, '{}', 'utf8')
   await mkdir(path.join(attachments, 'img-1'), { recursive: true })
   await writeFile(path.join(attachments, 'img-1', 'metadata.json'), '{}', 'utf8')
   await mkdir(spill, { recursive: true })
   await writeFile(path.join(spill, 'toolu_1.txt'), 'long output', 'utf8')
 
-  return [subagents, memory, attachments, spill]
+  return [subagents, attachments, spill]
 }
 
 class RecordingStore {
@@ -142,7 +134,6 @@ test('a malformed id is refused before anything is deleted', async () => {
     const store = new RecordingStore()
     const roots = [
       path.join(getProjectDataDir(cwd), 'sessions', 'subagents'),
-      path.join(getProjectDataDir(cwd), 'session-memory'),
     ]
 
     for (const bad of ['', '.', '..', 'a/b', 'a\\b', `${SESSION}/..`]) {

@@ -295,7 +295,7 @@ export async function projectTurnImagesForRequest(input: {
 
 /**
  * The text stand-in an image gets when a *text-only projection* replaces it:
- * compaction summaries, session-memory extraction, and history cleanup
+ * compaction summaries and history cleanup
  * (design §11.3). Facts are optional — the summary path resolves them so the
  * placeholder can name the cache location, the synchronous cleanup sites have
  * only the ref. It states what the image was and refuses to stand in for what

@@ -1184,7 +1184,7 @@ export class ShellHost<
    *
    * The sessions go one at a time through `deleteSessionArtifacts`, the same
    * path a single `delete-session` takes — that function owns *what* a session
-   * leaves behind (JSONL, file history, session memory, subagent transcripts),
+   * leaves behind (JSONL, file history, subagent transcripts),
    * and duplicating the list here is how the other three got leaked once before.
    * Once every session is gone, the rest of the project's data dir (index,
    * plans) goes with it. The project's own `.myagent/` is never touched:
@@ -1285,7 +1285,7 @@ export class ShellHost<
    *     and a pane still holding a session whose JSONL just vanished is a ghost
    *     row whose next append recreates the file.
    *  4. `deleteSessionArtifacts` owns *what* gets deleted — store files, file
-   *     history, session memory, subagent transcripts. This method deliberately
+   *     history, subagent transcripts. This method deliberately
    *     does not enumerate them: it did once, with two of the four, and the
    *     other two leaked.
    *

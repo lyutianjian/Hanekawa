@@ -19,7 +19,6 @@ import {
   resolveAttachmentFactsForRecords,
   type AttachmentFactsResolver,
 } from './turnImages.js'
-import { trySessionMemoryCompaction } from '../services/sessionMemory/compact.js'
 
 const COMPACT_FAILURE_LIMIT = 3
 const compactFailuresByKey = new Map<string, number>()
@@ -41,9 +40,7 @@ export interface CompactCheckInput {
   promptCacheRetention?: 'in_memory' | '24h'
   turnId?: string
   circuitKey?: string
-  /** Session ID for session memory compaction. */
-  sessionId?: string
-  /** Project root, for locating session memory. Defaults to `process.cwd()`. */
+  /** Project root, for the compaction request's cache source. Defaults to `process.cwd()`. */
   cwd?: string
   /** Tool names discovered via ToolSearch — preserved in compact boundary. */
   discoveredToolNames?: Set<string>
@@ -135,48 +132,6 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
   const recordsToCompact = selectRecordsToCompact(compactableRecords)
   if (recordsToCompact.length === 0) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
-  }
-
-  // Try session memory compaction first (fast, no LLM call).
-  // Falls through to LLM compaction if session memory is not available.
-  if (input.sessionId) {
-    try {
-      const smResult = await trySessionMemoryCompaction({
-        records: compactableRecords,
-        provider: input.provider,
-        model: input.model,
-        system: input.system,
-        sessionId: input.sessionId,
-        cwd: input.cwd,
-        autoCompactThreshold: threshold,
-        discoveredToolNames: input.discoveredToolNames,
-      })
-      if (smResult) {
-        await runBeforeCompactHook(input, smResult.preTokens, compactableRecords.length)
-        await input.appendRecord(smResult.boundary)
-        compactFailuresByKey.delete(circuitKey)
-        await setCompactFailureCount(input, circuitKey, 0)
-        await runAfterCompactHook(input, {
-          trigger: 'auto',
-          preTokens: smResult.preTokens,
-          recordCount: compactableRecords.length,
-          summary: smResult.boundary.summary,
-          postTokens: smResult.postTokens,
-          compactDurationMs: 0,
-        })
-        return {
-          compacted: true,
-          usage: smResult.usage,
-          metrics: {
-            preTokens: smResult.preTokens,
-            postTokens: smResult.postTokens,
-            compactDurationMs: 0, // No LLM call
-          },
-        }
-      }
-    } catch {
-      // Session memory compaction failed — fall through to LLM compaction
-    }
   }
 
   const compactStartedAt = Date.now()

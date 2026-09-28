@@ -3,7 +3,6 @@ import { getToolResultSpillDir } from '../utils/paths.js'
 import { getSubagentTranscriptDir } from '../harness/sidechainRecordStream.js'
 import { removeFileHistory } from '../services/fileHistory/fileHistoryService.js'
 import { removeSessionAttachmentsAt } from '../services/imageAttachments/imageAttachmentService.js'
-import { clearSessionMemory } from '../services/sessionMemory/service.js'
 import { assertSafeSessionId, type SessionMeta } from '../sessions/service.js'
 
 /**
@@ -54,7 +53,6 @@ export async function deleteSessionArtifacts(
   // Unlike every other artifact here, the file history lives under the global
   // `~/.myagent`, not the project — deleting the project would not take it.
   await removeFileHistory(sessionId)
-  await clearSessionMemory(sessionId, cwd)
   await removeSubagentTranscripts(cwd, sessionId)
   await rm(getToolResultSpillDir(cwd, sessionId), { recursive: true, force: true })
   // The session's imported images, including the ones its subagents imported —

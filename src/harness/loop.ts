@@ -82,7 +82,6 @@ import {
 import { ToolResultTrimState } from './toolResultTrimState.js'
 import { getToolResultSpillDir } from '../utils/paths.js'
 import { wrapInSystemReminder } from './systemReminder.js'
-import { maybeExtractSessionMemory } from '../services/sessionMemory/service.js'
 
 export interface ActiveModelRuntime {
   provider: ModelProvider
@@ -669,7 +668,6 @@ export class AgentLoop {
           promptCacheRetention: this.activeModel.promptCacheRetention,
           turnId,
           circuitKey: this.options.toolContext.sessionId,
-          sessionId: this.options.toolContext.sessionId,
           cwd: this.options.toolContext.cwd,
           ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
           getCompactFailureCount: this.options.getCompactFailureCount,
@@ -1009,18 +1007,6 @@ export class AgentLoop {
           createdAt: new Date().toISOString(),
         })
       }
-
-      // Trigger async session memory extraction (fire-and-forget).
-      // Runs after the full turn is complete so extraction captures tool results.
-      maybeExtractSessionMemory({
-        provider: this.activeModel.provider,
-        model: this.activeModel.model,
-        compactRuntime: this.options.compactModel,
-        records: this.recordsCache ?? [],
-        system: this.options.system,
-        sessionId: this.options.toolContext.sessionId,
-        cwd: this.options.toolContext.cwd,
-      })
       }
 
       // Only reachable with an explicit maxTurns; without one the loop above

@@ -90,15 +90,13 @@ export function seedSession(project, { marker, ageMinutes = 0 }) {
  * The per-project artifacts a *ran* session leaves outside its own log.
  *
  * Seeded by hand because a fixture session never ran: without them, "delete
- * removes the session memory" would pass against a session that never had any,
+ * removes the subagent transcripts" would pass against a session that never had any,
  * which is exactly the vacuous assertion stage 4b's leak hid behind.
  *
  * The file history is not among them: it lives under
  * `~/.myagent/file-history/`, not the project's data dir.
  */
 export function seedArtifacts(project, sessionId) {
-  mkdirSync(join(project.data, 'session-memory'), { recursive: true })
-  writeFileSync(join(project.data, 'session-memory', `${sessionId}.json`), '{"entries":[]}\n')
   const subagents = join(project.data, 'sessions', 'subagents', sessionId)
   mkdirSync(subagents, { recursive: true })
   writeFileSync(join(subagents, 'agent-1.jsonl'), '')
@@ -120,7 +118,6 @@ export function seededArtifactPaths(project, sessionId) {
   return [
     join(project.data, 'sessions', `${sessionId}.jsonl`),
     join(project.data, 'sessions', `${sessionId}.metrics.jsonl`),
-    join(project.data, 'session-memory', `${sessionId}.json`),
     join(project.data, 'sessions', 'subagents', sessionId),
   ]
 }

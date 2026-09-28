@@ -93,6 +93,7 @@ async function createHarness(): Promise<Harness> {
     configuredEffortLevel: 'high',
     backgroundTasks: {
       getSnapshot: () => [],
+      hasParentNotifications: () => false,
       restoreSession: async (sessionId: string) => {
         restoredSessions.push(sessionId)
         return []

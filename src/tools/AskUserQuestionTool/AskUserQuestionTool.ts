@@ -65,7 +65,7 @@ const askUserQuestionInputSchema = z.object({
  * legitimate ways to end a turn.
  *
  * Sub-agent isolation: this is a main-thread tool. Sub-agents see the
- * tool removed from their toolset (via NESTED_AGENT_FORBIDDEN_TOOLS).
+ * tool removed from their toolset (via ALL_AGENT_DISALLOWED_TOOLS).
  * The execute path also guards on `askUserQuestionBridge` presence.
  */
 export const askUserQuestionTool: Tool = {

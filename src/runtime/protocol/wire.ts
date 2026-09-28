@@ -386,6 +386,8 @@ export interface PermissionRequestDto {
   /** Already bounded by `capFileToolPreview`; absent for non-file tools. */
   preview?: FileToolPreview
   destructiveWarnings: DestructiveCommandWarning[]
+  /** The sub-agent asking, so a background agent's prompt says whose it is. */
+  agent?: { id: string; type: string; description: string }
 }
 
 // --- tool display projection ------------------------------------------------

@@ -381,7 +381,8 @@ export interface WireAgentDefinitionInfo {
   /** Absent means every tool: the definition says `tools: ['*']` or nothing. */
   tools?: string[]
   model?: string
-  maxTurns: number
+  /** Absent means no turn cap. */
+  maxTurns?: number
   isReadOnlyAgent: boolean
   /** `routing.subagent[type]`, or `inherit`. The one editable field here. */
   routing: string

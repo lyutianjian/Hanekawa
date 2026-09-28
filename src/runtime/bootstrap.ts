@@ -12,7 +12,7 @@ import { clampEffort } from '../config/effort.js'
 import { permissionRulesFromSettings } from '../harness/permissions.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import { getAllTools } from '../tools/index.js'
-import { BUILT_IN_AGENT_DEFINITIONS } from '../tools/AgentTool/AgentTool.js'
+import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService } from '../services/skills/skillsService.js'
 import { AgentDefinitionLoader } from '../services/agents/agentDefinitionLoader.js'
 import { BackgroundTaskRegistry } from '../services/backgroundTasks/registry.js'
@@ -174,6 +174,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   const agentLoader = new AgentDefinitionLoader(cwd)
   let customAgentDefinitions = await agentLoader.list()
   let agentDefinitions = mergeAgentDefinitions([...BUILT_IN_AGENT_DEFINITIONS], customAgentDefinitions)
+  modelDiagnostics.push(...agentDefinitionDiagnostics(agentLoader.warnings, customAgentDefinitions, skills))
   const reloadAgentDefinitions = async (): Promise<number> => {
     agentLoader.invalidate()
     customAgentDefinitions = await agentLoader.list()
@@ -412,6 +413,22 @@ function checkLegacyModelTiers(config: ConfigService): RuntimeDiagnostic[] {
  * typo was silently ignored. These are optional settings — degrading to no
  * fallback beats refusing to start — so this reports rather than throws.
  */
+/** Loader findings and skill names no loaded skill answers to. */
+function agentDefinitionDiagnostics(
+  warnings: readonly string[],
+  definitions: readonly BaseAgentDefinition[],
+  skills: readonly { name: string }[],
+): RuntimeDiagnostic[] {
+  const known = new Set(skills.map((skill) => skill.name))
+  const messages = [
+    ...warnings,
+    ...definitions.flatMap((definition) => (definition.skills ?? [])
+      .filter((name) => !known.has(name))
+      .map((name) => `Custom agent '${definition.type}' references missing skill '${name}'`)),
+  ]
+  return messages.map((message) => ({ code: 'agent_definition', severity: 'warning', message }))
+}
+
 function checkOptionalModelReferences(config: ConfigService): RuntimeDiagnostic[] {
   const diagnostics: RuntimeDiagnostic[] = []
   const optional = [

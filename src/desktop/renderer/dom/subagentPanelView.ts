@@ -27,6 +27,8 @@ export interface SubagentPanelHandlers {
   /** The run's records so far; empty when it never wrote a transcript. */
   loadTranscript(agentId: string): Promise<readonly SessionRecord[]>
   onOpenPath(path: string, line: number | undefined): void
+  /** Stops the run started by this `Agent` call; the parent's turn goes on. */
+  onStop(id: string): void
 }
 
 export interface SubagentPanelView {
@@ -191,7 +193,12 @@ export function createSubagentPanelView(container: HTMLElement, handlers: Subage
     else if (page.agentId === undefined && entry.agentId !== undefined) page.agentId = entry.agentId
     replace(
       pageHead,
-      button('subagent-back', '← 全部子代理', '返回子代理列表', () => handlers.onSelect(undefined)),
+      el(
+        'div',
+        'subagent-page-bar',
+        button('subagent-back', '← 全部子代理', '返回子代理列表', () => handlers.onSelect(undefined)),
+        entry.finished ? undefined : button('subagent-stop', '停止', '停止这个子代理，父代理继续', () => handlers.onStop(entry.id)),
+      ),
       el('div', 'subagent-title', ...heading(entry)),
       entry.description.length > 0 ? el('div', 'subagent-desc', entry.description) : undefined,
       meta(entry, true),

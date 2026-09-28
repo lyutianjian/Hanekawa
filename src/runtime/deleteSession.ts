@@ -1,6 +1,7 @@
 import { rm } from 'node:fs/promises'
 import { getToolResultSpillDir } from '../utils/paths.js'
 import { getSubagentTranscriptDir } from '../harness/sidechainRecordStream.js'
+import { GitSubagentWorktreeManager } from '../services/agents/subagentWorktree.js'
 import { removeFileHistory } from '../services/fileHistory/fileHistoryService.js'
 import { removeSessionAttachmentsAt } from '../services/imageAttachments/imageAttachmentService.js'
 import { assertSafeSessionId, type SessionMeta } from '../sessions/service.js'
@@ -61,6 +62,8 @@ export async function deleteSessionArtifacts(
   // `attachments/`: the files the user imported *from* are theirs and
   // are never touched.
   await removeSessionAttachmentsAt(cwd, sessionId)
+  // Last: the only removal here that runs git, so the one most likely to throw.
+  await new GitSubagentWorktreeManager().cleanupSession({ cwd, parentSessionId: sessionId })
 }
 
 /**

@@ -7,6 +7,7 @@ import { commandVisibleRows, CommandListItem, CommandPane, getVisibleWindow } fr
 interface BackgroundTasksPanelProps {
   tasks: readonly BackgroundTaskSnapshot[]
   peekOutput: (taskId: string) => string
+  onKill: (taskId: string) => void
   onClose: () => void
 }
 
@@ -17,7 +18,7 @@ export function sortBackgroundTasks(tasks: readonly BackgroundTaskSnapshot[]): B
   })
 }
 
-export function BackgroundTasksPanel({ tasks, peekOutput, onClose }: BackgroundTasksPanelProps) {
+export function BackgroundTasksPanel({ tasks, peekOutput, onKill, onClose }: BackgroundTasksPanelProps) {
   const sorted = useMemo(() => sortBackgroundTasks(tasks), [tasks])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [detail, setDetail] = useState(false)
@@ -27,10 +28,15 @@ export function BackgroundTasksPanel({ tasks, peekOutput, onClose }: BackgroundT
     setSelectedIndex((current) => Math.max(0, Math.min(current, sorted.length - 1)))
   }, [sorted.length])
 
-  useInput((_input, key) => {
+  useInput((input, key) => {
     if (key.escape) {
       if (detail) setDetail(false)
       else onClose()
+      return
+    }
+    const current = sorted[selectedIndex]
+    if (input === 'x' && current?.status === 'running') {
+      onKill(current.id)
       return
     }
     if (detail) return
@@ -51,10 +57,11 @@ export function BackgroundTasksPanel({ tasks, peekOutput, onClose }: BackgroundT
         ? 'No active or recent tasks.'
         : `${sorted.length} task${sorted.length === 1 ? '' : 's'} · ${runningCount} running`}
       hints={detail
-        ? [{ key: 'Esc', action: 'back' }]
+        ? [{ key: 'x', action: 'stop' }, { key: 'Esc', action: 'back' }]
         : [
             { key: '↑/↓', action: 'navigate' },
             { key: 'Enter', action: 'view details' },
+            { key: 'x', action: 'stop' },
             { key: 'Esc', action: 'close' },
           ]}
     >

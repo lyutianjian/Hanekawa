@@ -228,6 +228,7 @@ function fakeProject(cwd = '/tmp/fixture'): ProjectRuntime {
     backgroundTasks: {
       subscribe: () => () => undefined,
       getSnapshot: () => [],
+      hasParentNotifications: () => false,
       peekOutput: () => '',
       killShell: async () => undefined,
       restoreSession: async () => [],

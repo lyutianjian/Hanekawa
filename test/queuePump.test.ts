@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canPumpQueue, handOffQueuedMessage, type QueuePumpState } from '../src/runtime/queuePump.js'
+import { canPumpQueue, canWakeForNotifications, handOffQueuedMessage, type QueuePumpState } from '../src/runtime/queuePump.js'
 import type { QueuedMessage } from '../src/runtime/messageQueue.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
@@ -31,6 +31,16 @@ test('a blocked message holds the pump only while it is still the head', () => {
   // clear the block explicitly for the pump to start again.
   assert.equal(canPumpQueue({ ...blocked, headMessageId: 'm2' }), true)
   assert.equal(canPumpQueue({ ...ready, headMessageId: 'm1' }), true)
+})
+
+test('agent notes wake an idle session only once its queue is empty', () => {
+  const idle: QueuePumpState = { ...ready, pending: 0 }
+  assert.equal(canWakeForNotifications(idle, true), true)
+  assert.equal(canWakeForNotifications(idle, false), false)
+  assert.equal(canWakeForNotifications(ready, true), false, 'a queued message goes first and carries the notes')
+  assert.equal(canWakeForNotifications({ ...idle, turnActive: true }, true), false)
+  assert.equal(canWakeForNotifications({ ...idle, uiBlocked: true }, true), false)
+  assert.equal(canWakeForNotifications({ ...idle, running: true }, true), false)
 })
 
 // --- the hand-off -----------------------------------------------------------

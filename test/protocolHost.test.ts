@@ -78,6 +78,8 @@ interface Harness {
   /** Drives the two subscriptions the host installs on the runtime host. */
   changeMode: (mode: string) => void
   getPermissionMode: () => string
+  /** A background agent leaving a note for this idle session. */
+  notifyParent: (note: string) => void
   changeBackgroundTasks: (tasks: unknown[]) => void
   closeClient: () => void
   dispose: () => void
@@ -241,6 +243,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const modeListeners = new Set<(mode: string) => void>()
   const taskListeners = new Set<() => void>()
   let backgroundTaskSnapshot: unknown[] = []
+  const parentNotes: string[] = []
   let permissionMode = 'default'
 
   const runtimeHost = {
@@ -272,10 +275,12 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
         return () => taskListeners.delete(listener)
       },
       getSnapshot: () => backgroundTaskSnapshot,
+      hasParentNotifications: () => parentNotes.length > 0,
+      consumeParentNotifications: () => parentNotes.splice(0),
       restoreSession: async () => [] as string[],
       stopAll: async () => {},
       peekOutput: () => 'tail of the output',
-      killShell: async (_sessionId: string, taskId: string) => ({ id: taskId, status: 'killed' }),
+      killTask: async (_sessionId: string, taskId: string) => ({ id: taskId, status: 'killed' }),
     },
     config: {
       get: () => ({
@@ -433,6 +438,10 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     calls,
     changeMode: (mode: string) => { for (const listener of [...modeListeners]) listener(mode) },
     getPermissionMode: () => permissionMode,
+    notifyParent: (note: string) => {
+      parentNotes.push(note)
+      for (const listener of [...taskListeners]) listener()
+    },
     changeBackgroundTasks: (tasks: unknown[]) => {
       backgroundTaskSnapshot = tasks
       for (const listener of [...taskListeners]) listener()
@@ -1578,6 +1587,21 @@ test('an idle host sends a queued message immediately', async () => {
   )
 
   assert.deepEqual(harness.calls.submits, ['now'])
+  harness.dispose()
+})
+
+test('a background agent note wakes an idle host, and waits out a running turn', async () => {
+  const harness = await createHarness()
+  harness.notifyParent('<system-reminder>\nagent one done\n</system-reminder>')
+  await waitFor(() => (harness.calls.submits.length > 0 ? true : undefined), 'the wake turn')
+  assert.deepEqual(harness.calls.submits, ['<system-reminder>\nagent one done\n</system-reminder>'])
+
+  harness.setStreaming(true)
+  harness.notifyParent('<system-reminder>\nagent two done\n</system-reminder>')
+  await settle()
+  assert.equal(harness.calls.submits.length, 1, 'a running turn takes the note at its next step instead')
+  harness.setStreaming(false)
+  await waitFor(() => (harness.calls.submits.length > 1 ? true : undefined), 'the second wake turn')
   harness.dispose()
 })
 

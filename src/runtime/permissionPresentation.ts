@@ -42,6 +42,7 @@ interface PermissionStrings {
   readonly titles: { bash: string; write: string; edit: string; delete: string; tool: string }
   readonly subtitleJoiner: string
   readonly pending: (index: number, total: number) => string
+  readonly agent: (type: string, description: string) => string
   readonly blocks: { command: string; path: string; input: string }
   readonly sentenceTerminator: string
   readonly terminators: RegExp
@@ -71,6 +72,7 @@ const STRINGS = {
     },
     subtitleJoiner: ' - ',
     pending: (index, total) => `${index}/${total} pending`,
+    agent: (type, description) => `from ${type} agent "${description}"`,
     blocks: { command: 'Command', path: 'Path', input: 'Input' },
     sentenceTerminator: '.',
     terminators: /[.!?]$/,
@@ -114,6 +116,7 @@ const STRINGS = {
     },
     subtitleJoiner: ' · ',
     pending: (index, total) => `第 ${index}/${total} 条待处理`,
+    agent: (type, description) => `来自 ${type} 子 agent「${description}」`,
     blocks: { command: '命令', path: '路径', input: '输入' },
     sentenceTerminator: '。',
     terminators: /[。！？.!?]$/,
@@ -281,7 +284,7 @@ export function formatPermissionTitle(
 }
 
 /**
- * Risk, source and queue position. The path is left to the input block, which
+ * The asking sub-agent, risk, source and queue position. The path is left to the input block, which
  * already shows it for every file tool, and the `mode` source is left out: it
  * only says "you are asked because you are asked", and the reason line below
  * the subtitle already says why.
@@ -294,6 +297,7 @@ export function formatPermissionSubtitle(
 ): string {
   const strings = STRINGS[locale]
   const parts: string[] = []
+  if (request.agent) parts.push(strings.agent(request.agent.type, truncateMiddle(request.agent.description, 48)))
   const pathLabel = getFilePath(request.input)
   if (pathLabel && !isFileTool(request.toolName)) parts.push(pathLabel)
   parts.push(strings.risk[request.riskLevel])
@@ -352,8 +356,13 @@ export function formatPermissionInputBlock(
   return { kind: 'json', label: labels.input, content }
 }
 
-/** Short label for the "Also waiting" line; subagents name their type. */
+/** Short label for the "Also waiting" line; an Agent call names its type, a sub-agent's call its asker. */
 export function formatPermissionRequestLabel(request: PermissionRequestDto): string {
+  const label = toolLabel(request)
+  return request.agent ? `${request.agent.id} › ${label}` : label
+}
+
+function toolLabel(request: PermissionRequestDto): string {
   if (request.toolName !== 'Agent' || !request.input || typeof request.input !== 'object') {
     return request.toolName
   }

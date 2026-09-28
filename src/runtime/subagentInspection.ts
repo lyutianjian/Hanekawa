@@ -60,10 +60,15 @@ export async function cleanupSubagentWorktrees(
 ): Promise<CommandSubagentCleanupResult> {
   const loaded = await store.loadRecordsWithDiagnostics(sessionId)
   const tasks = latestSubagentTasks(loaded.records)
+  // A foreground agent writes only a transcript record, never a task record.
+  const taskIds = new Set(tasks.map((task) => task.agentId))
+  const foreground = latestSubagentTranscripts(loaded.records)
+    .filter((transcript) => !taskIds.has(transcript.agentId))
+    .map((transcript) => ({ ...transcript, status: transcript.status ?? 'completed' }))
   const manager = new GitSubagentWorktreeManager()
   const entries = []
 
-  for (const task of tasks) {
+  for (const task of [...tasks, ...foreground]) {
     if (!task.worktreePath || task.status === 'running') continue
     try {
       const inspection = await manager.inspect({ worktreePath: task.worktreePath })

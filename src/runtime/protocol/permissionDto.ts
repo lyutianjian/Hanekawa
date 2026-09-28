@@ -44,6 +44,7 @@ export function toPermissionDto(
     canAlwaysAllow: Boolean(request.onAlwaysAllow),
     ...(preview ? { preview } : {}),
     destructiveWarnings: analyzeDestructive(request),
+    ...(request.agent ? { agent: { ...request.agent } } : {}),
   }
 }
 

@@ -6,3 +6,9 @@
 export function wrapInSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`
 }
+
+/** Whether a message is model-facing reminders only, never the user's words. */
+export function isSystemReminderBlock(text: string): boolean {
+  const trimmed = text.trim()
+  return trimmed.startsWith('<system-reminder>') && trimmed.endsWith('</system-reminder>')
+}

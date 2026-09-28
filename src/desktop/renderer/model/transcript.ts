@@ -360,6 +360,8 @@ export function applySessionEvent(
 ): TranscriptOutcome {
   switch (event.type) {
     case 'turn-start':
+      // A wake turn's input is reminders for the model, hidden on replay too.
+      if (isSystemReminderBlock(event.displayInput)) return { state: { ...state, isThinking: false } }
       // The user message arrives as a record too, but only after the turn has
       // done its first I/O; showing it now is what makes Enter feel immediate.
       return {

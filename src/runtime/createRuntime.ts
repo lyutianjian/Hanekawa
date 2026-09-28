@@ -263,9 +263,6 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
           { kind: 'subagent', type: subagentType },
           modelKey,
         ),
-      getCompactFailureCount: async () => (await store.load(runtimeSession.id))?.compactFailureCount ?? 0,
-      setCompactFailureCount: async (count) => store.setCompactFailureCount(runtimeSession.id, count),
-      agentTimeoutMs: config.get().agent.agentTimeoutMs,
       backgroundTasks,
       // The same three handles the main loop gets. The Agent tool re-owns the
       // importer per run so a subagent's images land in *this* session's tree
@@ -287,6 +284,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       },
     }, {
       preToolUse: getSettings().hooks?.preToolUse,
+      postToolUse: getSettings().hooks?.postToolUse,
     })
 
     loop = new AgentLoop({
@@ -334,6 +332,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       onRecord: (record) => bridges.record.onRecord(record),
       onStreamEvent: (event) => bridges.record.onStreamEvent(event),
       onRequestUsage: (usage, anchorRecordId) => bridges.record.onRequestUsage(usage, anchorRecordId),
+      consumePendingUserMessages: () => backgroundTasks.consumeParentNotifications(runtimeSession.id),
       ...(imageAttachments ? { imageAttachments } : {}),
       ...(attachmentFacts ? { attachmentFacts } : {}),
       ...(attachmentBytes ? { attachmentBytes } : {}),

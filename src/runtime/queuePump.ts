@@ -41,6 +41,20 @@ export function canPumpQueue(state: QueuePumpState): boolean {
   return true
 }
 
+/**
+ * Whether notes a background agent left for an idle session should start a
+ * turn of their own. Queued user messages go first: a turn they start takes
+ * the notes at its first step anyway.
+ */
+export function canWakeForNotifications(state: QueuePumpState, hasNotifications: boolean): boolean {
+  return hasNotifications && state.pending === 0 && !state.running && !state.turnActive && !state.uiBlocked
+}
+
+/** The wake turn's input: the reminders themselves, which no transcript draws as a user bubble. */
+export function notificationInput(notes: readonly string[]): UserInput {
+  return { text: notes.join('\n\n') }
+}
+
 /** What one hand-off attempt did, so the shell knows what to draw and remember. */
 export type QueueHandoffOutcome =
   /** Nothing was waiting. */

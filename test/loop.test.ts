@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { z } from 'zod/v3'
 import { AgentLoop } from '../src/harness/loop.js'
-import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
+import { displayCacheSource, forkCacheSource } from '../src/harness/cacheBreakDetection.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { PermissionGate, type PermissionMode } from '../src/harness/permissions.js'
 import { PlanModeManager } from '../src/harness/planModeManager.js'
@@ -18,7 +18,7 @@ import { clearAllPlanSlugs, writePlan } from '../src/utils/plans.js'
 import { getAutoCompactThreshold } from '../src/prompts/budget.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
-import type { ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, TokenUsage, Tool } from '../src/harness/types.js'
+import type { ChatMessage, ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, TokenUsage, Tool } from '../src/harness/types.js'
 import { FallbackNotApplicableForImagesError, TurnImageBlockError } from '../src/harness/turnImages.js'
 import { FallbackTriggeredError } from '../src/config/retry.js'
 import { resetAutoCompactFailureState } from '../src/harness/compact.js'
@@ -2516,6 +2516,63 @@ test('auto-compaction sends the conversation\'s own request with the compact pro
   assert.ok(durable(compact!).includes('old-user'))
   const boundary = records.find((record) => record.type === 'compact_boundary')
   assert.match(boundary?.type === 'compact_boundary' ? boundary.summary : '', /shared summary/)
+})
+
+test('an inheriting fork auto-compacts its own records behind the unchanged parent prefix', async () => {
+  resetAutoCompactFailureState()
+  const records: SessionRecord[] = [
+    { type: 'message', id: 'fork-user', role: 'user', content: 'fork context '.repeat(200), createdAt: '2026-05-10T00:00:00.000Z' },
+    { type: 'message', id: 'fork-assistant', role: 'assistant', content: 'fork answer '.repeat(200), createdAt: '2026-05-10T00:01:00.000Z' },
+  ]
+  const parentMessage: ChatMessage = { id: 'parent-history', role: 'user', content: 'parent history', createdAt: '2026-05-10T00:00:00.000Z' }
+  const inheritedRequest: ModelRequest = {
+    system: 'parent system',
+    messages: [parentMessage],
+    contextItems: [{ kind: 'message', message: parentMessage }],
+    tools: [],
+    model: 'fake-model',
+    cacheSource: forkCacheSource('parent', process.cwd()),
+  }
+  const requests: ModelRequest[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      requests.push(request)
+      const last = request.contextItems?.at(-1)
+      const isCompact = last?.kind === 'message' && last.message.id === 'compact-request'
+      return { content: isCompact ? '<summary>fork summary</summary>' : 'done', toolCalls: [] }
+    },
+  }
+  const loop = new AgentLoop({
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextBuilder: new ContextBuilder(),
+    toolRunner: new ToolRunner([], new PermissionGate(async () => true), {
+      onRecord: async (record) => { records.push(record) },
+    }),
+    toolContext: { cwd: process.cwd(), sessionId: 'fork-compact', readFiles: new Set() },
+    contextWindow: 10_000,
+    contextManagement: { contextWindow: 10_000, summaryOutputTokens: 100, autoCompactBufferTokens: 50, autoCompactThresholdRatio: 0.05 },
+    recordStream: recordStreamFor(records),
+    inheritedRequest,
+  })
+
+  await loop.run({ text: 'latest request' })
+
+  assert.ok(records.some((record) => record.type === 'compact_boundary'))
+  const [compact, main] = requests
+  for (const request of [compact!, main!]) {
+    assert.equal(request.system, 'parent system')
+    const first = request.contextItems?.[0]
+    assert.equal(first?.kind === 'message' ? first.message.id : undefined, 'parent-history')
+  }
+
+  await loop.run({ text: 'next request' })
+  const next = requests.at(-1)!
+  const firstNext = next.contextItems?.[0]
+  assert.equal(firstNext?.kind === 'message' ? firstNext.message.id : undefined, 'parent-history')
+  assert.ok(!next.contextItems!.some((item) => item.kind === 'message' && item.message.id === 'fork-user'))
 })
 
 test('agent loop includes compact summary on the next user turn after compaction', async () => {

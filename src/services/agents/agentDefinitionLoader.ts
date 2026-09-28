@@ -6,11 +6,11 @@ import {
   AGENT_MAX_RESULT_SIZE_CHARS,
   ALL_AGENT_DISALLOWED_TOOLS,
   BUILT_IN_AGENT_DEFINITIONS,
-  DEFAULT_AGENT_MAX_TURNS,
   infersReadOnlyAgentFromTools,
   type BaseAgentDefinition,
 } from '../../tools/AgentTool/AgentTool.js'
 import type { PermissionMode } from '../../harness/permissions.js'
+import { VALID_EFFORT_LEVELS, type EffortLevel } from '../../config/effort.js'
 import type { SubagentIsolation } from './subagentWorktree.js'
 import { getAgentsDir, getLocalAgentsDir } from '../../utils/paths.js'
 
@@ -39,6 +39,8 @@ const BUILT_IN_AGENT_TYPES = new Set(BUILT_IN_AGENT_DEFINITIONS.map((definition)
 
 export class AgentDefinitionLoader {
   private cached: BaseAgentDefinition[] | undefined
+  /** Problems found by the last `list()`; stderr would tear the TUI. */
+  warnings: string[] = []
 
   constructor(
     private readonly cwd: string,
@@ -47,6 +49,7 @@ export class AgentDefinitionLoader {
 
   async list(): Promise<BaseAgentDefinition[]> {
     if (this.cached) return this.cached
+    this.warnings = []
     const definitions = new Map<string, BaseAgentDefinition>()
     for (const dir of this.agentDirs()) {
       for (const definition of await this.loadDir(dir)) {
@@ -86,7 +89,7 @@ export class AgentDefinitionLoader {
       try {
         definitions.push(this.parse(await readFile(filePath, 'utf8')))
       } catch (error) {
-        console.warn(`Failed to load agent definition from ${entry}:`, (error as Error).message)
+        this.warnings.push(`Failed to load agent definition from ${entry}: ${(error as Error).message}`)
       }
     }
     return definitions
@@ -114,7 +117,7 @@ export class AgentDefinitionLoader {
     const mcpServers = parseOptionalStringArray(frontmatter.mcpServers, 'mcpServers')
     const background = parseOptionalBoolean(frontmatter.background, 'background')
     const isolation = parseOptionalIsolation(frontmatter.isolation)
-    const maxTurns = parsePositiveInt(frontmatter.maxTurns, DEFAULT_AGENT_MAX_TURNS, 'maxTurns')
+    const maxTurns = parseOptionalPositiveInt(frontmatter.maxTurns, 'maxTurns')
     const maxResultSizeChars = parsePositiveInt(
       frontmatter.maxResultSizeChars,
       AGENT_MAX_RESULT_SIZE_CHARS,
@@ -125,27 +128,19 @@ export class AgentDefinitionLoader {
     const initialPrompt = parseOptionalString(frontmatter.initialPrompt, 'initialPrompt')
     const criticalSystemReminder = parseOptionalString(frontmatter.criticalSystemReminder, 'criticalSystemReminder')
 
-    const effortRaw = frontmatter.effort
-    let effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | number | undefined
-    if (effortRaw === 'low' || effortRaw === 'medium' || effortRaw === 'high' || effortRaw === 'xhigh' || effortRaw === 'max') {
-      effort = effortRaw
-    } else if (typeof effortRaw === 'number' && Number.isInteger(effortRaw) && effortRaw > 0) {
-      effort = effortRaw
-    } else if (effortRaw !== undefined) {
-      console.warn(`Custom agent '${frontmatter.name}' has invalid effort '${effortRaw}'. Use low/medium/high/xhigh/max or a positive integer.`)
-    }
+    const effort = parseOptionalEffort(frontmatter.effort)
 
     const content = match[2].trim()
     const inferredReadOnlyAgent = infersReadOnlyAgentFromTools(tools)
 
     if (BUILT_IN_AGENT_TYPES.has(frontmatter.name)) {
-      console.warn(`Custom agent '${frontmatter.name}' overrides built-in definition`)
+      this.warnings.push(`Custom agent '${frontmatter.name}' overrides built-in definition`)
     }
     if (explicitReadOnlyAgent === true && !inferredReadOnlyAgent) {
-      console.warn(`Custom agent '${frontmatter.name}' declares isReadOnlyAgent: true but lists write-like tools; treating it as non-read-only`)
+      this.warnings.push(`Custom agent '${frontmatter.name}' declares isReadOnlyAgent: true but lists write-like tools; treating it as non-read-only`)
     }
     if (content.length > CUSTOM_AGENT_PROMPT_WARN_CHARS) {
-      console.warn(`Custom agent '${frontmatter.name}' system prompt is ${content.length} chars, above the recommended ${CUSTOM_AGENT_PROMPT_WARN_CHARS} char soft limit`)
+      this.warnings.push(`Custom agent '${frontmatter.name}' system prompt is ${content.length} chars, above the recommended ${CUSTOM_AGENT_PROMPT_WARN_CHARS} char soft limit`)
     }
 
     return {
@@ -161,7 +156,7 @@ export class AgentDefinitionLoader {
       disallowedTools: userDisallowedTools
         ? [...new Set([...ALL_AGENT_DISALLOWED_TOOLS, ...userDisallowedTools])]
         : [...ALL_AGENT_DISALLOWED_TOOLS],
-      maxTurns,
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
       maxResultSizeChars,
       isReadOnlyAgent: explicitReadOnlyAgent === false ? false : inferredReadOnlyAgent,
       omitProjectContext,
@@ -226,6 +221,10 @@ function parsePositiveInt(value: unknown, defaultValue: number, field: string): 
   return value
 }
 
+function parseOptionalPositiveInt(value: unknown, field: string): number | undefined {
+  return value === undefined ? undefined : parsePositiveInt(value, 0, field)
+}
+
 function parseBoolean(value: unknown, defaultValue: boolean, field: string): boolean {
   if (value === undefined) return defaultValue
   if (typeof value !== 'boolean') {
@@ -240,4 +239,10 @@ function parseOptionalBoolean(value: unknown, field: string): boolean | undefine
     throw new Error(`Agent frontmatter "${field}" must be a boolean`)
   }
   return value
+}
+
+function parseOptionalEffort(value: unknown): EffortLevel | undefined {
+  if (value === undefined) return undefined
+  if ((VALID_EFFORT_LEVELS as readonly unknown[]).includes(value)) return value as EffortLevel
+  throw new Error(`Agent frontmatter "effort" must be one of: ${VALID_EFFORT_LEVELS.join(', ')}`)
 }

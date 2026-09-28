@@ -42,6 +42,30 @@ test('GitSubagentWorktreeManager creates a detached worktree and summarizes chan
   }
 })
 
+test('GitSubagentWorktreeManager maps a subdirectory cwd and removes a session\'s worktrees', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'hanekawa-worktree-subdir-'))
+  const repo = path.join(root, 'repo')
+  const manager = new GitSubagentWorktreeManager()
+  try {
+    await git(root, ['init', repo])
+    await mkdir(path.join(repo, 'packages', 'app'), { recursive: true })
+    await writeFile(path.join(repo, 'packages', 'app', 'index.ts'), 'x\n', 'utf8')
+    await git(repo, ['add', '.'])
+    await git(repo, ['-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'init'])
+    const cwd = path.join(repo, 'packages', 'app')
+
+    const lease = await manager.create({ cwd, parentSessionId: 'session-a', agentId: 'writer-1' })
+    assert.equal(lease.cwd, path.join(lease.path, 'packages', 'app'))
+    await access(path.join(lease.cwd, 'index.ts'))
+
+    await manager.cleanupSession({ cwd, parentSessionId: 'session-a' })
+    await assert.rejects(access(lease.path), /ENOENT/)
+    assert.doesNotMatch(await git(repo, ['worktree', 'list']), /writer-1/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('GitSubagentWorktreeManager cleanup removes only managed temp worktrees', async () => {
   const manager = new GitSubagentWorktreeManager()
   await mkdir(path.join(tmpdir(), 'hanekawa-subagent-worktrees'), { recursive: true })

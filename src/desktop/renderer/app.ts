@@ -1173,6 +1173,11 @@ const subagentPanel = createSubagentPanelView(required('subagent-view'), {
   onOpenPath: (path, line) => {
     if (activeLane !== undefined) openInEditor(activeLane, path, line)
   },
+  onStop: (id) => {
+    const client = activePane()?.client
+    const task = client?.getBackgroundTasks().find((candidate) => candidate.toolUseId === id && candidate.status === 'running')
+    if (task) void client!.killTask(task.id).catch(() => {})
+  },
 })
 /** The strip's last paint, so a stream delta does not rebuild buttons under the pointer. */
 let sideTabsDrawn: string | undefined

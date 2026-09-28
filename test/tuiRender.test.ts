@@ -409,12 +409,14 @@ test('StatusLine renders the running background task count', () => {
 })
 
 test('BackgroundTasksPanel sorts running tasks first and renders task details', async () => {
+  const killed: string[] = []
   const panel = render(h(BackgroundTasksPanel, {
     tasks: [
       { id: 'bash_1', sessionId: 's1', kind: 'shell', status: 'completed', command: 'echo old', startedAt: 1, outputBytes: 0, unreadBytes: 0 },
       { id: 'agent_1', sessionId: 's1', kind: 'agent', status: 'running', agentId: 'abcdef123', agentType: 'general', description: 'work', startedAt: 2, outputBytes: 0, unreadBytes: 0 },
     ],
     peekOutput: () => 'tail',
+    onKill: (taskId: string) => { killed.push(taskId) },
     onClose: () => {},
   }))
   const frame = panel.lastFrame() ?? ''
@@ -422,6 +424,9 @@ test('BackgroundTasksPanel sorts running tasks first and renders task details', 
   panel.stdin.write('\r')
   await new Promise((resolve) => setTimeout(resolve, 10))
   assert.match(panel.lastFrame() ?? '', /agent: general #abcdef12/)
+  panel.stdin.write('x')
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  assert.deepEqual(killed, ['agent_1'])
 })
 
 test('worked summary renders total-turn cost when pricing is available', () => {

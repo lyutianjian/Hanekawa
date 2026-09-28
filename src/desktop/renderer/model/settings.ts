@@ -1362,7 +1362,7 @@ function agentDetail(agent: WireAgentDefinitionInfo): string {
   }
   if (agent.model) parts.push(`模型：${agent.model}`)
   if (agent.isReadOnlyAgent) parts.push('只读')
-  parts.push(`最多 ${agent.maxTurns} 轮`)
+  if (agent.maxTurns !== undefined) parts.push(`最多 ${agent.maxTurns} 轮`)
   return parts.join(' · ')
 }
 

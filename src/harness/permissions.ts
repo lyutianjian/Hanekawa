@@ -36,6 +36,14 @@ export interface PermissionRequest {
    */
   denialStreak: number
   onAlwaysAllow?: () => void
+  /** The sub-agent whose call this is; absent for the session's own. */
+  agent?: PermissionRequestAgent
+}
+
+export interface PermissionRequestAgent {
+  id: string
+  type: string
+  description: string
 }
 
 export type PermissionPrompt = (request: PermissionRequest) => Promise<boolean>
@@ -543,7 +551,7 @@ export class PermissionGate {
     }
 
     if (this.mode === 'readonly') {
-      if (tool.isReadOnly === true && !blocksAutoApproval) {
+      if (isReadOnlyCall(tool, input) && !blocksAutoApproval) {
         this.denialStreaks.set(tool.name, 0)
         return this.persistAndReturn(approvedDecision('mode'))
       }
@@ -1160,4 +1168,8 @@ function basename(command: string): string {
   const normalized = command.replace(/\\/g, '/')
   const slash = normalized.lastIndexOf('/')
   return slash === -1 ? normalized : normalized.slice(slash + 1)
+}
+
+function isReadOnlyCall(tool: Tool, input: unknown): boolean {
+  return tool.isReadOnlyInput?.(input) ?? tool.isReadOnly === true
 }

@@ -26,6 +26,7 @@ import {
   type TuiTranscriptState,
 } from '../transcript.js'
 import { calculateTokenCost, hasCompletePricing } from '../../harness/usage.js'
+import { isSystemReminderBlock } from '../../harness/systemReminder.js'
 
 export { isHiddenToolCall, recordsToDisplayItems } from '../transcript.js'
 
@@ -248,14 +249,17 @@ export function useAgentLoop({
         // static first, then place the user message in liveItems — never static —
         // so a rollback can remove it without leaving a scrollback ghost.
         setTranscript((prev) => commitLiveItemsToStatic(prev))
-        const userMsg: TUIDisplayItem = {
-          kind: 'user',
-          id: event.messageId,
-          content: event.displayInput,
-          ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
-          createdAt: event.createdAt,
+        // A wake turn's input is reminders for the model, hidden on replay too.
+        if (!isSystemReminderBlock(event.displayInput)) {
+          const userMsg: TUIDisplayItem = {
+            kind: 'user',
+            id: event.messageId,
+            content: event.displayInput,
+            ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
+            createdAt: event.createdAt,
+          }
+          setTranscript((prev) => ({ ...prev, liveItems: [...prev.liveItems, userMsg] }))
         }
-        setTranscript((prev) => ({ ...prev, liveItems: [...prev.liveItems, userMsg] }))
         setStreamMode('requesting')
         responseLengthRef.current = 0
         loadingStartTimeRef.current = Date.now()

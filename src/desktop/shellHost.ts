@@ -1641,13 +1641,13 @@ export class ShellHost<
         type: definition.type,
         description: definition.description,
         builtIn: builtInTypes.has(definition.type),
-        maxTurns: definition.maxTurns,
         isReadOnlyAgent: definition.isReadOnlyAgent,
         routing: routing.subagent?.[definition.type] ?? 'inherit',
       }
       if (definition.permissionMode !== undefined) info.permissionMode = definition.permissionMode
       if (definition.tools !== undefined) info.tools = [...definition.tools]
       if (definition.model !== undefined) info.model = definition.model
+      if (definition.maxTurns !== undefined) info.maxTurns = definition.maxTurns
       return info
     })
 

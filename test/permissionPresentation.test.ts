@@ -306,6 +306,13 @@ describe('permission dialog formatters', () => {
     )
   })
 
+  it('names the sub-agent that is asking', () => {
+    const dto = { ...request('Bash', { command: 'ls' }, 'mode', 'confirm'), agent: { id: 'explore-2', type: 'explore', description: 'map the router' } }
+    assert.equal(formatPermissionSubtitle(dto, 0, 1), 'from explore agent "map the router" - confirm')
+    assert.equal(formatPermissionSubtitle(dto, 0, 1, 'zh'), '来自 explore 子 agent「map the router」 · 需确认')
+    assert.equal(formatPermissionRequestLabel(dto), 'explore-2 › Bash')
+  })
+
   it('names the subagent type in a queued Agent label', () => {
     assert.equal(
       formatPermissionRequestLabel(request('Agent', { subagent_type: 'explore', prompt: 'Find the route' })),

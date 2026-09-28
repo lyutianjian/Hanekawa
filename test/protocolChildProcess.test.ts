@@ -119,7 +119,7 @@ const runtimeHost = {
   hasRecoverableInterruption: false,
   configuredEffortLevel: 'medium',
   permissionGate: { getMode: () => 'default', onModeChange: () => () => {} },
-  backgroundTasks: { subscribe: () => () => {}, getSnapshot: () => [] },
+  backgroundTasks: { subscribe: () => () => {}, getSnapshot: () => [], hasParentNotifications: () => false },
   createRuntime: () => agentSession,
   createActiveModelRuntime: (key) => ({ model: key }),
 }

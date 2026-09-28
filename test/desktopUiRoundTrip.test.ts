@@ -91,7 +91,7 @@ async function createHarness(): Promise<Harness> {
     // mutation as a `message_queue` record, which is exactly why the queue lives
     // host-side rather than in the renderer.
     store: { appendRecord: async () => undefined },
-    backgroundTasks: { subscribe: () => () => undefined, getSnapshot: () => [] },
+    backgroundTasks: { subscribe: () => () => undefined, getSnapshot: () => [], hasParentNotifications: () => false },
     // Real: the attachment commands run the actual S05 service over this temp
     // project, so imports land on disk and ids resolve through registration.
     attachments: new ImageAttachmentService(cwd),

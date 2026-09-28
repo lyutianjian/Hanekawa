@@ -236,6 +236,7 @@ export interface AgentLoopOptions {
    * readout.
    */
   onRequestUsage?(usage: TokenUsage, anchorRecordId?: string): void
+  /** User-role messages appended verbatim at the start of each step. */
   consumePendingUserMessages?(): string[]
 }
 
@@ -629,7 +630,7 @@ export class AgentLoop {
             type: 'message',
             id: randomUUID(),
             role: 'user',
-            content: `[Message from parent agent]\n${message}`,
+            content: message,
             turnId,
             createdAt: new Date().toISOString(),
           })
@@ -664,7 +665,9 @@ export class AgentLoop {
         let recordsBeforeCompact = progressive.records
         const recordsToSummarize = recordsBeforeCompact
         const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
-        const compactResult = this.options.inheritedRequest ? { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } } : await autoCompactIfNeeded({
+        // An inheriting fork compacts only its own records: the parent prefix ahead
+        // of them is sent unchanged, so its cache still hits.
+        const compactResult = await autoCompactIfNeeded({
           records: recordsBeforeCompact,
           provider: this.activeModel.provider,
           model: this.activeModel.model,

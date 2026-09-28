@@ -55,7 +55,7 @@ import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hook
 import type { AgentSession } from '../../runtime/index.js'
 import type { RuntimeSlot } from '../../runtime/runtimeSlot.js'
 import type { QueuedSubmissionHandoff, SessionController } from '../../runtime/sessionController.js'
-import { canPumpQueue, handOffQueuedMessage } from '../../runtime/queuePump.js'
+import { canPumpQueue, canWakeForNotifications, handOffQueuedMessage, notificationInput } from '../../runtime/queuePump.js'
 import { buildModelPickerOptions } from '../../runtime/modelPicker.js'
 import { buildRewindSummaryRewrite, type RewindSummaryDecision } from '../../runtime/rewindSummary.js'
 import { activateModelKey, switchModel } from '../../runtime/modelSwitch.js'
@@ -915,14 +915,29 @@ export function App({
     // The headless policy keeps them apart so a desktop shell can substitute
     // "a permission request is pending" for the second one.
     const block = queueBlockRef.current
-    if (!canPumpQueue({
+    const state = {
       pending: queuedMessages.length,
       running: queuePumpRunningRef.current,
       turnActive: isStreaming || mode === 'running',
       uiBlocked: isOverlayActive || mode !== 'idle',
       headMessageId: messageQueue.peek()?.id,
       ...(block && block.session === runtime ? { blockedMessageId: block.messageId } : {}),
-    })) return
+    }
+    const sessionId = activeSession.id
+    if (canWakeForNotifications(state, backgroundTasks.hasParentNotifications(sessionId))) {
+      queuePumpRunningRef.current = true
+      setSpinnerColors(sampleSpinnerColors())
+      setMode('running')
+      void sessionController.submit(notificationInput(backgroundTasks.consumeParentNotifications(sessionId)))
+        .catch((error: unknown) => addSystemMessage(`Failed to deliver a background notification: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(() => {
+          setMode('idle')
+          queuePumpRunningRef.current = false
+          setQueuePumpGeneration((value) => value + 1)
+        })
+      return
+    }
+    if (!canPumpQueue(state)) return
 
     queuePumpRunningRef.current = true
     void (async () => {
@@ -948,7 +963,7 @@ export function App({
         setQueuePumpGeneration((value) => value + 1)
       }
     })()
-  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, messageQueue, queuePumpGeneration, runtime])
+  }, [queuedMessages, isStreaming, mode, isOverlayActive, executeQueuedInput, addSystemMessage, messageQueue, queuePumpGeneration, runtime, backgroundTaskSnapshot, backgroundTasks, activeSession.id, sessionController])
 
   const handleToggleTranscript = useCallback(() => {
     if (screen === 'transcript') {
@@ -1287,6 +1302,7 @@ export function App({
             <BackgroundTasksPanel
               tasks={backgroundTaskSnapshot}
               peekOutput={(taskId) => backgroundTasks.peekOutput(activeSession.id, taskId)}
+              onKill={(taskId) => { void backgroundTasks.killTask(activeSession.id, taskId) }}
               onClose={closeBackgroundTasks}
             />
           )}

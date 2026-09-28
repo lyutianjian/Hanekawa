@@ -630,6 +630,8 @@ export interface Tool {
   validateInput?(input: unknown): ToolValidationResult
   riskLevel: RiskLevel
   isReadOnly?: boolean
+  /** Input-sensitive `isReadOnly`, for tools whose effect depends on the call. */
+  isReadOnlyInput?(input: unknown): boolean
   isDestructive?: boolean
   /**
    * Maximum persisted tool result content size. This is applied once when the

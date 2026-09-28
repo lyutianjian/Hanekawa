@@ -1173,9 +1173,13 @@ body.settings-open #browser-resizer { display: none; }
   font-size: var(--type-micro);
   font-variant-numeric: tabular-nums;
 }
-.subagent-back {
-  align-self: flex-start;
+.subagent-page-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   margin-bottom: var(--space-2);
+}
+.subagent-back, .subagent-stop {
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
@@ -1186,6 +1190,7 @@ body.settings-open #browser-resizer { display: none; }
   cursor: default;
 }
 .subagent-back:hover { background: var(--surface-hover); color: var(--text-primary); }
+.subagent-stop:hover { background: var(--surface-hover); color: var(--text-danger); }
 .subagent-section { margin-top: var(--space-3); min-width: 0; overflow-wrap: anywhere; font-size: var(--type-ui); }
 .subagent-label {
   margin-bottom: var(--space-1);

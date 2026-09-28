@@ -87,6 +87,14 @@ test('an unknown event type throws rather than being silently dropped', () => {
   )
 })
 
+test('a wake turn started by background-agent reminders draws no user bubble', () => {
+  const { state } = fold([
+    { type: 'turn-start', messageId: 'm1', displayInput: '<system-reminder>\nagent done\n</system-reminder>', createdAt: 'now' },
+    { type: 'record', record: message('m1', 'user', '<system-reminder>\nagent done\n</system-reminder>') },
+  ])
+  assert.deepEqual(state.items, [])
+})
+
 test('a streamed draft is replaced by the assistant record, not appended twice', () => {
   const { state } = fold([
     { type: 'turn-start', messageId: 'm1', displayInput: 'hi', createdAt: 'now' },

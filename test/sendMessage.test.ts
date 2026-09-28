@@ -64,6 +64,12 @@ test('SendMessage resumes a completed explore agent with its prior context', asy
   assert.equal(transcripts.length, 2)
   assert.ok(transcripts.every((record) => record.agentId === 'explore-1'))
   assert.equal(transcripts[1]?.parentToolUseId, 'send-call')
+  // A resumed turn records and reports exactly what a first run does.
+  assert.deepEqual(Object.keys(transcripts[1]!).sort(), Object.keys(transcripts[0]!).sort())
+  assert.deepEqual(Object.keys(second.metadata?.subagent ?? {}).sort(), Object.keys(first.metadata?.subagent ?? {}).sort())
+  assert.equal(typeof (second.metadata?.subagent as { durationMs?: unknown }).durationMs, 'number')
+  // Counted per turn: the second holds only its own records.
+  assert.ok(transcripts[1]!.type === 'subagent_transcript' && transcripts[1].messageCount === 2)
 })
 
 test('SendMessage is builtin and filtered from sub-agent tool sets', () => {
@@ -169,6 +175,42 @@ test('agent continuation retention is bounded by LRU without deleting task snaps
   )
   const retained = await registry.sendAgentMessage('session-1', 'explore-9', 'again', context('session-1'))
   assert.equal(retained.kind, 'resumed')
+})
+
+test('replies to messages queued while an agent ran reach the parent as notices', async () => {
+  const registry = new BackgroundTaskRegistry()
+  registry.registerAgent({ sessionId: 'session-1', agentId: 'general-1', agentType: 'general', description: 'bg' })
+  const queued = await registry.sendAgentMessage('session-1', 'general-1', 'check tests too', context('session-1'))
+  assert.equal(queued.kind, 'queued')
+  registry.setAgentContinuation('session-1', 'general-1', {
+    resume: async (message) => ({ ok: true, content: `answer to ${message}` }),
+  })
+  registry.completeAgent('session-1', 'general-1', 'completed')
+
+  await waitFor(() => registry.getSnapshot('session-1').some((task) => task.status === 'completed'))
+  const notices = registry.consumeParentNotifications('session-1')
+  assert.equal(notices.length, 1)
+  assert.match(notices[0]!, /^<system-reminder>\nSub-agent general-1 replied[\s\S]*answer to check tests too/)
+  assert.deepEqual(registry.consumeParentNotifications('session-1'), [])
+})
+
+test('stopping an agent mid-reply returns a stop result, not an abort', async () => {
+  const registry = new BackgroundTaskRegistry()
+  registry.registerAgent({ sessionId: 'session-1', agentId: 'general-1', agentType: 'general', description: 'bg' })
+  registry.setAgentContinuation('session-1', 'general-1', {
+    resume: (_message, _context, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+    }),
+  })
+  registry.completeAgent('session-1', 'general-1', 'completed')
+
+  const reply = registry.sendAgentMessage('session-1', 'general-1', 'go on', context('session-1'))
+  await registry.stopAgent('session-1', 'general-1', 'Stopped by user')
+  const delivery = await reply
+
+  assert.equal(delivery.kind, 'resumed')
+  assert.equal(delivery.kind === 'resumed' ? delivery.result.errorCode : undefined, 'execution_failed')
+  assert.equal(registry.getSnapshot('session-1')[0]?.status, 'killed')
 })
 
 test('SendMessage rejects ambiguous prefixes and non-completed terminal agents', async () => {

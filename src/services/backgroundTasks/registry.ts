@@ -7,6 +7,7 @@ import type {
   ToolContext,
   ToolResult,
 } from '../../harness/types.js'
+import { wrapInSystemReminder } from '../../harness/systemReminder.js'
 import { terminateProcessTree } from './processTree.js'
 
 export const MAX_BACKGROUND_OUTPUT_BYTES = 1_000_000
@@ -14,7 +15,8 @@ export const MAX_BACKGROUND_READ_BYTES = 90_000
 export const MAX_RETAINED_AGENT_CONTINUATIONS = 8
 
 export interface AgentContinuation {
-  resume(message: string, context: ToolContext): Promise<ToolResult>
+  /** `signal` aborts when the user stops the agent mid-reply. */
+  resume(message: string, context: ToolContext, signal: AbortSignal): Promise<ToolResult>
 }
 
 export type AgentMessageDelivery =
@@ -29,6 +31,8 @@ interface PendingAgentMessage {
 interface AgentRuntimeState {
   pendingMessages: PendingAgentMessage[]
   continuation?: AgentContinuation
+  /** Set while a continuation runs, so a stop reaches it. */
+  resumeAbort?: AbortController
   lastUsedAt: number
 }
 
@@ -41,6 +45,8 @@ export interface BackgroundTaskSnapshot {
   pid?: number
   agentId?: string
   agentType?: string
+  /** The `Agent` call that started the agent, so a transcript row can stop it. */
+  toolUseId?: string
   description?: string
   startedAt: number
   finishedAt?: number
@@ -76,6 +82,7 @@ export class BackgroundTaskRegistry {
   private readonly snapshotCache = new Map<string, readonly BackgroundTaskSnapshot[]>()
   private readonly agentRuntimeStates = new Map<string, AgentRuntimeState>()
   private readonly agentIdCounters = new Map<string, number>()
+  private readonly parentNotifications = new Map<string, string[]>()
   private persistenceTail: Promise<void> = Promise.resolve()
 
   constructor(private readonly persistRecord?: PersistRecord) {}
@@ -121,6 +128,7 @@ export class BackgroundTaskRegistry {
     agentId: string
     agentType: string
     description: string
+    toolUseId?: string
     stop?: () => Promise<void> | void
   }): BackgroundTaskSnapshot {
     this.seedAgentIdCounter(input.sessionId, input.agentId)
@@ -131,6 +139,7 @@ export class BackgroundTaskRegistry {
       status: 'running',
       agentId: input.agentId,
       agentType: input.agentType,
+      ...(input.toolUseId ? { toolUseId: input.toolUseId } : {}),
       description: input.description,
       startedAt: Date.now(),
       outputBytes: 0,
@@ -171,6 +180,32 @@ export class BackgroundTaskRegistry {
     return messages.map((item) => item.message)
   }
 
+  /**
+   * Queue a note for the parent session's model. A running parent loop takes
+   * it at its next step boundary, never inside a turn in flight, where it would
+   * split a tool_use from its result; an idle parent is woken by its shell's
+   * pump (`canWakeForNotifications`), which this change notifies.
+   */
+  notifyParent(sessionId: string, content: string): void {
+    const queue = this.parentNotifications.get(sessionId) ?? []
+    queue.push(wrapInSystemReminder(content))
+    this.parentNotifications.set(sessionId, queue)
+    // A fresh snapshot, so a `useSyncExternalStore` shell re-renders too.
+    this.invalidate(sessionId)
+    for (const listener of this.listeners) listener()
+  }
+
+  hasParentNotifications(sessionId: string): boolean {
+    return this.parentNotifications.has(sessionId)
+  }
+
+  consumeParentNotifications(sessionId: string): string[] {
+    const queue = this.parentNotifications.get(sessionId)
+    if (!queue) return []
+    this.parentNotifications.delete(sessionId)
+    return queue
+  }
+
   async sendAgentMessage(
     sessionId: string,
     agentIdOrPrefix: string,
@@ -195,21 +230,27 @@ export class BackgroundTaskRegistry {
 
     state.lastUsedAt = Date.now()
     this.transition(task, 'running', { finishedAt: undefined, reason: undefined })
+    let result: ToolResult
     try {
-      let result = await state.continuation.resume(message, context)
-      while (state.pendingMessages.length > 0) {
-        const pending = state.pendingMessages.shift()!
-        result = await state.continuation.resume(pending.message, pending.context)
-      }
-      this.transition(task, 'completed', {})
-      state.lastUsedAt = Date.now()
-      this.trimAgentContinuations(sessionId)
-      return { kind: 'resumed', agentId: task.agentId, result }
+      result = await this.resume(state, message, context)
     } catch (error) {
-      state.continuation = undefined
-      state.pendingMessages.length = 0
-      this.transition(task, 'failed', { reason: error instanceof Error ? error.message : String(error) })
+      if (isStopped(error)) return { kind: 'resumed', agentId: task.agentId, result: stoppedResult(task.agentId) }
+      this.failAgent(task, state, error)
       throw error
+    }
+    await this.finishPendingAgentMessages(task, state)
+    return { kind: 'resumed', agentId: task.agentId, result }
+  }
+
+  private async resume(state: AgentRuntimeState, message: string, context: ToolContext): Promise<ToolResult> {
+    const abort = new AbortController()
+    state.resumeAbort = abort
+    try {
+      return await state.continuation!.resume(message, context, abort.signal)
+    } catch (error) {
+      throw abort.signal.aborted ? new StoppedError() : error
+    } finally {
+      state.resumeAbort = undefined
     }
   }
 
@@ -259,8 +300,19 @@ export class BackgroundTaskRegistry {
   async stopAgent(sessionId: string, agentId: string, reason = 'Stopped'): Promise<void> {
     const task = [...this.tasks.values()].find((candidate) => candidate.sessionId === sessionId && candidate.agentId === agentId)
     if (!task || task.status !== 'running') return
-    await task.stop?.()
+    const state = this.agentRuntimeStates.get(this.agentKey(sessionId, agentId))
+    if (state?.resumeAbort) state.resumeAbort.abort()
+    else await task.stop?.()
     if (task.status === 'running') this.transition(task, 'killed', { reason })
+  }
+
+  /** The user's stop for any running task, shell or agent. */
+  async killTask(sessionId: string, taskId: string, reason = 'Stopped by user'): Promise<BackgroundTaskSnapshot | undefined> {
+    const task = this.getInternal(sessionId, taskId)
+    if (!task) return undefined
+    if (task.kind === 'shell') return this.killShell(sessionId, taskId, reason)
+    await this.stopAgent(sessionId, task.agentId!, reason)
+    return this.toSnapshot(task)
   }
 
   async killShell(sessionId: string, taskId: string, reason = 'Killed by request', failed = false): Promise<BackgroundTaskSnapshot | undefined> {
@@ -459,6 +511,7 @@ export class BackgroundTaskRegistry {
       ...(task.pid ? { pid: task.pid } : {}),
       ...(task.agentId ? { agentId: task.agentId } : {}),
       ...(task.agentType ? { agentType: task.agentType } : {}),
+      ...(task.toolUseId ? { toolUseId: task.toolUseId } : {}),
       ...(task.description ? { description: task.description } : {}),
       startedAt: task.startedAt,
       ...(task.finishedAt ? { finishedAt: task.finishedAt } : {}),
@@ -531,21 +584,50 @@ export class BackgroundTaskRegistry {
     }
   }
 
+  /**
+   * Answers messages queued while the agent ran. Their SendMessage calls
+   * already returned "queued", so each reply reaches the parent as a notice.
+   */
   private async finishPendingAgentMessages(task: InternalTask, state: AgentRuntimeState): Promise<void> {
-    try {
-      while (state.pendingMessages.length > 0) {
-        const pending = state.pendingMessages.shift()!
-        await state.continuation!.resume(pending.message, pending.context)
+    while (state.pendingMessages.length > 0) {
+      if (task.status !== 'running') return
+      const pending = state.pendingMessages.shift()!
+      try {
+        const reply = await this.resume(state, pending.message, pending.context)
+        this.notifyParent(task.sessionId, `Sub-agent ${task.agentId} replied to your queued message:\n\n${reply.content}`)
+      } catch (error) {
+        if (isStopped(error)) return
+        this.failAgent(task, state, error)
+        this.notifyParent(task.sessionId, `Sub-agent ${task.agentId} failed while answering your queued message: ${errorMessage(error)}`)
+        return
       }
-      this.transition(task, 'completed', {})
-      state.lastUsedAt = Date.now()
-      this.trimAgentContinuations(task.sessionId)
-    } catch (error) {
-      state.continuation = undefined
-      state.pendingMessages.length = 0
-      this.transition(task, 'failed', { reason: error instanceof Error ? error.message : String(error) })
     }
+    if (task.status !== 'running') return
+    this.transition(task, 'completed', {})
+    state.lastUsedAt = Date.now()
+    this.trimAgentContinuations(task.sessionId)
   }
+
+  private failAgent(task: InternalTask, state: AgentRuntimeState, error: unknown): void {
+    state.continuation = undefined
+    state.pendingMessages.length = 0
+    if (task.status === 'running') this.transition(task, 'failed', { reason: errorMessage(error) })
+  }
+}
+
+class StoppedError extends Error {}
+
+function isStopped(error: unknown): boolean {
+  return error instanceof StoppedError
+}
+
+function stoppedResult(agentId: string): ToolResult {
+  // Not `aborted`: that code ends the parent's turn, and the user stopped only the agent.
+  return { ok: false, content: `Sub-agent ${agentId} was stopped by the user.`, errorCode: 'execution_failed' }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 export class AgentAddressError extends Error {

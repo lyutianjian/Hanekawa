@@ -11,6 +11,7 @@ import type {
 } from '../harness/types.js'
 import { getRecordsAfterLastCompact } from '../harness/requestPrep.js'
 import { promptTokens } from '../harness/usage.js'
+import { isSystemReminderBlock } from '../harness/systemReminder.js'
 import { countSessionRecordsTokens } from '../prompts/budget.js'
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
 import { FileHistoryService } from '../services/fileHistory/fileHistoryService.js'
@@ -770,7 +771,9 @@ export class SessionController {
     userMessageId: string,
     input: UserInput,
   ): Promise<boolean> {
-    if (signal.reason !== 'user-cancel') return false
+    // A wake turn's reminders are not a draft to hand back, and dropping them
+    // would lose the result they report.
+    if (signal.reason !== 'user-cancel' || isSystemReminderBlock(input.text)) return false
 
     try {
       const records = await rollbackInterruptedPromptIfSynthetic({

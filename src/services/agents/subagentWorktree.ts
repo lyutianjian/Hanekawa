@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
-import { access, mkdir, rm } from 'node:fs/promises'
+import { access, mkdir, readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 
 const execFileAsync = promisify(execFile)
@@ -12,7 +12,10 @@ export type SubagentIsolation = 'worktree'
 
 export interface SubagentWorktreeLease {
   isolation: 'worktree'
+  /** The worktree root. */
   path: string
+  /** Where the agent works: the parent cwd's counterpart inside the worktree. */
+  cwd: string
   baseRef: string
 }
 
@@ -67,12 +70,15 @@ export class GitSubagentWorktreeManager implements SubagentWorktreeManager {
   async create(input: { cwd: string; parentSessionId: string; agentId: string }): Promise<SubagentWorktreeLease> {
     const repoRoot = await git(input.cwd, ['rev-parse', '--show-toplevel'])
     const baseRef = await git(input.cwd, ['rev-parse', '--verify', 'HEAD'])
+    // Relative to the repo root, so a cwd below it maps to the same subdirectory.
+    const prefix = await git(input.cwd, ['rev-parse', '--show-prefix'])
     const worktreePath = this.getPath(input)
     await mkdir(path.dirname(worktreePath), { recursive: true })
     await git(repoRoot, ['worktree', 'add', '--detach', worktreePath, baseRef])
     return {
       isolation: 'worktree',
       path: worktreePath,
+      cwd: path.resolve(worktreePath, prefix),
       baseRef,
     }
   }
@@ -130,12 +136,29 @@ export class GitSubagentWorktreeManager implements SubagentWorktreeManager {
       await git(input.cwd, ['worktree', 'remove', '--force', input.worktreePath])
     } catch {
       await rm(input.worktreePath, { recursive: true, force: true })
+      await git(input.cwd, ['worktree', 'prune']).catch(() => {})
     }
 
     return {
       removed: true,
       worktreePath: input.worktreePath,
     }
+  }
+
+  /** Removes every worktree the session's agents made, foreground ones included. */
+  async cleanupSession(input: { cwd: string; parentSessionId: string }): Promise<void> {
+    const sessionDir = path.dirname(this.getPath({ ...input, agentId: 'agent' }))
+    let entries: string[]
+    try {
+      entries = await readdir(sessionDir)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    for (const entry of entries) {
+      await this.cleanup({ cwd: input.cwd, worktreePath: path.join(sessionDir, entry) })
+    }
+    await rm(sessionDir, { recursive: true, force: true })
   }
 }
 

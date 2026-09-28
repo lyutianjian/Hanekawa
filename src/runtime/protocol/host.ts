@@ -26,7 +26,7 @@ import { applyPermissionModeTransition } from '../permissionMode.js'
 import { buildModelPickerOptions } from '../modelPicker.js'
 import { refreshRuntimeSlot, resolveRuntimeModelKeyAfterConfigChange, type ProviderConfigChangeScope } from '../providerRuntime.js'
 import { MISSING_MODEL_ISSUE } from '../errors.js'
-import { canPumpQueue, handOffQueuedMessage } from '../queuePump.js'
+import { canPumpQueue, canWakeForNotifications, handOffQueuedMessage, notificationInput } from '../queuePump.js'
 import { projectDisplayName, projectRootKey } from '../projectDirectory.js'
 import { isGlobalWorkspaceRoot } from '../../utils/paths.js'
 import { SessionRecordLedger } from '../recordLedger.js'
@@ -467,6 +467,9 @@ export class SessionHost {
     this.taskPostTimer = setTimeout(() => {
       this.taskPostTimer = undefined
       this.postBackgroundTasks()
+      // A background agent's note for this idle session starts a turn. Here,
+      // off the registry's own call stack, so the agent's completion lands first.
+      this.pumpQueue()
     }, 0)
     this.taskPostTimer.unref?.()
   }
@@ -621,7 +624,7 @@ export class SessionHost {
    */
   private pumpQueue(): void {
     if (this.disposed) return
-    if (!canPumpQueue({
+    const state = {
       pending: this.messages.getSnapshot().length,
       running: this.pumping,
       turnActive: this.controller.getSnapshot().isStreaming,
@@ -630,7 +633,19 @@ export class SessionHost {
       ...(this.queueBlock && this.queueBlock.session === this.runtimeSlot.current
         ? { blockedMessageId: this.queueBlock.messageId }
         : {}),
-    })) return
+    }
+    const tasks = this.project.backgroundTasks
+    if (canWakeForNotifications(state, tasks.hasParentNotifications(this.session.id))) {
+      this.pumping = true
+      void this.controller.submit(notificationInput(tasks.consumeParentNotifications(this.session.id)))
+        .catch((error: unknown) => this.postQueueNotice(`Failed to deliver a background notification: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(() => {
+          this.pumping = false
+          this.pumpQueue()
+        })
+      return
+    }
+    if (!canPumpQueue(state)) return
 
     this.pumping = true
     void (async () => {
@@ -1004,7 +1019,7 @@ export class SessionHost {
         } satisfies WireTaskOutputResult
 
       case 'kill-task': {
-        const task = await this.project.backgroundTasks.killShell(
+        const task = await this.project.backgroundTasks.killTask(
           this.session.id,
           command.taskId,
           command.reason,

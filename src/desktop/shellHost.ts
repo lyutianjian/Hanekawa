@@ -482,7 +482,7 @@ const SETTINGS_CHANGE_SCHEMAS = {
     .object({
       scope: z.literal('permissions'),
       kind: z.literal('set-startup-permission-mode'),
-      mode: z.union([z.literal('default'), z.literal('acceptEdits'), z.literal('bypass')]),
+      mode: z.union([z.literal('default'), z.literal('auto'), z.literal('bypass')]),
     })
     .strict(),
   'reload-agent-definitions': z
@@ -1124,8 +1124,8 @@ export class ShellHost<
    * because a project on screen must be a project with history. `Promise.all`
    * because every read is independent — locks, `readdir`s and tiny JSON parses.
    *
-   * The sessions are projected field by field: `SessionMeta` carries two
-   * unbounded arrays (`checkpoints`, `denialState`) that no row reads.
+   * The sessions are projected field by field: `SessionMeta` carries an
+   * unbounded array (`checkpoints`) that no row reads.
    */
   private async listSessions(): Promise<WireShellSessionsResult> {
     const roots: string[] = []
@@ -1786,8 +1786,8 @@ function assertNever(value: never): never {
 
 /**
  * A session index row → the four fields a sidebar row reads. Field by field,
- * never a spread: `SessionMeta` gains entries (`checkpoints` per turn,
- * `denialState` streaks) that nothing downstream of this command reads, and the
+ * never a spread: `SessionMeta` gains entries (`checkpoints` per turn) that
+ * nothing downstream of this command reads, and the
  * registry peek's narrower rows satisfy the same shape.
  */
 function summarize(session: {
@@ -1820,7 +1820,7 @@ const BUILTIN_SUBAGENT_TYPES = ['general', 'fork', 'explore', 'plan'] as const
  * the select from offering a value that would make the next reload throw.
  */
 function startupMode(mode: StartupPermissionMode | undefined): WirePermissionsInfo['mode'] {
-  return mode === 'acceptEdits' || mode === 'bypass' ? mode : 'default'
+  return mode === 'auto' || mode === 'bypass' ? mode : 'default'
 }
 
 /**

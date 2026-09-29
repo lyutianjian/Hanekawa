@@ -701,40 +701,6 @@ test('SessionStore persists and clears compact failure count in metadata', async
   }
 })
 
-test('SessionStore persists denial state metadata and emits metrics', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
-  try {
-    const store = new SessionStore(dir)
-    await store.init()
-
-    const session = await store.create()
-    await store.setDenialState(session.id, { streaks: { Bash: 2 }, total: 5 })
-
-    assert.deepEqual((await store.load(session.id))?.denialState, {
-      streaks: { Bash: 2 },
-      total: 5,
-    })
-    assert.deepEqual(await store.getDenialState(session.id), {
-      streaks: { Bash: 2 },
-      total: 5,
-    })
-
-    const metricsPath = path.join(getSessionsDir(dir), `${session.id}.metrics.jsonl`)
-    const metrics = readFileSync(metricsPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
-    assert.equal(metrics.length, 1)
-    assert.equal(metrics[0]?.event, 'permission_denial_state')
-    assert.equal(metrics[0]?.total_auto_denials, 5)
-    assert.equal(metrics[0]?.active_streaks, 1)
-    assert.equal(metrics[0]?.max_streak, 2)
-    assert.deepEqual(metrics[0]?.streaks, { Bash: 2 })
-
-    await store.setDenialState(session.id, { streaks: {}, total: 0 })
-    assert.equal((await store.load(session.id))?.denialState, undefined)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
 test('SessionStore repairs orphan tool protocol records in JSONL sessions', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-sessions-'))
   try {

@@ -1197,13 +1197,13 @@ export function routingOptions(
 
 const BEHAVIOR_NOTES: Record<PermissionBehavior, string> = {
   allow: '匹配到的工具调用不再提示。',
-  ask: '匹配到的工具调用一定提示，即使处于自动接受编辑模式。',
+  ask: '匹配到的工具调用一定提示，即使处于「必要时询问」模式。',
   deny: '匹配到的工具调用直接拒绝，「跳过询问」模式也不例外。',
 }
 
-const PERMISSION_MODE_LABELS: Record<'default' | 'acceptEdits' | 'bypass', string> = {
+const PERMISSION_MODE_LABELS: Record<'default' | 'auto' | 'bypass', string> = {
   default: '按规则询问',
-  acceptEdits: '自动接受文件编辑',
+  auto: '必要时询问',
   bypass: '跳过询问（仍遵守拒绝规则）',
 }
 
@@ -1214,8 +1214,8 @@ const PERMISSION_MODE_LABELS: Record<'default' | 'acceptEdits' | 'bypass', strin
  * keeps the intent's `mode` a union without a cast, and it mirrors the same
  * narrowing the host does on the way out.
  */
-function asStartupMode(value: string): 'default' | 'acceptEdits' | 'bypass' {
-  return value === 'acceptEdits' || value === 'bypass' ? value : 'default'
+function asStartupMode(value: string): 'default' | 'auto' | 'bypass' {
+  return value === 'auto' || value === 'bypass' ? value : 'default'
 }
 
 function permissionCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
@@ -1236,7 +1236,7 @@ function permissionCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
         control: {
           kind: 'select',
           value: permissions.mode,
-          choices: (['default', 'acceptEdits', 'bypass'] as const).map((mode) => ({
+          choices: (['default', 'auto', 'bypass'] as const).map((mode) => ({
             value: mode,
             label: PERMISSION_MODE_LABELS[mode],
           })),
@@ -2126,7 +2126,7 @@ export type SettingsIntent =
   | { kind: 'set-subagent-routing'; type: string; value: string }
   | { kind: 'new-permission-rule'; behavior: PermissionBehavior }
   | { kind: 'remove-permission-rule'; behavior: PermissionBehavior; entry: string }
-  | { kind: 'set-startup-permission-mode'; mode: 'default' | 'acceptEdits' | 'bypass' }
+  | { kind: 'set-startup-permission-mode'; mode: 'default' | 'auto' | 'bypass' }
   | { kind: 'reload-agent-definitions' }
   | { kind: 'set-cache-ttl'; enabled: boolean }
   | { kind: 'set-thinking'; enabled: boolean }

@@ -287,7 +287,7 @@ test('approved dialog edits replace disk plan and exit attachment', async () => 
   })
 })
 
-test('approve_acceptEdits_keep maps auto-accept edits approval to acceptEdits mode', async () => {
+test('approve_auto_keep maps the ask-when-needed approval to auto mode', async () => {
   await withTempCwd(async (cwd) => {
     const setupResult = await setup(cwd)
     const { gate, meta } = setupResult
@@ -299,7 +299,7 @@ test('approve_acceptEdits_keep maps auto-accept edits approval to acceptEdits mo
       gate,
       appendRecord: async (r) => { localRecords.push(r) },
       loadRecords: async () => [...localRecords],
-      openExitDialog: async () => ({ kind: 'approve_acceptEdits_keep' }),
+      openExitDialog: async () => ({ kind: 'approve_auto_keep' }),
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     gate.prepareContextForPlanMode()
@@ -316,7 +316,7 @@ test('approve_acceptEdits_keep maps auto-accept edits approval to acceptEdits mo
 
     await manager.beforeTurn()
 
-    assert.equal(gate.getMode(), 'acceptEdits')
+    assert.equal(gate.getMode(), 'auto')
     assert.equal(manager.isActive(), false)
   })
 })
@@ -336,7 +336,7 @@ test('approve_restore_keep maps manually approve edits approval to default mode'
       openExitDialog: async () => ({ kind: 'approve_restore_keep' }),
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
-    gate.setMode('acceptEdits')
+    gate.setMode('auto')
     gate.prepareContextForPlanMode()
     await manager.onEnterPlanMode()
     const planPath = manager.resolvePlanFilePathLazy()

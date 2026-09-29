@@ -7,7 +7,7 @@ import { z } from 'zod/v3'
 import { BUILT_IN_AGENT_DEFINITIONS, createAgentTool, filterToolsForSubAgent, prepareForkPreloadRecords, resolveSubagentPermissionMode } from '../src/tools/AgentTool/AgentTool.js'
 import { AgentDefinitionLoader } from '../src/services/agents/agentDefinitionLoader.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
-import { PermissionGate, type DenialStateStore, type PermissionMode } from '../src/harness/permissions.js'
+import { PermissionGate, type PermissionMode } from '../src/harness/permissions.js'
 import { displayCacheSource } from '../src/harness/cacheBreakDetection.js'
 import type { ImageAttachmentImporter, ModelProvider, ModelRequest, SessionRecord, Tool, ToolContext } from '../src/harness/types.js'
 import type { ImageAttachmentRef } from '../src/media/types.js'
@@ -626,47 +626,6 @@ test('the user can stop one foreground sub-agent without ending the parent turn'
   assert.equal(backgroundTasks.getSnapshot('parent-session')[0]?.status, 'killed')
 })
 
-test('Agent tool does not persist sub-agent denial state into the parent store', async () => {
-  const provider: ModelProvider = {
-    name: 'fake',
-    async createMessage(request) {
-      if (request.contextItems?.some((item) => item.kind === 'tool_result')) {
-        return { content: 'done', toolCalls: [] }
-      }
-      return {
-        content: '',
-        toolCalls: [{ id: 'inner-1', name: 'ConfirmRead', input: {} }],
-      }
-    },
-  }
-  const confirmReadTool: Tool = {
-    ...readOnlyTool('ConfirmRead'),
-    riskLevel: 'confirm',
-  }
-  let parentStoreWrites = 0
-  const denialStateStore: DenialStateStore = {
-    async getDenialState() {
-      return { streaks: {}, total: 0 }
-    },
-    async setDenialState() {
-      parentStoreWrites += 1
-    },
-  }
-  const agentTool = createAgentTool({
-    provider,
-    model: 'fake-model',
-    tools: () => [confirmReadTool],
-    permissionPrompt: async () => false,
-    denialStateStore,
-    cwd: testCwd,
-  })
-
-  const result = await agentTool.execute({ task: 'needs approval', subagent_type: 'general' }, toolContext())
-
-  assert.equal(result.ok, true)
-  assert.equal(parentStoreWrites, 0)
-})
-
 test('custom agent permissionMode cannot loosen the parent mode', async () => {
   let promptCalls = 0
   const askers: unknown[] = []
@@ -679,12 +638,12 @@ test('custom agent permissionMode cannot loosen the parent mode', async () => {
       }
       return {
         content: '',
-        toolCalls: [{ id: 'confirm-1', name: 'Read', input: {} }],
+        toolCalls: [{ id: 'confirm-1', name: 'Confirm', input: {} }],
       }
     },
   }
   const confirmReadTool: Tool = {
-    ...readOnlyTool('Read'),
+    ...safeTool('Confirm'),
     riskLevel: 'confirm',
     async execute() {
       confirmRuns += 1
@@ -706,7 +665,7 @@ test('custom agent permissionMode cannot loosen the parent mode', async () => {
       type: 'auto-review',
       description: 'Auto approves confirm tools.',
       permissionMode: 'bypass',
-      tools: ['Read'],
+      tools: ['Confirm'],
       disallowedTools: ['Agent'],
       maxTurns: 3,
       isReadOnlyAgent: true,
@@ -730,17 +689,17 @@ test('sub-agent permission mode only ever tightens the parent mode', () => {
   const resolve = (parent: PermissionMode, permissionMode?: PermissionMode, lockPermissionMode?: boolean) =>
     resolveSubagentPermissionMode(parent, { permissionMode, lockPermissionMode })
   assert.equal(resolve('default', 'bypass'), 'default')
-  assert.equal(resolve('readonly', 'acceptEdits'), 'readonly')
+  assert.equal(resolve('readonly', 'auto'), 'readonly')
   assert.equal(resolve('plan'), 'readonly')
   assert.equal(resolve('default', 'plan'), 'readonly')
-  assert.equal(resolve('acceptEdits', 'default'), 'default')
+  assert.equal(resolve('auto', 'default'), 'default')
   assert.equal(resolve('bypass', 'default'), 'bypass')
   assert.equal(resolve('bypass', 'readonly', true), 'readonly')
   // A lock pins the definition's mode against a looser parent, never a stricter one.
-  assert.equal(resolve('readonly', 'acceptEdits', true), 'readonly')
+  assert.equal(resolve('readonly', 'auto', true), 'readonly')
   assert.equal(resolve('plan', 'bypass', true), 'readonly')
-  const modes: PermissionMode[] = ['readonly', 'plan', 'default', 'acceptEdits', 'bypass']
-  const rank = (mode: PermissionMode) => ['readonly', 'default', 'acceptEdits', 'bypass'].indexOf(mode === 'plan' ? 'readonly' : mode)
+  const modes: PermissionMode[] = ['readonly', 'plan', 'default', 'auto', 'bypass']
+  const rank = (mode: PermissionMode) => ['readonly', 'default', 'auto', 'bypass'].indexOf(mode === 'plan' ? 'readonly' : mode)
   for (const parent of modes) {
     for (const requested of [undefined, ...modes]) {
       for (const lock of [false, true]) {
@@ -1736,6 +1695,8 @@ test('Agent tool runs sub-agent tools through a permission gate', async () => {
     inputSchema: z.object({}).strict(),
     riskLevel: 'confirm',
     isReadOnly: true,
+    // Read-only, but reaching outside the workspace: the classifier asks.
+    classifyRisk: () => 'normal',
     async execute() {
       return { ok: true, content: 'should not execute' }
     },

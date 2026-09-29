@@ -915,7 +915,7 @@ test('ExitPlanModeDialog renders Claude-style approval choices', () => {
   assert.match(frame, /Hanekawa has written up a plan and is ready to execute\. Would you like to proceed\?/)
   assert.match(frame, /Step 14/)
   assert.doesNotMatch(frame, /lines omitted from preview/)
-  assert.match(frame, /Yes, auto-accept edits/)
+  assert.match(frame, /Yes, and ask only when needed/)
   assert.match(frame, /Yes, manually approve edits/)
   assert.match(frame, /No, keep planning/)
   assert.match(frame, /Feedback:/)

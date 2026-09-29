@@ -262,7 +262,7 @@ test('ContextBuilder build input can override enabled system sections', async ()
 
 test('ContextBuilder puts the permission mode reminder on the tail, not in the system prompt', async () => {
   const builder = new ContextBuilder(undefined, contextWindow(5000))
-  const build = (permissionMode: 'plan' | 'acceptEdits' | 'default') => builder.build({
+  const build = (permissionMode: 'plan' | 'auto' | 'default') => builder.build({
     records: [{ type: 'message', id: 'u1', role: 'user', content: 'hi', createdAt: '2026-05-10T00:00:00.000Z' }],
     tools: [],
     includeUserContext: false,
@@ -278,9 +278,9 @@ test('ContextBuilder puts the permission mode reminder on the tail, not in the s
   assert.match(reminder, /always use ExitPlanMode/)
   assert.doesNotMatch(plan.system ?? '', /Plan mode/)
 
-  const acceptEdits = await build('acceptEdits')
+  const auto = await build('auto')
   const normal = await build('default')
-  assert.equal(acceptEdits.system, plan.system)
+  assert.equal(auto.system, plan.system)
   assert.equal(normal.system, plan.system)
   assert.equal(normal.contextItems.length, 1)
 })

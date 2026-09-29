@@ -8,7 +8,7 @@ import { ContextBuilder } from '../harness/contextBuilder.js'
 import { PlanModeManager } from '../harness/planModeManager.js'
 import { ToolRunner } from '../harness/toolRunner.js'
 import type { SystemPromptSectionCache } from '../harness/sections.js'
-import type { DenialStateStore, PermissionGate } from '../harness/permissions.js'
+import type { PermissionGate } from '../harness/permissions.js'
 import type { AttachmentBytesLoader, ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
 import type { AttachmentFactsResolver } from '../harness/turnImages.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/budget.js'
@@ -93,7 +93,6 @@ export interface CreateRuntimeDeps {
   toolRegistry: ToolRegistry
   promptSections: SystemPromptSectionCache
   permissionGate: PermissionGate
-  denialStateStore: DenialStateStore
   backgroundTasks: BackgroundTaskRegistry
   bridges: UiBridges
   contextManagement: Partial<ContextManagementConfig> | undefined
@@ -154,7 +153,6 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     toolRegistry,
     promptSections,
     permissionGate,
-    denialStateStore,
     backgroundTasks,
     bridges,
     contextManagement,
@@ -242,7 +240,6 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       getSessionRules: () => permissionGate.getSessionRules(),
       getSessionRuleStore: () => permissionGate.getSessionRuleStore(),
       getAdditionalDirectories: () => permissionGate.getAdditionalDirectories(),
-      denialStateStore,
       cwd,
       system: config.get().agent.system,
       projectContext: getProjectContext(),

@@ -154,37 +154,6 @@ test('reloading settings reaches every open scope, not just the newest', async (
   await host.shutdown('test over')
 })
 
-test('denial counters are per scope and land in each scope\'s own session', async () => {
-  // A configured deny rule is what still denies without asking, so it is what
-  // moves the counter; safety findings prompt instead.
-  const { cwd, store, session } = await createProject({
-    settings: { permissions: { deny: ['Bash(curl:*)'] } },
-  })
-  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
-  const other = await store.create('second tab')
-  const second = await host.openScope(other)
-
-  const bashTool: Tool = {
-    name: 'Bash',
-    description: 'run a command',
-    inputSchema: z.object({ command: z.string() }).strict(),
-    riskLevel: 'confirm',
-    execute: async () => ({ ok: true, content: 'done' }),
-  }
-  const denied = { command: 'curl https://example.com' }
-
-  assert.equal(await host.permissionGate.approve(bashTool, denied), false)
-  assert.equal(await second.permissionGate.approve(bashTool, denied), false)
-
-  // One shared gate would have written a streak of 2 into one session; the
-  // anti-loop machinery escalates on that count, so a second tab would push the
-  // first one into real prompts.
-  assert.deepEqual(await store.getDenialState(session.id), { streaks: { Bash: 1 }, total: 1 })
-  assert.deepEqual(await store.getDenialState(other.id), { streaks: { Bash: 1 }, total: 1 })
-
-  await host.shutdown('test over')
-})
-
 test('disposing a scope restores the four asymmetric fallbacks', async () => {
   const { cwd, store, session } = await createProject()
   const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })

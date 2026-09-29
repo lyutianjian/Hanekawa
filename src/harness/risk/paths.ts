@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { checkWindowsPathSafety, isProtectedPath } from '../../utils/permissions/protectedPaths.js'
 import {
@@ -24,8 +25,7 @@ export function createRiskContext(options: RiskContextOptions): RiskContext {
   const extraRoots = [getProjectPlansDir(options.cwd)]
   if (options.sessionId) extraRoots.push(getToolResultSpillDir(options.cwd, options.sessionId))
   // Scratch space is part of the workspace: writing a temp file is ordinary work.
-  extraRoots.push(tmpdir())
-  if (process.platform !== 'win32') extraRoots.push('/tmp')
+  const tempRoots = [tmpdir(), ...(process.platform !== 'win32' ? ['/tmp'] : [])].map(realPath)
   const additional = (options.additionalDirectories ?? [])
     .map((dir) => dir.trim())
     .filter((dir) => dir !== '')
@@ -33,7 +33,8 @@ export function createRiskContext(options: RiskContextOptions): RiskContext {
   return {
     cwd,
     home,
-    workspaceRoots: [cwd, ...[...additional, ...extraRoots].map(realPath)],
+    workspaceRoots: [cwd, ...[...additional, ...extraRoots].map(realPath), ...tempRoots],
+    tempRoots,
     configFiles: [
       path.join(getGlobalMyAgentDir(), 'settings.json'),
       path.join(getGlobalMyAgentDir(), 'config.json'),
@@ -158,7 +159,9 @@ function classifyName(
     add('risky', 'registry_config', `${verb} ${shown}, which may hold a registry token.`)
   }
 
-  if (base === '.env' || (base.startsWith('.env.') && !ENV_TEMPLATES.has(base))) {
+  // Creating an env file (`cp .env.example .env`) exposes and overwrites no secret.
+  const creates = access === 'write' && path.isAbsolute(name) && !existsSync(name)
+  if (!creates && (base === '.env' || (base.startsWith('.env.') && !ENV_TEMPLATES.has(base)))) {
     add('risky', 'env_file', `${verb} the environment file ${shown}, which usually holds secrets.`)
   }
 

@@ -381,6 +381,8 @@ export interface PermissionRequestDto {
   matchedRule?: PermissionRule
   alwaysAllowRule?: PermissionRule
   denialStreak: number
+  /** The gate's own assessment; the dialog's tone follows it. */
+  riskTier?: 'readonly' | 'normal' | 'risky' | 'critical'
   /** False when the gate offered no "always allow" affordance for this call. */
   canAlwaysAllow: boolean
   /** Already bounded by `capFileToolPreview`; absent for non-file tools. */

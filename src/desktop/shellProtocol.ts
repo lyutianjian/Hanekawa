@@ -360,7 +360,7 @@ export interface WirePermissionsInfo {
    * The startup mode as merged. Editable whatever layer set it: unlike the
    * groups, `permissions.mode` is last-writer-wins, and the local layer is last.
    */
-  mode: 'default' | 'acceptEdits' | 'bypass'
+  mode: 'default' | 'auto' | 'bypass'
   /** Whether the local layer is what set the mode, for the row's own detail. */
   modeIsLocal: boolean
   groups: WirePermissionGroup[]
@@ -550,7 +550,7 @@ export type SettingsChange =
    * renderer therefore sends `local` plus or minus one line.
    */
   | { scope: 'permissions'; kind: 'set-permission-entries'; behavior: 'allow' | 'deny' | 'ask'; entries: string[] }
-  | { scope: 'permissions'; kind: 'set-startup-permission-mode'; mode: 'default' | 'acceptEdits' | 'bypass' }
+  | { scope: 'permissions'; kind: 'set-startup-permission-mode'; mode: 'default' | 'auto' | 'bypass' }
   /** An action, not a write: re-reads `.myagent/agents/` and rebuilds runtimes. */
   | { scope: 'agent'; kind: 'reload-agent-definitions' }
   | { scope: 'general'; kind: 'set-cache-ttl'; enabled: boolean }
@@ -631,9 +631,9 @@ export interface WireShellOpenSessionResult {
  * Projected field by field rather than shipping `SessionMeta`, which was the
  * first attempt. `SessionMeta` is already a wire type elsewhere
  * (`WireSessionsResult`, `session-changed`) so reusing it looked free — but this
- * command answers with *every* session in *every* open project, and two of the
- * fields nobody here reads grow without bound: `checkpoints` gains an entry per
- * turn, and `denialState` accumulates streaks. At a few hundred sessions that is
+ * command answers with *every* session in *every* open project, and a field
+ * nobody here reads grows without bound: `checkpoints` gains an entry per
+ * turn. At a few hundred sessions that is
  * hundreds of kilobytes `structuredClone`d across the preload boundary on every
  * pull, and retained for as long as the renderer holds the list.
  */

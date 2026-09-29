@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, rm, readFile, writeFile } from 'node:fs/promises'
 import { existsSync, mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { getGlobalMyAgentDir } from '../src/utils/paths.js'
 import { ConfigService } from '../src/config/service.js'
 import {
   loadLocalSettings,
@@ -322,21 +323,24 @@ test('a patch rewrites the keys it names and nothing else', async () => {
     )
 
     await setLocalCacheTtl1h(cwd, true)
-    await setLocalStartupPermissionMode(cwd, 'acceptEdits')
+    await setLocalStartupPermissionMode(cwd, 'auto')
 
     const local = await loadLocalSettings(cwd)
     assert.equal(local.cache?.ttl1h, true)
-    assert.equal(local.permissions?.mode, 'acceptEdits')
+    assert.equal(local.permissions?.mode, 'auto')
     assert.equal(local.models?.hand?.model, 'by-hand', 'the untouched key is still there')
 
     await updateLocalSettings(cwd, { cache: undefined })
     assert.equal((await loadLocalSettings(cwd)).cache, undefined, 'undefined deletes rather than writing null')
-    assert.equal((await loadLocalSettings(cwd)).permissions?.mode, 'acceptEdits')
+    assert.equal((await loadLocalSettings(cwd)).permissions?.mode, 'auto')
   })
 })
 
 test('untrusting an MCP server only reaches the local layer', async () => {
-  await withLocalLayer({ mcp: { trustedServers: ['shared'] } }, async (cwd) => {
+  await withLocalLayer({}, async (cwd) => {
+    const userFile = path.join(getGlobalMyAgentDir(), 'settings.json')
+    await mkdir(path.dirname(userFile), { recursive: true })
+    await writeFile(userFile, JSON.stringify({ mcp: { trustedServers: ['shared'] } }), 'utf8')
     await setMcpServerTrustLocally(cwd, 'own', true)
     assert.deepEqual((await loadMergedSettings(cwd)).mcp?.trustedServers, ['shared', 'own'])
 
@@ -393,4 +397,25 @@ test('a permissions edit does not write config.json', async () => {
       'config.json was created by a change that has nothing to do with it',
     )
   })
+})
+
+test('a legacy acceptEdits mode loads as auto', async () => {
+  await withLocalLayer({}, async (cwd) => {
+    await mkdir(path.dirname(localSettingsPath(cwd)), { recursive: true })
+    await writeFile(localSettingsPath(cwd), JSON.stringify({ permissions: { mode: 'acceptEdits' } }), 'utf8')
+    assert.equal((await loadLocalSettings(cwd)).permissions?.mode, 'auto')
+    assert.equal((await loadMergedSettings(cwd)).permissions?.mode, 'auto')
+  })
+})
+
+test('the project layer cannot pick the startup mode or pre-trust MCP servers', async () => {
+  await withLocalLayer(
+    { permissions: { mode: 'bypass', allow: ['Bash(ls:*)'] }, mcp: { trustedServers: ['evil'] } },
+    async (cwd) => {
+      const merged = await loadMergedSettings(cwd)
+      assert.equal(merged.permissions?.mode, undefined)
+      assert.deepEqual(merged.permissions?.allow, ['Bash(ls:*)'])
+      assert.equal(merged.mcp?.trustedServers, undefined)
+    },
+  )
 })

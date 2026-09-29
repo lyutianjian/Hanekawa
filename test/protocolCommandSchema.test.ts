@@ -114,7 +114,7 @@ test('a wrong field type is rejected', () => {
 test('set-permission-mode accepts every mode, including readonly', () => {
   // PERMISSION_MODES is the Shift+Tab cycle and omits `readonly`; building the
   // schema from it would reject a legal mode.
-  for (const mode of ['default', 'plan', 'acceptEdits', 'bypass', 'readonly']) {
+  for (const mode of ['default', 'plan', 'auto', 'bypass', 'readonly']) {
     const parsed = parseHostCommand({ type: 'set-permission-mode', id: '1', mode })
     assert.ok(parsed.ok, `expected ${mode} to parse`)
   }
@@ -173,7 +173,7 @@ test('every UiResponse kind parses', () => {
     { kind: 'ask-user-question', result: { kind: 'rejected' } },
     { kind: 'enter-plan', approved: true },
     { kind: 'exit-plan', decision: { kind: 'approve_restore_keep' } },
-    { kind: 'exit-plan', decision: { kind: 'approve_acceptEdits_keep', planContent: 'p' } },
+    { kind: 'exit-plan', decision: { kind: 'approve_auto_keep', planContent: 'p' } },
     { kind: 'exit-plan', decision: { kind: 'approve_bypass_keep' } },
     { kind: 'exit-plan', decision: { kind: 'reject', feedback: 'no' } },
   ]

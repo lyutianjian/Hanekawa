@@ -76,7 +76,7 @@ export interface ExitDialogInput {
 /** Decision returned by the dialog. */
 export type ExitPlanDecision =
   | { kind: 'approve_restore_keep', planContent?: string }
-  | { kind: 'approve_acceptEdits_keep', planContent?: string }
+  | { kind: 'approve_auto_keep', planContent?: string }
   | { kind: 'approve_bypass_keep', planContent?: string }
   | { kind: 'reject', feedback: string }
 
@@ -444,8 +444,8 @@ export class PlanModeManager {
     if (decision.kind === 'approve_restore_keep') {
       this.deps.gate.setMode('default')
     }
-    if (decision.kind === 'approve_acceptEdits_keep') {
-      this.deps.gate.setMode('acceptEdits')
+    if (decision.kind === 'approve_auto_keep') {
+      this.deps.gate.setMode('auto')
     }
     if (decision.kind === 'approve_bypass_keep') {
       this.deps.gate.setMode('bypass')

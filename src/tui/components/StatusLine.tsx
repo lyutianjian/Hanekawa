@@ -20,7 +20,7 @@ const EFFORT_SYMBOLS: Record<string, string> = {
 }
 
 const MODE_INDICATOR: Record<string, { icon: string; label: string; color: string }> = {
-  acceptEdits: { icon: '⏵⏵', label: 'accept edits on', color: theme.success },
+  auto:        { icon: '⏵⏵', label: 'ask when needed', color: theme.success },
   plan:        { icon: '⏸', label: 'plan mode on', color: theme.brand },
   bypass:      { icon: '⏵⏵', label: 'bypass mode on', color: theme.error },
 }

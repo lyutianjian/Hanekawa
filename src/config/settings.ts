@@ -5,15 +5,14 @@ import type { AgentConfig, ModelConfig } from './service.js'
 import type { Endpoint, Routing } from './routing.js'
 import type { EffortLevel } from './effort.js'
 import type { HookCommand } from '../harness/hooks.js'
-import type { PermissionMode } from '../harness/permissions.js'
 import { permissionRuleToEntry, type PermissionRule } from '../harness/permissions.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
 
 export type HookCommandSetting = HookCommand
 export type PreToolUseHookSetting = HookCommandSetting
-export type StartupPermissionMode = Exclude<PermissionMode, 'plan'>
+export type StartupPermissionMode = 'default' | 'auto' | 'bypass'
 
-const STARTUP_PERMISSION_MODES: readonly StartupPermissionMode[] = ['default', 'acceptEdits', 'bypass']
+const STARTUP_PERMISSION_MODES: readonly StartupPermissionMode[] = ['default', 'auto', 'bypass']
 
 export interface MyAgentSettings {
   permissions?: {
@@ -22,7 +21,7 @@ export interface MyAgentSettings {
     deny?: string[]
     ask?: string[]
     /**
-     * Extra roots accept-edits treats as workspace, alongside `cwd`.
+     * Extra roots auto mode treats as workspace, alongside `cwd`.
      * Concatenated across layers like `allow`/`deny`/`ask`.
      */
     additionalDirectories?: string[]
@@ -81,7 +80,10 @@ async function loadSettingsFile(filePath: string): Promise<MyAgentSettings> {
     throw error
   }
   try {
-    return JSON.parse(content) as MyAgentSettings
+    const settings = JSON.parse(content) as MyAgentSettings
+    // `acceptEdits` was renamed `auto`; it lands as `auto` on the next write.
+    if ((settings.permissions?.mode as string | undefined) === 'acceptEdits') settings.permissions!.mode = 'auto'
+    return settings
   } catch (error) {
     console.error(`[myagent] Warning: corrupted settings file ${filePath}: ${error instanceof Error ? error.message : String(error)}`)
     return {}
@@ -305,6 +307,29 @@ export interface SettingsLayers {
   local: MyAgentSettings
 }
 
+/**
+ * A repository must not loosen its own guard: the checked-in layer cannot pick
+ * the startup permission mode or pre-trust MCP servers. Both stay settable from
+ * the user and local layers.
+ */
+function withoutProjectTrustGrants(settings: MyAgentSettings): MyAgentSettings {
+  const ignored: string[] = []
+  if (settings.permissions?.mode !== undefined) {
+    const { mode: _mode, ...permissions } = settings.permissions
+    settings = { ...settings, permissions }
+    ignored.push('permissions.mode')
+  }
+  if (settings.mcp?.trustedServers !== undefined) {
+    const { trustedServers: _trusted, ...mcp } = settings.mcp
+    settings = { ...settings, mcp }
+    ignored.push('mcp.trustedServers')
+  }
+  if (ignored.length > 0) {
+    console.error(`[myagent] Warning: .myagent/settings.json cannot set ${ignored.join(' or ')}; ignored. Set it in ~/.myagent/settings.json or the local layer.`)
+  }
+  return settings
+}
+
 export async function loadSettingsLayers(cwd: string): Promise<SettingsLayers> {
   const user = await loadSettingsFile(join(getGlobalMyAgentDir(), 'settings.json'))
   // The home directory *is* the global workspace, and its "project" layer is
@@ -313,7 +338,7 @@ export async function loadSettingsLayers(cwd: string): Promise<SettingsLayers> {
   // `config.json`.
   const project = isGlobalWorkspaceRoot(cwd)
     ? {}
-    : await loadSettingsFile(join(cwd, '.myagent', 'settings.json'))
+    : withoutProjectTrustGrants(await loadSettingsFile(join(cwd, '.myagent', 'settings.json')))
   const legacyMcp = await loadLegacyMcpSettings(cwd)
   const local = await loadSettingsFile(localSettingsPath(cwd))
   return { user, project, legacyMcp, local }

@@ -45,7 +45,7 @@ test('Config list returns all supported settings', async () => {
     assert.match(result.content, /effortLevel/)
     assert.match(result.content, /autoCompact/)
     assert.match(result.content, /defaultModel/)
-    assert.match(result.content, /permissions\.mode/)
+    assert.doesNotMatch(result.content, /permissions\.mode/)
     assert.ok(result.metadata?.display?.summary?.includes('settings available'))
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -124,18 +124,6 @@ test('Config set validates number range for autoCompactThreshold', async () => {
     const tooLow = await configTool.execute({ action: 'set', key: 'autoCompactThreshold', value: -0.1 }, context(dir))
     assert.equal(tooLow.ok, false)
     assert.match(tooLow.content, /between 0 and 1/)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
-  }
-})
-
-test('Config set validates permissions.mode enum', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'myagent-config-'))
-  try {
-    const result = await configTool.execute({ action: 'set', key: 'permissions.mode', value: 'invalid_mode' }, context(dir))
-    assert.equal(result.ok, false)
-    assert.equal(result.errorCode, 'invalid_input')
-    assert.match(result.content, /must be one of/)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

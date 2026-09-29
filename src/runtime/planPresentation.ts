@@ -35,7 +35,7 @@ interface PlanStrings {
   readonly enterYes: string
   readonly enterNo: string
   readonly bypassKeep: string
-  readonly acceptEditsKeep: string
+  readonly autoKeep: string
   readonly restoreKeep: string
   readonly reject: string
   readonly emptyYes: string
@@ -48,7 +48,7 @@ const STRINGS = {
     enterYes: 'Yes, enter plan mode',
     enterNo: 'No, start implementing now',
     bypassKeep: 'Yes, and bypass permissions',
-    acceptEditsKeep: 'Yes, auto-accept edits',
+    autoKeep: 'Yes, and ask only when needed',
     restoreKeep: 'Yes, manually approve edits',
     reject: 'No, keep planning',
     emptyYes: 'Yes',
@@ -59,7 +59,7 @@ const STRINGS = {
     enterYes: '好，进入计划模式',
     enterNo: '不用，现在就开始实现',
     bypassKeep: '好，并绕过权限确认',
-    acceptEditsKeep: '好，自动接受修改',
+    autoKeep: '好，必要时询问',
     restoreKeep: '好，逐条确认修改',
     reject: '不，继续规划',
     emptyYes: '好',
@@ -107,8 +107,8 @@ export function buildExitPlanModeOptions(input: boolean | {
     })
   } else {
     options.push({
-      kind: 'approve_acceptEdits_keep',
-      label: strings.acceptEditsKeep,
+      kind: 'approve_auto_keep',
+      label: strings.autoKeep,
     })
   }
 
@@ -127,14 +127,14 @@ export function buildExitPlanModeOptions(input: boolean | {
   return options
 }
 
-export type ElevatedExitPlanModeDecision = 'approve_bypass_keep' | 'approve_acceptEdits_keep'
+export type ElevatedExitPlanModeDecision = 'approve_bypass_keep' | 'approve_auto_keep'
 
 export function elevatedExitPlanModeDecision(input: boolean | {
   isBypassAvailable?: boolean
 }): ElevatedExitPlanModeDecision {
   const isBypassAvailable = typeof input === 'boolean' ? input : input.isBypassAvailable === true
   if (isBypassAvailable) return 'approve_bypass_keep'
-  return 'approve_acceptEdits_keep'
+  return 'approve_auto_keep'
 }
 
 /**

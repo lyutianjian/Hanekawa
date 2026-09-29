@@ -66,7 +66,7 @@ const runOverridesSchema = z
  * Shift+Tab cycle order and deliberately omits `readonly`, so reusing it here
  * would start rejecting a legal mode.
  */
-const permissionModeSchema = z.enum(['default', 'plan', 'acceptEdits', 'bypass', 'readonly'] as const satisfies
+const permissionModeSchema = z.enum(['default', 'plan', 'auto', 'bypass', 'readonly'] as const satisfies
   readonly PermissionMode[])
 
 /** Spelled out like the mode above; `_NoDrift` is what keeps it honest. */
@@ -88,7 +88,7 @@ const askUserQuestionResultSchema = z.discriminatedUnion('kind', [
 
 const exitPlanDecisionSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('approve_restore_keep'), planContent: z.string().optional() }).strict(),
-  z.object({ kind: z.literal('approve_acceptEdits_keep'), planContent: z.string().optional() }).strict(),
+  z.object({ kind: z.literal('approve_auto_keep'), planContent: z.string().optional() }).strict(),
   z.object({ kind: z.literal('approve_bypass_keep'), planContent: z.string().optional() }).strict(),
   z.object({ kind: z.literal('reject'), feedback: z.string() }).strict(),
 ])

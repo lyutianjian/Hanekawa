@@ -41,6 +41,7 @@ export function toPermissionDto(
     ...(request.matchedRule ? { matchedRule: request.matchedRule } : {}),
     ...(request.alwaysAllowRule ? { alwaysAllowRule: request.alwaysAllowRule } : {}),
     denialStreak: request.denialStreak,
+    ...(request.risk ? { riskTier: request.risk.level } : {}),
     canAlwaysAllow: Boolean(request.onAlwaysAllow),
     ...(preview ? { preview } : {}),
     destructiveWarnings: analyzeDestructive(request),

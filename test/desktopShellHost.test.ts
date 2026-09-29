@@ -1,3 +1,4 @@
+import { getGlobalMyAgentDir } from '../src/utils/paths.js'
 import test, { beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -710,7 +711,7 @@ const SETTINGS_CHANGE_SAMPLES = {
   'set-startup-permission-mode': {
     scope: 'permissions',
     kind: 'set-startup-permission-mode',
-    mode: 'acceptEdits',
+    mode: 'auto',
   },
   'reload-agent-definitions': { scope: 'agent', kind: 'reload-agent-definitions' },
   'set-cache-ttl': { scope: 'general', kind: 'set-cache-ttl', enabled: true },
@@ -2195,13 +2196,13 @@ test('the startup mode is stored locally and reported as local', async () => {
     const result = await h.client.changeSettings(h.entry.root, {
       scope: 'permissions',
       kind: 'set-startup-permission-mode',
-      mode: 'acceptEdits',
+      mode: 'auto',
     })
 
-    assert.deepEqual((await readLocalLayer(cwd)).permissions, { mode: 'acceptEdits' })
+    assert.deepEqual((await readLocalLayer(cwd)).permissions, { mode: 'auto' })
     // Last-writer-wins across layers and the local layer is last, so unlike the
     // concatenated groups this really does override what sits above it.
-    assert.equal(result.settings.permissions.mode, 'acceptEdits')
+    assert.equal(result.settings.permissions.mode, 'auto')
     assert.equal(result.settings.permissions.modeIsLocal, true)
     assert.equal(h.project.config.saves, 0)
   })
@@ -2287,11 +2288,12 @@ test('trusting a server writes the local layer and then reconnects, in that orde
 
 test('a trust that came from above is reported as not editable here', async () => {
   await withSettingsDir(
-    {
-      mcpServers: { shared: { transport: 'sse', url: 'https://mcp.example' } },
-      mcp: { trustedServers: ['shared'] },
-    },
+    { mcpServers: { shared: { transport: 'sse', url: 'https://mcp.example' } } },
     async (h) => {
+      const userFile = path.join(getGlobalMyAgentDir(), 'settings.json')
+      await mkdir(path.dirname(userFile), { recursive: true })
+      await writeFile(userFile, JSON.stringify({ mcp: { trustedServers: ['shared'] } }), 'utf8')
+      await h.project.loadSettings()
       h.project.mcp.failed.push({ name: 'shared', error: 'connect ECONNREFUSED' })
 
       const { settings } = await h.client.getSettings(h.entry.root)

@@ -54,15 +54,6 @@ export type SessionMetric =
       server: string
       error: string
     }
-  | {
-      event: 'permission_denial_state'
-      created_at: string
-      session_id: string
-      total_auto_denials: number
-      active_streaks: number
-      max_streak: number
-      streaks: Record<string, number>
-    }
 
 type MetricInput<T extends SessionMetric> = Omit<T, 'created_at' | 'session_id'>
 
@@ -72,7 +63,6 @@ export type SessionMetricInput =
   | MetricInput<Extract<SessionMetric, { event: 'cache_break' }>>
   | MetricInput<Extract<SessionMetric, { event: 'session_cache_summary' }>>
   | MetricInput<Extract<SessionMetric, { event: 'mcp_connect_failed' }>>
-  | MetricInput<Extract<SessionMetric, { event: 'permission_denial_state' }>>
 
 // The hit rate itself lives in `usage.ts`, beside `promptTokens()`: it is a
 // function of a `TokenUsage`, not of two loose numbers, and the denominator has

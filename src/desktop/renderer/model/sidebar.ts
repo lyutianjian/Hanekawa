@@ -249,8 +249,8 @@ export interface SidebarView {
  * One project's history, as `list-sessions` reports it.
  *
  * The session shape is the wire's narrow projection, not `SessionMeta`: the
- * sidebar reads four fields, and two of the ones it does not read
- * (`checkpoints`, `denialState`) grow without bound.
+ * sidebar reads four fields, and one it does not read (`checkpoints`) grows
+ * without bound.
  */
 export interface SidebarProjectSessions {
   readonly projectRoot: string

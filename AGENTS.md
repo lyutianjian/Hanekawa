@@ -73,9 +73,11 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 
 ## Permissions and configuration
 
-- Modes are `default`, `plan`, `acceptEdits`, `bypass`, and `readonly`. Only an explicit deny rule or readonly mode denies without asking; `bypass` still honors deny/ask rules and path safety.
-- Protected paths gate writes only. Extract file paths separately from shell commands; Windows path safety runs in every mode; dangerous removals are never auto-approved.
-- Preserve shell-rule semantics, read-only command validators, accept-edits operand checks, `WebFetch` host scoping, and tool-family rule aliases (`Edit` → write tools, `Read` → `Grep`/`Glob`).
+- Modes are `default`, `plan`, `auto`, `bypass`, plus internal `readonly` (built-in subagents only). `acceptEdits` is a legacy alias read as `auto` by `settings.ts` and `agentDefinitionLoader.ts`; never reintroduce it.
+- A call is graded `readonly`/`normal`/`risky`/`critical` by the pure classifier in `src/harness/risk/`; `PermissionGate` only combines that grade with rules and mode (order and table in README "Permissions"). The gate never analyzes commands itself.
+- A deny rule is absolute in every mode and never becomes a prompt. `critical` never gets allow, except in `bypass`, which refuses only a mass delete (`MASS_DELETE_CODES`: a root, home or workspace directory, or a recursive delete whose target is only known at runtime). `bypass` and `readonly` never ask: `bypass` ignores ask rules, `readonly` denies on them. Persisted allow rules cover `normal` only; `risky` memory is per-session and exact; `critical` is never remembered.
+- Workspace boundaries use realpath of the nearest existing ancestor. File rules match resolved absolute paths; `Read`/`Edit` deny rules also apply to paths extracted from Bash. Cover new classifier behavior with the table-driven tests and the invariants in `test/permissionModes.test.ts`.
+- Project-layer `permissions.mode` and `mcp.trustedServers` are ignored. `Config` must not expose `permissions.mode`. Preserve `WebFetch` host scoping (same-host redirects only) and tool-family rule aliases (`Edit` → write tools, `Read` → `Grep`/`Glob`).
 - `config.json` is global only. Models, endpoints, routing, and `agent.*` belong in `ConfigService`; migrate any project leftovers before the first load.
 - Settings groups concatenate/union across layers, except `skills.disabled`, which is replaced per layer. Provider construction stays in `src/config/providers/registry.ts`.
 - Preserve provider capability checks, retry/fallback propagation, and reference repair when models/endpoints are deleted. `ModelConfig.longContext1m` and `contextWindow` are independent.

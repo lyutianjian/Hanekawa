@@ -3,7 +3,7 @@ import type { ConfigService } from '../config/service.js'
 import type { MyAgentSettings } from '../config/settings.js'
 import { persistPermissionRule } from '../config/settings.js'
 import type { ActiveModelRuntime } from '../harness/loop.js'
-import { PermissionGate, permissionRulesFromSettings, type DenialStateStore } from '../harness/permissions.js'
+import { PermissionGate, permissionRulesFromSettings } from '../harness/permissions.js'
 import { SystemPromptSectionCache } from '../harness/sections.js'
 import type { AttachmentBytesLoader, ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
 import type { AttachmentFactsResolver } from '../harness/turnImages.js'
@@ -63,22 +63,12 @@ export async function createSessionScope(
   const settings = deps.getSettings()
   const bridges = createUiBridges()
 
-  // The gate and every subagent under it share one denial-state store, but the
-  // session it targets changes with `/clear` and `/resume`. Read the id at call
-  // time so counters are never written back to whichever session this scope
-  // opened with.
-  let activeSessionId = session.id
-  const denialStateStore: DenialStateStore = {
-    getDenialState: async () => deps.store.getDenialState(activeSessionId),
-    setDenialState: async (state) => deps.store.setDenialState(activeSessionId, state),
-  }
-
   const permissionGate = new PermissionGate(
     bridges.prompt.prompt,
     permissionRulesFromSettings(settings.permissions),
     {
-      denialStateStore,
       cwd: deps.cwd,
+      sessionId: session.id,
       ...(settings.permissions?.additionalDirectories
         ? { additionalDirectories: settings.permissions.additionalDirectories }
         : {}),
@@ -105,7 +95,6 @@ export async function createSessionScope(
     toolRegistry: deps.toolRegistry,
     promptSections,
     permissionGate,
-    denialStateStore,
     backgroundTasks: deps.backgroundTasks,
     bridges,
     contextManagement: deps.contextManagement,
@@ -118,11 +107,8 @@ export async function createSessionScope(
     ...(deps.imageAttachments ? { imageAttachments: deps.imageAttachments } : {}),
     ...(deps.attachmentFacts ? { attachmentFacts: deps.attachmentFacts } : {}),
     ...(deps.attachmentBytes ? { attachmentBytes: deps.attachmentBytes } : {}),
-    onActiveSessionChange: (nextSessionId) => {
-      if (nextSessionId === activeSessionId) return
-      activeSessionId = nextSessionId
-      permissionGate.resetDenialState()
-    },
+    // `/clear` and `/resume` move the gate to another session's spill directory.
+    onActiveSessionChange: (nextSessionId) => permissionGate.setSessionId(nextSessionId),
   })
 
   const load = await deps.store.loadRecordsWithDiagnostics(session.id)

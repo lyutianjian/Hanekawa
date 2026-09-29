@@ -79,11 +79,6 @@ const METRIC_NUMERIC_FIELDS: Record<SessionMetric['event'], ReadonlySet<string>>
     'cache_break_count',
   ]),
   mcp_connect_failed: new Set(),
-  permission_denial_state: new Set([
-    'total_auto_denials',
-    'active_streaks',
-    'max_streak',
-  ]),
 }
 
 export class OtlpMetricExporter {
@@ -187,17 +182,6 @@ function metricToOtlpMetrics(metric: SessionMetric): OtlpMetric[] {
         1,
         timeUnixNano,
         [...baseAttributes, attribute('cache_break.reason', reason)],
-      ))
-    }
-  }
-
-  if (metric.event === 'permission_denial_state') {
-    for (const [toolName, count] of Object.entries(metric.streaks)) {
-      metrics.push(otlpGauge(
-        'hanekawa.permission_denial_state.tool_streak',
-        count,
-        timeUnixNano,
-        [...baseAttributes, attribute('tool.name', toolName)],
       ))
     }
   }

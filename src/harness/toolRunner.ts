@@ -161,7 +161,8 @@ export class ToolRunner {
       try {
         const result = await tool.execute(call.input, executionContext)
         syncMutableToolContext(context, executionContext)
-        const record = this.result(call, tool.name, result.ok, result.content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars, result.metadata?.display, result.images)
+        const content = decision.reminder ? `${result.content}\n\n${wrapInSystemReminder(decision.reminder)}` : result.content
+        const record = this.result(call, tool.name, result.ok, content, result.errorCode, result.errorDetails, turnId, tool.maxResultSizeChars, result.metadata?.display, result.images)
         // Map tool result to API format (e.g. tool_reference blocks for ToolSearch)
         if (tool.mapToolResultToToolResultBlockParam) {
           try {

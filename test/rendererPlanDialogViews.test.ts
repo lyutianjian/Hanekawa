@@ -69,7 +69,7 @@ test('exiting shows the plan, its file path and three options', () => {
   assert.match(view.planPreview, /do the thing/)
   assert.equal(view.planFilePath, '.myagent/plans/plan.md')
   assert.deepEqual(view.options.map((option) => option.kind), [
-    'approve_acceptEdits_keep',
+    'approve_auto_keep',
     'approve_restore_keep',
     'reject',
   ])

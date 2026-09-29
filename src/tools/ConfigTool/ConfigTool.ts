@@ -22,8 +22,6 @@ interface SettingDef {
   validate?: (value: unknown) => string | null
 }
 
-const PERMISSION_MODES = ['default', 'acceptEdits', 'bypass'] as const
-
 const SUPPORTED_SETTINGS: SettingDef[] = [
   {
     key: 'effortLevel',
@@ -96,22 +94,6 @@ const SUPPORTED_SETTINGS: SettingDef[] = [
     set: (s, v) => { s.compactModel = v as string },
     validate: (v) => {
       if (typeof v !== 'string' || v.trim() === '') return 'compactModel must be a non-empty string'
-      return null
-    },
-  },
-  {
-    key: 'permissions.mode',
-    type: 'enum',
-    description: 'Default permission mode for tool execution',
-    options: PERMISSION_MODES,
-    get: (s) => s.permissions?.mode,
-    set: (s, v) => {
-      if (!s.permissions) s.permissions = {}
-      s.permissions.mode = v as typeof PERMISSION_MODES[number]
-    },
-    validate: (v) => {
-      if (typeof v !== 'string') return 'permissions.mode must be a string'
-      if (!PERMISSION_MODES.includes(v as typeof PERMISSION_MODES[number])) return `permissions.mode must be one of: ${PERMISSION_MODES.join(', ')}`
       return null
     },
   },

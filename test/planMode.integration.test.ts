@@ -204,10 +204,10 @@ test('Integration D: dialog reject with feedback → mode stays plan + reminder 
 
 // Scenario E: Sub-agent exit routing — kind='subagent_exit' processes
 // identically to 'exit'. Approve flips main session out of plan mode.
-test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep flips gate to acceptEdits', async () => {
+test('Integration E: subagent_exit routes identically; approve_auto_keep flips gate to acceptEdits', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd, {
-      dialogResponses: [{ kind: 'approve_acceptEdits_keep' }],
+      dialogResponses: [{ kind: 'approve_auto_keep' }],
     })
 
     emitEnterRequest(h.records, h.meta.id)
@@ -219,7 +219,7 @@ test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep 
     await h.manager.beforeTurn()
 
     assert.equal(h.dialogInputs.length, 1, 'subagent_exit opens main dialog')
-    assert.equal(h.gate.getMode(), 'acceptEdits')
+    assert.equal(h.gate.getMode(), 'auto')
     assert.equal(h.manager.isActive(), false)
   })
 })
@@ -227,7 +227,7 @@ test('Integration E: subagent_exit routes identically; approve_acceptEdits_keep 
 // Scenario G: Plan-file write exception via prefix match — main and
 // sub-agent paths both pass; non-matching .myagent/plans path falls
 // through to the prompt.
-test('Integration G: plan-file prefix match allows main + sub-agent paths; non-matching falls through', async () => {
+test('Integration G: plan-file prefix match allows main + sub-agent paths; non-matching is denied', async () => {
   await withTempCwd(async (cwd) => {
     const h = await buildHarness(cwd)
 
@@ -262,13 +262,9 @@ test('Integration G: plan-file prefix match allows main + sub-agent paths; non-m
     // Sub-agent plan path: also auto-allowed (same prefix, different suffix).
     const r2 = await gateWithSpy.approve(writeTool as any, { path: subPath, content: 'x' })
     assert.equal(r2, true)
-    // Non-matching path under .myagent/plans/: triggers protected-path
-    // prompt (bypass-equivalent still guards protected paths). The spy
-    // returns false, so it is denied.
+    // Any other write, even in the plans dir, is refused outright.
     const r3 = await gateWithSpy.approve(writeTool as any, { path: otherPath, content: 'x' })
-    assert.equal(r3, false, 'non-matching plans-dir path is denied via prompt')
-
-    // Only the non-matching path triggered the protected-path prompt.
-    assert.equal(promptCount, 1, 'one prompt fired for the non-matching protected path')
+    assert.equal(r3, false, 'non-matching plans-dir path is denied')
+    assert.equal(promptCount, 0, 'plan mode denies writes without asking')
   })
 })

@@ -10,7 +10,6 @@ import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
 import { withFileLock } from './fileLock.js'
-import { normalizeDenialState, type DenialState } from '../harness/permissions.js'
 
 /**
  * Atomic write: write to a temp file in the same directory, then rename.
@@ -53,7 +52,6 @@ export interface SessionMeta {
   title?: string
   messageCount: number
   compactFailureCount?: number
-  denialState?: DenialState
   checkpoints?: CheckpointMapping[]
 }
 
@@ -362,7 +360,6 @@ export class SessionStore {
         updatedAt: now,
         ...(currentMeta.checkpoints ? { checkpoints: currentMeta.checkpoints } : {}),
         ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
-        ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
       }
       this.replaceIndexSession(index, meta)
       await writeJsonFile(this.indexPath(), index)
@@ -413,7 +410,6 @@ export class SessionStore {
           updatedAt: now,
           ...(currentMeta.checkpoints ? { checkpoints: currentMeta.checkpoints } : {}),
           ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
-          ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
         }
         this.replaceIndexSession(indexFile, meta)
         await writeJsonFile(this.indexPath(), indexFile)
@@ -458,7 +454,6 @@ export class SessionStore {
           updatedAt: now,
           checkpoints: currentMeta.checkpoints?.filter((mapping) => retainedMessageIds.has(mapping.messageId)),
           ...(currentMeta.compactFailureCount ? { compactFailureCount: currentMeta.compactFailureCount } : {}),
-          ...(currentMeta.denialState ? { denialState: currentMeta.denialState } : {}),
         }
         this.replaceIndexSession(index, meta)
         await writeJsonFile(this.indexPath(), index)
@@ -611,41 +606,6 @@ export class SessionStore {
     }, session ?? this.defaultMeta(sessionId))
   }
 
-  async getDenialState(sessionIdOrPrefix: string): Promise<DenialState> {
-    const session = await this.load(sessionIdOrPrefix)
-    return normalizeDenialState(session?.denialState)
-  }
-
-  async setDenialState(sessionIdOrPrefix: string, state: DenialState): Promise<void> {
-    const session = await this.resolve(sessionIdOrPrefix)
-    const sessionId = session?.id ?? sessionIdOrPrefix
-    const normalized = normalizeDenialState(state)
-    const base = session ?? this.defaultMeta(sessionId)
-    const currentState = normalizeDenialState(base.denialState)
-    if (denialStatesEqual(currentState, normalized)) return
-
-    await this.updateIndexSession(sessionId, (current) => {
-      const next: SessionMeta = {
-        ...current,
-        updatedAt: new Date().toISOString(),
-      }
-      if (normalized.total > 0 || Object.keys(normalized.streaks).length > 0) {
-        next.denialState = normalized
-      } else {
-        delete next.denialState
-      }
-      return next
-    }, base)
-
-    await this.appendMetric(sessionId, {
-      event: 'permission_denial_state',
-      total_auto_denials: normalized.total,
-      active_streaks: Object.keys(normalized.streaks).length,
-      max_streak: Math.max(0, ...Object.values(normalized.streaks)),
-      streaks: normalized.streaks,
-    })
-  }
-
   /**
    * Removes a session's three files and its index entry.
    *
@@ -772,7 +732,6 @@ export class SessionStore {
             updatedAt: new Date().toISOString(),
             checkpoints: session.checkpoints?.filter((mapping) => retainedMessageIds.has(mapping.messageId)),
             ...(session.compactFailureCount ? { compactFailureCount: session.compactFailureCount } : {}),
-            ...(session.denialState ? { denialState: session.denialState } : {}),
           }
           await this.upsertIndex(updatedMeta)
         }
@@ -1073,7 +1032,6 @@ export class SessionStore {
       messageCount: messages.length,
       ...(existing?.checkpoints ? { checkpoints: existing.checkpoints } : {}),
       ...(existing?.compactFailureCount ? { compactFailureCount: existing.compactFailureCount } : {}),
-      ...(existing?.denialState ? { denialState: existing.denialState } : {}),
     }
   }
 
@@ -1300,13 +1258,3 @@ function averageCompactIntervalTurns(summary: RunningCacheSummary): number | nul
   return summary.compactIntervalTotal / (summary.compactCount - 1)
 }
 
-function denialStatesEqual(left: DenialState, right: DenialState): boolean {
-  if (left.total !== right.total) return false
-  const leftEntries = Object.entries(left.streaks).sort(([a], [b]) => a.localeCompare(b))
-  const rightEntries = Object.entries(right.streaks).sort(([a], [b]) => a.localeCompare(b))
-  if (leftEntries.length !== rightEntries.length) return false
-  return leftEntries.every(([toolName, count], index) => {
-    const rightEntry = rightEntries[index]
-    return rightEntry?.[0] === toolName && rightEntry[1] === count
-  })
-}

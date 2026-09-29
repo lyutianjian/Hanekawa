@@ -14,7 +14,8 @@ export function createKillShellTool(backgroundTasks: BackgroundTaskRegistry = de
     inputSchema: z.object({
       task_id: z.string().min(1).describe('Id of the background shell task, as returned by Bash.'),
     }).strict(),
-    riskLevel: 'dangerous',
+    // Only ever stops a shell this session started.
+    riskLevel: 'confirm',
     isDestructive: true,
     isConcurrencySafe: false,
     userFacingName: () => 'KillShell',

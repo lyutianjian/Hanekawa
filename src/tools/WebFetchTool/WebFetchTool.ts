@@ -152,20 +152,35 @@ export const webFetchTool: Tool = {
       ? `https://${parsed.host}${parsed.pathname}${parsed.search}${parsed.hash}`
       : url
 
-    // Fetch
+    // Fetch. Redirects are followed by hand and only within the host that was
+    // approved; a hop elsewhere goes back to the model as a new request.
     let response: Response
+    let currentUrl = fetchUrl
     try {
       const signal = context.abortSignal
         ? AbortSignal.any([context.abortSignal, AbortSignal.timeout(FETCH_TIMEOUT_MS)])
         : AbortSignal.timeout(FETCH_TIMEOUT_MS)
-      response = await fetch(fetchUrl, {
-        signal,
-        headers: {
-          'Accept': 'text/html, text/markdown, text/plain, */*',
-          'User-Agent': 'Hanekawa/0.1 (AI coding assistant)',
-        },
-        redirect: 'follow',
-      })
+      for (let hops = 0; ; hops++) {
+        response = await fetch(currentUrl, {
+          signal,
+          headers: {
+            'Accept': 'text/html, text/markdown, text/plain, */*',
+            'User-Agent': 'Hanekawa/0.1 (AI coding assistant)',
+          },
+          redirect: 'manual',
+        })
+        const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : null
+        if (!location) break
+        const target = new URL(location, currentUrl)
+        if (target.hostname !== new URL(currentUrl).hostname) {
+          return {
+            ok: true,
+            content: `The URL redirects to a different host: ${target.href}\nMake a new WebFetch request with that URL to follow it.`,
+          }
+        }
+        if (hops >= 5) return { ok: false, content: 'Too many redirects', errorCode: 'execution_failed' }
+        currentUrl = target.href
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       return {

@@ -90,13 +90,14 @@ test('OtlpMetricExporter only exports known numeric fields', async () => {
     })
 
     await exporter.exportMetric({
-      event: 'permission_denial_state',
+      event: 'session_cache_summary',
       created_at: '2026-05-24T00:00:00.000Z',
       session_id: 'session-1',
-      total_auto_denials: 3,
-      active_streaks: 1,
-      max_streak: 2,
-      streaks: { Bash: 2 },
+      total_cache_hit_rate: 0.5,
+      total_turns: 3,
+      first_break_turn_count: null,
+      cache_break_count: 1,
+      cause_distribution: {},
       future_numeric_field: 99,
     } as Parameters<OtlpMetricExporter['exportMetric']>[0])
 
@@ -106,9 +107,8 @@ test('OtlpMetricExporter only exports known numeric fields', async () => {
     const metrics = scopeMetrics[0]?.metrics as Array<Record<string, unknown>>
     const metricNames = metrics.map((metric) => metric.name)
 
-    assert.ok(metricNames.includes('hanekawa.permission_denial_state.total_auto_denials'))
-    assert.ok(metricNames.includes('hanekawa.permission_denial_state.tool_streak'))
-    assert.ok(!metricNames.includes('hanekawa.permission_denial_state.future_numeric_field'))
+    assert.ok(metricNames.includes('hanekawa.session_cache_summary.total_turns'))
+    assert.ok(!metricNames.includes('hanekawa.session_cache_summary.future_numeric_field'))
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve())

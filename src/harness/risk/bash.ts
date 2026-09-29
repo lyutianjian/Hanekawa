@@ -1,14 +1,14 @@
 import path from 'node:path'
-import { readdirSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { analyzeBashSafety } from '../bashSafety.js'
 import { normalizedExecutable, parseSedInvocation } from '../commandAnalysis.js'
 import { analyzeDestructiveCommands } from '../destructiveCommands.js'
 import { isDangerousRemovalPath } from '../../utils/permissions/protectedPaths.js'
-import { classifyPath, expandHome, realPath, samePath, workspaceRootOf, type PathAccess, type PathTarget } from './paths.js'
+import { classifyPath, expandHome, isSameOrInside, realPath, samePath, workspaceRootOf, type PathAccess, type PathTarget } from './paths.js'
 import { findRoots, gitSubcommandIndex, positionalWords, readOnlyCommand } from './readOnlyCommands.js'
 import { parseShell, type SimpleCommand, type Word } from './shellParse.js'
-import type { RiskContext, RiskReason, RiskTier } from './types.js'
+import { MASS_DELETE_CODES, type RiskContext, type RiskReason, type RiskTier } from './types.js'
 
 const require = createRequire(import.meta.url)
 const picomatch = require('picomatch') as {
@@ -28,6 +28,9 @@ const DOWNLOADERS = new Set(['curl', 'wget', 'fetch', 'invoke-webrequest', 'iwr'
 const STDIN_EVALUATORS = new Set(['iex', 'invoke-expression'])
 const CODE_FLAGS = new Set(['-c', '-e', '-E', '-p', '-m', '--eval', '--print'])
 const SQL_CLIENTS = new Set(['mysql', 'psql', 'sqlite3'])
+const REMOVERS = new Set(['rm', 'rmdir', 'unlink', 'remove-item', 'ri', 'del', 'erase', 'rd'])
+/** The only variables a path may use and still be judged: the shell resolves them to what the analysis already knows. */
+const KNOWN_VARIABLES = /\$\{(HOME|PWD)\}|\$(HOME|PWD)(?![A-Za-z0-9_])|\$\(pwd\)|`pwd`/g
 const FORK_BOMB = /([A-Za-z_:][\w:]*)\s*\(\)\s*\{[^}]*\1\s*\|\s*\1\s*&/
 
 const SUDO_VALUE_FLAGS = new Set(['-u', '-g', '-h', '-p', '-C', '-D', '-r', '-t', '-U', '-T'])
@@ -35,7 +38,15 @@ const XARGS_VALUE_FLAGS = new Set(['-I', '-L', '-l', '-n', '-P', '-s', '-d', '-E
 const KUBECTL_READ = new Set(['get', 'describe', 'logs', 'explain', 'version', 'config', 'api-resources', 'api-versions', 'cluster-info', 'top'])
 const POWER_VERBS = new Set(['poweroff', 'reboot', 'halt', 'kexec'])
 const FIND_FILTERS = /^-(i?name|i?path|i?wholename|i?regex|newer\w*|[acm](time|min)|size|empty|user|group|perm|inum|samefile|links)$/
-const PARTED_WRITES = new Set(['mklabel', 'mkpart', 'rm', 'resizepart', 'rescue', 'name', 'set', 'toggle', 'mkfs'])
+/** Directories a build or install recreates; deleting one is routine cleanup. */
+const ARTIFACT_DIRS = new Set([
+  'node_modules', 'dist', 'build', 'out', '.next', '.nuxt', '.turbo', '.cache', '.parcel-cache', 'coverage', 'target',
+  '__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.tox', '.gradle',
+])
+/** Process names that would take this agent down with them. */
+const SELF_PROCESS = /node|electron|hanekawa|myagent/i
+const PKILL_VALUE_FLAGS = new Set(['-u', '-U', '-g', '-G', '-P', '-s', '-t', '-F', '--signal', '--uid', '--euid', '--group', '--parent', '--session', '--terminal', '--pidfile'])
+const PARTED_WRITES =new Set(['mklabel', 'mkpart', 'rm', 'resizepart', 'rescue', 'name', 'set', 'toggle', 'mkfs'])
 
 export interface BashRisk {
   reasons: RiskReason[]
@@ -51,6 +62,9 @@ export function classifyBash(command: string, ctx: RiskContext): BashRisk {
   analyzer.source(command, ctx.cwd, 0)
   return analyzer.result()
 }
+
+/** Where a command's runtime operands come from; `find` bounds them by its roots, `xargs` by nothing. */
+type RuntimeOperands = false | 'xargs' | 'find'
 
 interface Scope {
   /** Undefined once a `cd` went somewhere the analysis cannot follow. */
@@ -122,7 +136,7 @@ class BashAnalyzer {
    * One command's words. `runtimeOperands` marks a command that receives more
    * arguments at runtime (`xargs`, `find -exec`), which no path check can see.
    */
-  private words(words: Word[], scope: Scope, depth: number, afterDownload: boolean, runtimeOperands: boolean): boolean {
+  private words(words: Word[], scope: Scope, depth: number, afterDownload: boolean, runtimeOperands: RuntimeOperands): boolean {
     if (depth > MAX_DEPTH) {
       this.add('risky', 'nesting_too_deep', 'Nests shells or wrappers too deeply to analyze.')
       return false
@@ -170,7 +184,7 @@ class BashAnalyzer {
         const rest = skipOptions(args, XARGS_VALUE_FLAGS)
         const argFile = texts.findIndex((text) => text === '-a' || text === '--arg-file')
         if (argFile !== -1 && args[argFile + 1]) this.path(args[argFile + 1]!, 'read', scope)
-        return inner(rest.length > 0 ? rest : [literal('echo')], true)
+        return inner(rest.length > 0 ? rest : [literal('echo')], 'xargs')
       }
       case 'eval':
         if (args.some((arg) => arg.dynamic)) this.add('risky', 'dynamic_eval', 'Evaluates code only known at runtime.')
@@ -213,8 +227,40 @@ class BashAnalyzer {
     } else {
       this.add('normal', 'runs', `Runs ${name}.`)
       this.checkCommand(name, args, scope, depth, runtimeOperands)
+      if (!REMOVERS.has(name) && name !== 'find' && name !== 'git') this.wrappedRemoval(args, scope, depth, runtimeOperands)
     }
     return DOWNLOADERS.has(name)
+  }
+
+  /**
+   * `watch rm -rf ~`, `flock l rm -rf ~`: a command this analysis does not know
+   * may run the rest of its line. Only a mass delete found there counts, so
+   * `npm rm left-pad` stays what it was.
+   */
+  private wrappedRemoval(args: Word[], scope: Scope, depth: number, runtimeOperands: RuntimeOperands): void {
+    const start = args.findIndex((arg) => !arg.dynamic && REMOVERS.has(normalizedExecutable(arg.text)))
+    if (start === -1) return
+    const inner = new BashAnalyzer(this.ctx)
+    inner.words(args.slice(start), { cwd: scope.cwd, dirs: [] }, depth + 1, false, runtimeOperands)
+    this.reasons.push(...inner.reasons.filter((reason) => MASS_DELETE_CODES.has(reason.code)))
+  }
+
+  /** `word` with `$HOME`, `$PWD` and `$(pwd)` filled in; still dynamic if anything else is left to the runtime. */
+  private expanded(word: Word, scope: Scope): Word {
+    if (!word.dynamic) return word
+    const text = word.text.replace(KNOWN_VARIABLES, (match, braced?: string, bare?: string) => (
+      (braced ?? bare) === 'HOME' ? this.ctx.home : scope.cwd ?? match
+    ))
+    return /[$`]|\{[^}]*(,|\.\.)[^}]*\}/.test(text) ? word : { ...word, text, dynamic: false }
+  }
+
+  /** A relative path after a `cd` the analysis could not follow. */
+  private unseen(word: Word, scope: Scope): boolean {
+    return scope.cwd === undefined && !path.isAbsolute(word.tilde ? expandHome(word.text, this.ctx.home) : word.text)
+  }
+
+  private unknownDelete(what: string): void {
+    this.add('critical', 'unknown_delete', `Recursively deletes ${what}, a location only known at runtime; write the path out literally.`)
   }
 
   private payload(word: Word, scope: Scope, depth: number): void {
@@ -255,7 +301,8 @@ class BashAnalyzer {
       scope.cwd = scope.dirs.length > 0 ? scope.dirs.pop() : undefined
       return
     }
-    const target = args.find((arg) => !arg.text.startsWith('-') || arg.text === '-')
+    const found = args.find((arg) => !arg.text.startsWith('-') || arg.text === '-')
+    const target = found && this.expanded(found, scope)
     let next: string | undefined
     if (!target) next = this.ctx.home
     else if (!target.dynamic && !target.glob && target.text !== '-') {
@@ -270,7 +317,8 @@ class BashAnalyzer {
     }
   }
 
-  private path(word: Word, access: PathAccess, scope: Scope): void {
+  private path(raw: Word, access: PathAccess, scope: Scope): void {
+    const word = this.expanded(raw, scope)
     if (word.dynamic) {
       if (access === 'read') this.add('normal', 'dynamic_read', `Reads ${word.text}, a path only known at runtime.`)
       else this.add('risky', 'dynamic_write', `Writes ${word.text}, a path only known at runtime.`)
@@ -313,19 +361,11 @@ class BashAnalyzer {
     return entries.map((entry) => ({ raw: path.join(path.dirname(word.text), entry), abs: path.join(directory, entry) }))
   }
 
-  private checkCommand(name: string, args: Word[], scope: Scope, depth: number, runtimeOperands: boolean): void {
+  private checkCommand(name: string, args: Word[], scope: Scope, depth: number, runtimeOperands: RuntimeOperands): void {
     const texts = args.map((arg) => arg.text)
     const firstPositional = texts.find((text) => !text.startsWith('-'))
+    if (REMOVERS.has(name)) return this.removal(name, args, scope, runtimeOperands)
     switch (name) {
-      case 'rm':
-      case 'rmdir':
-      case 'unlink':
-      case 'remove-item':
-      case 'ri':
-      case 'del':
-      case 'erase':
-      case 'rd':
-        return this.removal(name, args, scope, runtimeOperands)
       case 'find':
         return this.find(args, scope, depth)
       case 'truncate':
@@ -334,9 +374,13 @@ class BashAnalyzer {
         for (const word of positionalWords(args, new Set(['-s', '-r', '-n', '--size', '--reference', '--iterations']))) this.path(word, 'write', scope)
         return
       case 'killall':
-      case 'pkill':
-        this.add('risky', 'kills_processes', `Kills processes by name with ${name}.`)
+      case 'pkill': {
+        const patterns = positionalWords(args, PKILL_VALUE_FLAGS)
+        if (patterns.length === 0 || patterns.some((word) => word.dynamic || SELF_PROCESS.test(word.text))) {
+          this.add('risky', 'kills_processes', `Kills processes by name with ${name}, possibly this agent's own.`)
+        }
         return
+      }
       case 'chmod':
       case 'chown':
       case 'chgrp':
@@ -455,7 +499,7 @@ class BashAnalyzer {
     }
   }
 
-  private removal(name: string, args: Word[], scope: Scope, runtimeOperands: boolean): void {
+  private removal(name: string, args: Word[], scope: Scope, runtimeOperands: RuntimeOperands): void {
     const texts = args.map((arg) => arg.text.toLowerCase())
     const windows = name === 'del' || name === 'erase' || name === 'rd'
     const recursive = name === 'rm'
@@ -463,12 +507,17 @@ class BashAnalyzer {
       : name === 'remove-item' || name === 'ri'
         ? texts.some((text) => text === '-recurse' || text === '-r')
         : (windows || name === 'rmdir') && texts.includes('/s')
-    const operands = windows
+    const operands = (windows
       ? args.filter((arg) => !/^\/[a-z]$/i.test(arg.text))
-      : positionalWords(args)
+      : positionalWords(args)).map((operand) => this.expanded(operand, scope))
 
-    if (runtimeOperands) this.add('risky', 'dynamic_delete', 'Deletes paths only known at runtime.')
+    if (recursive && runtimeOperands === 'xargs') this.unknownDelete('the paths xargs hands it')
+    else if (runtimeOperands) this.add('risky', 'dynamic_delete', 'Deletes paths only known at runtime.')
     for (const operand of operands) {
+      if (recursive && (operand.dynamic || this.unseen(operand, scope))) {
+        this.unknownDelete(operand.text)
+        continue
+      }
       if (operand.dynamic) {
         this.add('risky', 'dynamic_delete', `Deletes ${operand.text}, a path only known at runtime.`)
         continue
@@ -478,7 +527,28 @@ class BashAnalyzer {
       }
       this.path(operand, 'write', scope)
     }
-    if (recursive) this.add('risky', 'recursive_delete', `Recursively deletes ${operands.map((operand) => operand.text).join(' ')}.`)
+    if (recursive && !operands.every((operand) => this.isDisposable(operand, scope))) {
+      this.add('risky', 'recursive_delete', `Recursively deletes ${operands.map((operand) => operand.text).join(' ')}.`)
+    }
+  }
+
+  /**
+   * What a recursive delete of `word` costs nothing to lose: a file or nothing
+   * at all (no tree goes), or a tree inside a temp dir or a build-artifact dir.
+   */
+  private isDisposable(word: Word, scope: Scope): boolean {
+    if (word.dynamic) return false
+    return this.targets(word, scope).every((target) => {
+      if (target.abs === undefined) return false
+      if (!isDirectory(target.abs)) return true
+      const real = realPath(target.abs)
+      if (this.ctx.tempRoots.some((root) => isSameOrInside(root, real) && !samePath(root, real))) return true
+      const root = workspaceRootOf(real, this.ctx)
+      if (root === undefined) return false
+      return path.relative(root, real).split(path.sep).some((segment) => (
+        ARTIFACT_DIRS.has(segment.toLowerCase()) || segment.toLowerCase().endsWith('.egg-info')
+      ))
+    })
   }
 
   /**
@@ -504,14 +574,37 @@ class BashAnalyzer {
 
   private find(args: Word[], scope: Scope, depth: number): void {
     const texts = args.map((arg) => arg.text.toLowerCase())
-    const roots = findRoots(args)
+    const roots = findRoots(args).map((root) => this.expanded(root, scope))
     if (roots.length === 0) roots.push(literal('.'))
-    if (texts.includes('-delete')) {
-      this.add('risky', 'find_delete', 'Deletes every file find matches.')
+    const execs: Word[][] = []
+    for (let index = 0; index < texts.length; index++) {
+      const text = texts[index]!
+      if (text === '-exec' || text === '-execdir' || text === '-ok' || text === '-okdir') {
+        let end = index + 1
+        while (end < args.length && args[end]!.text !== ';' && args[end]!.text !== '+') end++
+        const command = args.slice(index + 1, end).filter((arg) => arg.text !== '{}')
+        if (command.length > 0) execs.push(command)
+        index = end
+      } else if (text === '-fprint' || text === '-fprint0' || text === '-fprintf' || text === '-fls') {
+        if (args[index + 1]) this.path(args[index + 1]!, 'write', scope)
+      }
+    }
+
+    // `-exec rm {} +` deletes what `-delete` would.
+    if (texts.includes('-delete') || execs.some((command) => REMOVERS.has(normalizedExecutable(command[0]!.text)))) {
       // `-type f` narrows nothing that matters; a name, path, time or size test does.
       const filtered = texts.some((text) => FIND_FILTERS.test(text))
+      const contained = roots.every((root) => (
+        !root.dynamic && this.targets(root, scope).every((target) => (
+          target.abs !== undefined && workspaceRootOf(realPath(target.abs), this.ctx) !== undefined
+        ))
+      ))
+      if (!contained || !(filtered || roots.every((root) => this.isDisposable(root, scope)))) {
+        this.add('risky', 'find_delete', 'Deletes every file find matches.')
+      }
       for (const root of roots) {
-        if (!filtered && !root.dynamic && this.isCriticalTarget(root, scope)) {
+        if (!filtered && (root.dynamic || this.unseen(root, scope))) this.unknownDelete(`everything under ${root.text}`)
+        else if (!filtered && this.isCriticalTarget(root, scope)) {
           this.add('critical', 'catastrophic_delete', `Deletes files under ${root.text}: a root, home or workspace directory.`)
         }
         this.path(root, 'write', scope)
@@ -519,18 +612,7 @@ class BashAnalyzer {
     } else {
       for (const root of roots) this.path(root, 'read', scope)
     }
-    for (let index = 0; index < texts.length; index++) {
-      const text = texts[index]!
-      if (text === '-exec' || text === '-execdir' || text === '-ok' || text === '-okdir') {
-        let end = index + 1
-        while (end < args.length && args[end]!.text !== ';' && args[end]!.text !== '+') end++
-        const command = args.slice(index + 1, end).filter((arg) => arg.text !== '{}')
-        if (command.length > 0) this.words(command, scope, depth + 1, false, true)
-        index = end
-      } else if (text === '-fprint' || text === '-fprint0' || text === '-fprintf' || text === '-fls') {
-        if (args[index + 1]) this.path(args[index + 1]!, 'write', scope)
-      }
-    }
+    for (const command of execs) this.words(command, scope, depth + 1, false, 'find')
   }
 
   private permissions(name: string, args: Word[], scope: Scope): void {
@@ -674,6 +756,14 @@ function physicalPath(base: string, text: string): string {
     current = segment === '..' ? path.dirname(current) : realPath(path.join(current, segment))
   }
   return current
+}
+
+function isDirectory(abs: string): boolean {
+  try {
+    return statSync(abs).isDirectory()
+  } catch {
+    return false
+  }
 }
 
 function literal(text: string): Word {

@@ -1,5 +1,5 @@
-import { analyzeShellCommand, normalizedExecutable } from './commandAnalysis.js'
-import { shellWords, splitShellSegments } from './bashSafety.js'
+import { normalizedExecutable } from './commandAnalysis.js'
+import { analyzeBashSafety, shellWords, splitShellSegments } from './bashSafety.js'
 
 /**
  * Permission rule matching for shell (Bash) commands, ported from Claude
@@ -237,5 +237,5 @@ export function matchBashRule(
 
 /** Split a command into subcommand segments for per-segment rule matching. */
 export function bashCommandSegments(command: string): string[] {
-  return analyzeShellCommand(command).segments
+  return analyzeBashSafety(command).segments
 }

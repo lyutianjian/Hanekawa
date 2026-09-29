@@ -252,7 +252,8 @@ export function permissionToneForRequest(
   request: PermissionRequestDto,
   warnings: DestructiveCommandWarning[] = destructiveWarningsForRequest(request),
 ): PermissionTone {
-  if (warnings.length > 0) return 'danger'
+  if (warnings.length > 0 || request.riskTier === 'critical') return 'danger'
+  if (request.riskTier === 'risky') return 'caution'
   return request.riskLevel === 'dangerous' ? 'caution' : 'normal'
 }
 

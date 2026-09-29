@@ -34,9 +34,17 @@ export interface RiskContext {
   home: string
   /** `cwd`, additional directories, the session's spill/plan dirs and the system temp dirs, all resolved. */
   workspaceRoots: string[]
+  /** The system temp dirs, resolved; also in `workspaceRoots`. */
+  tempRoots: string[]
   /** Hanekawa's own permission-bearing settings files; writing one is self-escalation. */
   configFiles: string[]
 }
+
+/**
+ * Deleting a root, home or workspace directory, or a tree whose location is
+ * only known at runtime: the one kind of critical call bypass still refuses.
+ */
+export const MASS_DELETE_CODES: ReadonlySet<string> = new Set(['catastrophic_delete', 'unknown_delete'])
 
 export function tierRank(tier: RiskTier): number {
   return RISK_TIERS.indexOf(tier)

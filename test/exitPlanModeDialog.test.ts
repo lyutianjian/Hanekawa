@@ -12,7 +12,7 @@ test('ExitPlanModeDialog options show accept-edits when bypass is not available'
   assert.deepEqual(
     options.map((option) => option.label),
     [
-      'Yes, auto-accept edits',
+      'Yes, and ask only when needed',
       'Yes, manually approve edits',
       'No, keep planning',
     ],
@@ -20,7 +20,7 @@ test('ExitPlanModeDialog options show accept-edits when bypass is not available'
   assert.deepEqual(
     options.map((option) => option.kind),
     [
-      'approve_acceptEdits_keep',
+      'approve_auto_keep',
       'approve_restore_keep',
       'reject',
     ],
@@ -57,7 +57,7 @@ test('ExitPlanModeDialog options replace elevated slots with bypass when availab
 
 test('ExitPlanModeDialog Shift+Tab resolves to the keep-context elevated option', () => {
   assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: true }), 'approve_bypass_keep')
-  assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: false }), 'approve_acceptEdits_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: false }), 'approve_auto_keep')
 })
 
 test('ExitPlanModeDialog previewMarkdownLines truncates long content while preserving head and tail', () => {

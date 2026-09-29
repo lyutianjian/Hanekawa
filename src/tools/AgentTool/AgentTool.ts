@@ -6,7 +6,6 @@ import { ContextBuilder } from '../../harness/contextBuilder.js'
 import { AgentLoop, type ActiveModelRuntime } from '../../harness/loop.js'
 import {
   PermissionGate,
-  type DenialStateStore,
   type PermissionMode,
   type PermissionPrompt,
   type PermissionRule,
@@ -208,7 +207,6 @@ export interface CreateAgentToolOptions {
   getSessionRuleStore?(): SessionRuleStore
   /** `permissions.additionalDirectories`, inherited from the parent gate. */
   getAdditionalDirectories?(): string[]
-  denialStateStore?: DenialStateStore
   cwd: string
   system?: string
   projectContext?: string
@@ -512,7 +510,8 @@ class SubagentSession implements AgentContinuation {
     const agent = { id: subAgentId, type: parsed.subagent_type, description: subagentDescription(parsed) }
     const permissionGate = new PermissionGate((request) => options.permissionPrompt({ ...request, agent }), options.getConfigRules?.(), {
       mode: resolveSubagentPermissionMode(options.permissionMode?.() ?? 'default', agentDefinition),
-      denialStateStore: readonlyDenialStateStore(options.denialStateStore),
+      // The sub-agent's tool context, and so its spill directory, is keyed by its own id.
+      sessionId: subAgentId,
       cwd: effectiveCwd,
       additionalDirectories: options.getAdditionalDirectories?.() ?? [],
       sessionRuleStore,
@@ -1014,7 +1013,7 @@ function resolveSubagentModelLabel(
 
 // Strictest first. A sub-agent cannot run the plan workflow (no ExitPlanMode),
 // and the plan gate relies on that workflow, so plan means read-only here.
-const SUBAGENT_MODE_STRICTNESS: readonly PermissionMode[] = ['readonly', 'default', 'acceptEdits', 'bypass']
+const SUBAGENT_MODE_STRICTNESS: readonly PermissionMode[] = ['readonly', 'default', 'auto', 'bypass']
 
 function subagentMode(mode: PermissionMode): PermissionMode {
   return mode === 'plan' ? 'readonly' : mode
@@ -1066,14 +1065,6 @@ class ForkPreloadError extends Error {
   constructor(message: string) {
     super(`parent records load error: ${message}`)
     this.name = 'ForkPreloadError'
-  }
-}
-
-function readonlyDenialStateStore(store: DenialStateStore | undefined): DenialStateStore | undefined {
-  if (!store) return undefined
-  return {
-    getDenialState: () => store.getDenialState(),
-    setDenialState: async () => {},
   }
 }
 

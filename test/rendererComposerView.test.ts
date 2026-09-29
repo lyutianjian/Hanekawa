@@ -231,20 +231,20 @@ test('the pill is disabled and menuless until a snapshot arrives', (t) => {
 
 test('the pill opens a menu of the four modes and marks the live one', (t) => {
   const r = render(t)
-  r.composer.renderRuntime(runtime({ permissionMode: 'acceptEdits' }))
-  assert.equal(r.view('chipPermission').text, PERMISSION_MODE_LABELS.acceptEdits)
+  r.composer.renderRuntime(runtime({ permissionMode: 'auto' }))
+  assert.equal(r.view('chipPermission').text, PERMISSION_MODE_LABELS.auto)
 
   r.stub.click(r.els.chipPermission)
   const items = r.menuItems()
   assert.deepEqual(items.map((item) => item.text), [
     PERMISSION_MODE_LABELS.default,
-    PERMISSION_MODE_LABELS.acceptEdits,
     PERMISSION_MODE_LABELS.plan,
+    PERMISSION_MODE_LABELS.auto,
     PERMISSION_MODE_LABELS.bypass,
   ])
   assert.deepEqual(
     items.filter((item) => item.classes.includes('active')).map((item) => item.text),
-    [PERMISSION_MODE_LABELS.acceptEdits],
+    [PERMISSION_MODE_LABELS.auto],
   )
   assert.equal(r.view('chipPermission').attributes.get('aria-expanded'), 'true')
 })
@@ -254,7 +254,7 @@ test('choosing a mode reports it once and closes the menu', (t) => {
   r.composer.renderRuntime(runtime())
   r.stub.click(r.els.chipPermission)
 
-  r.stub.click(r.menuItems()[2]!.node)
+  r.stub.click(r.menuItems()[1]!.node)
 
   assert.deepEqual(r.picked, ['plan'])
   assert.deepEqual(r.menuItems(), [], 'the menu closes on its own, not on the snapshot coming back')

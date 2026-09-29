@@ -152,14 +152,14 @@ test('the pill is inert until a runtime snapshot arrives', () => {
 })
 
 test('the pill names the live mode and offers the four switchable ones', () => {
-  const view = permissionPillView({ runtime: runtime({ permissionMode: 'acceptEdits' }), open: true })
-  assert.equal(view.label, PERMISSION_MODE_LABELS.acceptEdits)
+  const view = permissionPillView({ runtime: runtime({ permissionMode: 'auto' }), open: true })
+  assert.equal(view.label, PERMISSION_MODE_LABELS.auto)
   assert.equal(view.enabled, true)
   assert.equal(view.open, true)
   assert.deepEqual(view.options.map((option) => option.mode), [...PERMISSION_PILL_MODES])
   assert.deepEqual(
     view.options.filter((option) => option.current).map((option) => option.mode),
-    ['acceptEdits'],
+    ['auto'],
     'exactly one option is the current one',
   )
 })
@@ -175,7 +175,7 @@ test('a mode outside the menu is still named rather than mislabelled', () => {
 })
 
 test('every permission mode has a label, including the unoffered one', () => {
-  for (const mode of ['default', 'plan', 'acceptEdits', 'bypass', 'readonly'] as const) {
+  for (const mode of ['default', 'plan', 'auto', 'bypass', 'readonly'] as const) {
     assert.ok(PERMISSION_MODE_LABELS[mode].length > 0, `${mode} has no label`)
   }
 })

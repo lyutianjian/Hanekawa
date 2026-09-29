@@ -130,10 +130,12 @@ Don't create planning or analysis documents unless the user asks.
  - When the user types \`/<skill-name>\`, invoke it via Skill. Only use skills listed in the user-invocable skills section.`.trim()
 
 const PLAN_MODE_SYSTEM_REMINDER = wrapInSystemReminder(
-  'Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. This supercedes any other instructions you have received. To take action you must first present the plan to the user via ExitPlanMode. Your turn must end only by using AskUserQuestion for unresolved requirements, or by calling ExitPlanMode when the plan is ready for approval. Do NOT ask about plan approval via text or AskUserQuestion — always use ExitPlanMode.',
+  'Plan mode is active. The user indicated that they do not want you to execute yet -- you MUST NOT make any edits (with the exception of the plan file), run any non-readonly tools (including changing configs or making commits), or otherwise make any changes to the system. The harness refuses every file write except the plan file, and asks the user before any other call that is not read-only. This supercedes any other instructions you have received. To take action you must first present the plan to the user via ExitPlanMode. Your turn must end only by using AskUserQuestion for unresolved requirements, or by calling ExitPlanMode when the plan is ready for approval. Do NOT ask about plan approval via text or AskUserQuestion — always use ExitPlanMode.',
 )
 
-const ACCEPT_EDITS_REMINDER = wrapInSystemReminder('You are in accept-edits mode. File edits inside the working directory are auto-approved, as are simple workspace file operations run through Bash (mkdir, touch, rm, rmdir, mv, cp, sed -i). Everything else — other shell commands, paths outside the working directory, and protected paths — still uses the normal permission gate.')
+const AUTO_MODE_REMINDER = wrapInSystemReminder('Permission mode is "ask when needed": most tool calls run without asking. Calls the harness judges risky (irreversible or wide-reaching, such as force pushes, publishing, or writes outside the workspace) or plainly dangerous still ask the user first.')
+
+const BYPASS_MODE_REMINDER = wrapInSystemReminder('Permission mode is bypass: the user will not be asked about any tool call. Only deleting a root, home or workspace directory, or a recursive delete whose target is only known at runtime, is refused; the user\'s deny rules still apply. Everything else runs, flagged calls included, and you are responsible for the consequences: before anything irreversible or visible outside this machine (force pushes, publishing, deploys, deleting data), confirm with the user through AskUserQuestion first.')
 
 function systemPromptSection(
   sections: SystemPromptSectionCache,
@@ -520,7 +522,8 @@ export class ContextBuilder {
  */
 function permissionModeReminder(permissionMode: PermissionMode | undefined): string | undefined {
   if (permissionMode === 'plan') return PLAN_MODE_SYSTEM_REMINDER
-  if (permissionMode === 'acceptEdits') return ACCEPT_EDITS_REMINDER
+  if (permissionMode === 'auto') return AUTO_MODE_REMINDER
+  if (permissionMode === 'bypass') return BYPASS_MODE_REMINDER
   return undefined
 }
 

@@ -2,8 +2,8 @@ import type { PermissionMode } from '../harness/permissions.js'
 
 export function permissionModeStatusLabel(mode: PermissionMode): string {
   switch (mode) {
-    case 'acceptEdits':
-      return 'accept-edits'
+    case 'auto':
+      return 'auto'
     case 'bypass':
       return 'bypass'
     case 'plan':
@@ -16,8 +16,8 @@ export function permissionModeStatusLabel(mode: PermissionMode): string {
 
 export function permissionModeTitle(mode: PermissionMode): string {
   switch (mode) {
-    case 'acceptEdits':
-      return 'Accept edits'
+    case 'auto':
+      return 'Ask when needed'
     case 'bypass':
       return 'Bypass'
     case 'plan':

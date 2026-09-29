@@ -467,6 +467,40 @@ Provider code is split under `src/config/providers/`:
 
 The compatibility entrypoint remains `src/config/providers.ts`, so existing imports from `../config/providers.js` continue to work.
 
+### Permissions
+
+Every tool call is first graded by a risk classifier (`src/harness/risk/`), then the permission gate combines the grade with your rules and the session mode.
+
+| Grade | Meaning |
+|---|---|
+| `readonly` | Changes nothing and only reads the workspace |
+| `normal` | Ordinary edits, builds, installs, network, reads outside the workspace |
+| `risky` | Irreversible or wide-reaching but routine: `git push --force`, `git reset --hard`, `rm -r`, publishing, `sudo`, writes outside the workspace, `.env` |
+| `critical` | Destructive or persistent: `rm -rf ~`, `mkfs`, `curl … | sh`, private keys and cloud credentials, shell rc / `authorized_keys` / git hooks, Hanekawa's own permission config |
+
+| Grade | `default` | `plan` | `auto` (Ask when needed) | `bypass` |
+|---|---|---|---|---|
+| readonly | allow | allow | allow | allow |
+| normal | ask | file writes denied (the session plan file excepted), otherwise ask | allow | allow |
+| risky | ask | as normal | ask | allow, with a reminder to the model |
+| critical | ask, never remembered | deny | ask, never remembered | deny for a mass delete, otherwise allow with a reminder |
+
+Shift+Tab (TUI) and the composer chip (desktop) cycle `default → plan → auto → bypass`. `readonly` is internal, used by built-in explore/plan subagents. A subagent is never looser than its parent. The old `acceptEdits` mode is now `auto`; existing settings and agent frontmatter migrate automatically.
+
+Rules, in order of precedence:
+
+1. A `deny` rule always denies, in every mode, and is never turned into a prompt.
+2. An `ask` rule asks; `bypass` ignores it.
+3. An `allow` rule covers `normal`. It covers `risky` only when the rule text itself is risky (`Bash(git push --force:*)`, `Edit(/etc/hosts)`); `Bash(git push:*)` does not. Nothing covers `critical`.
+
+`bypass` trusts the model: its only guard is against mass deletion — removing `/`, the home directory, a direct child of either, a drive root or a workspace root, or a recursive delete whose target is only known at runtime (`rm -rf "$X"`, `xargs rm -rf`, a relative path after `cd "$X"`). `$HOME`, `$PWD` and `$(pwd)` are resolved before judging. Use `auto` for a mode with guard rails.
+
+"Always allow" persists only for `normal`. `risky` can be allowed for the session, by exact command or path. `critical` offers neither.
+
+File rules match against the resolved absolute path. A pattern starting with `/` or `~` is absolute; any other is relative to the project root, so `Read(.env)` matches only the root `.env` — write `Read(**/.env)` for every one. `Read`/`Edit` deny rules are also applied, best effort, to paths extracted from Bash commands.
+
+`permissions.mode` and `mcp.trustedServers` in a project's `.myagent/settings.json` are ignored, with a diagnostic; set them in user or local settings. The `Config` tool cannot change the permission mode. `WebFetch` follows redirects only within the same host; a cross-host redirect is returned to the model, whose next request goes through the gate again.
+
 ### Tools
 
 Built-in tools live in `src/tools/`. Each tool declares:

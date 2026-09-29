@@ -315,7 +315,7 @@ async function step2(ctx) {
   })
   // Asserted on the *file*, not the tool name: the card is localized (the title
   // reads 写入文件), so matching 'Write' would be asserting the English build.
-  ctx.ok('the request names the file it would write', dialog.subtitle.includes('smoke-write-target.txt'), dialog.subtitle)
+  ctx.ok('the request names the file it would write', dialog.block.includes('smoke-write-target.txt'), dialog.block)
   ctx.ok('the request has a title', dialog.title.length > 0, dialog.title)
   // Upper case as of S5: the keys are badges on the buttons, not a transcribed
   // `[y/n]` hint line.
@@ -388,7 +388,7 @@ async function step2(ctx) {
     const view = await read(ctx, probes.permissionRequest())
     return view.open && view.settled ? view : undefined
   })
-  ctx.ok('coming back restores the same request', back.subtitle.includes('smoke-write-target.txt'), back.subtitle)
+  ctx.ok('coming back restores the same request', back.block.includes('smoke-write-target.txt'), back.block)
 
   // Answered with a **real mouse event**, not `y` and not `element.click()`.
   // Until S4 `overlayView.ts` had zero listeners, so the whole dialog was
@@ -1022,9 +1022,9 @@ async function step8(ctx) {
   await app.shell(ctx.app, {
     type: 'settings-change',
     projectRoot: rootA,
-    change: { scope: 'permissions', kind: 'set-startup-permission-mode', mode: 'acceptEdits' },
+    change: { scope: 'permissions', kind: 'set-startup-permission-mode', mode: 'auto' },
   })
-  ctx.eq('the startup mode is written locally', readLocalSettings(ctx.projectA).permissions.mode, 'acceptEdits')
+  ctx.eq('the startup mode is written locally', readLocalSettings(ctx.projectA).permissions.mode, 'auto')
   const statusNow = await read(ctx, probes.status())
   // Not a bug: `permissions.mode` is read once when a scope is built
   // (`sessionScope.ts:74`), so the row promises the next new session, not this
@@ -1947,17 +1947,17 @@ async function step8Restart(ctx) {
   )
   ctx.ok('the model survived', snapshot.models.some((entry) => entry.key === 'smoke-model'), snapshot.models.map((entry) => entry.key).join(','))
   ctx.eq('the routing survived', snapshot.routing.main, ctx.opts.model)
-  ctx.eq('the startup permission mode survived', snapshot.permissions.mode, 'acceptEdits')
+  ctx.eq('the startup permission mode survived', snapshot.permissions.mode, 'auto')
   ctx.eq('the local permission group survived', snapshot.permissions.groups.find((group) => group.behavior === 'ask')?.local ?? [], ['Write'])
   ctx.eq('the cache toggle survived', snapshot.general.cacheTtl1h, true)
   // The other half of 8c: the startup mode reaches a session only through a new
   // scope, which is what a restart is.
-  // 5e: the mode lives on the composer's pill now, where 接受编辑 is `acceptEdits`.
+  // 5e: the mode lives on the composer's pill now, where 必要时询问 is `auto`.
   const status = await waitFor('the permission pill to show the restored mode', async () => {
     const view = await read(ctx, probes.status())
-    return view.mode.includes('接受编辑') ? view : undefined
+    return view.mode.includes('必要时询问') ? view : undefined
   }).catch(() => read(ctx, probes.status()))
-  ctx.ok('the restored startup mode is now the session mode', status.mode.includes('接受编辑'), status.mode)
+  ctx.ok('the restored startup mode is now the session mode', status.mode.includes('必要时询问'), status.mode)
 
   const view = await read(ctx, probes.sidebar())
   const deleted = [...ctx.state.deleted]

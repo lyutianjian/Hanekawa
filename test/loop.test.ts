@@ -887,7 +887,7 @@ test('plan mode approval reminder is last context and ExitPlanMode is not summar
         loop?.noteRecordAppended(record)
       },
       loadRecords: async () => [...records],
-      openExitDialog: async () => ({ kind: 'approve_acceptEdits_keep' }),
+      openExitDialog: async () => ({ kind: 'approve_auto_keep' }),
     })
     gate.setPlanSlugProvider(() => manager.getSlug())
     manager.onEnterPlanMode()

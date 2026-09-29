@@ -1,7 +1,7 @@
 import type { PermissionGate, PermissionMode } from '../harness/permissions.js'
 import type { PlanModeManager } from '../harness/planModeManager.js'
 
-export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'acceptEdits', 'plan', 'bypass']
+export const PERMISSION_MODES: readonly PermissionMode[] = ['default', 'plan', 'auto', 'bypass']
 
 export function nextPermissionMode(currentMode: PermissionMode, direction: 1 | -1): PermissionMode {
   const index = PERMISSION_MODES.indexOf(currentMode)

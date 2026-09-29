@@ -5,7 +5,7 @@ import { createTwoFilesPatch } from 'diff'
  *
  * The transcript cannot rebuild a diff from a tool result on its own: the
  * permission request's `preview` is the only other place the two sides of an
- * edit exist, and in `acceptEdits` / `bypass` mode there is no permission
+ * edit exist, and in `auto` / `bypass` mode there is no permission
  * request at all. So the tools emit the patch themselves, in one shared format,
  * at the moment they still hold both texts.
  *

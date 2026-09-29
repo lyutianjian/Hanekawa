@@ -164,7 +164,7 @@ export function ExitPlanModeDialog({
       return
     }
 
-    // Shift+Tab = quick approval with elevated mode (auto-accept edits or
+    // Shift+Tab = quick approval with elevated mode (ask-when-needed or
     // bypass when available). Matches Claude Code's Shift+Tab shortcut.
     if (key.shift && key.tab) {
       onResolve({
@@ -216,7 +216,7 @@ export function ExitPlanModeDialog({
 
   const elevatedHint = isBypassAvailable
     ? 'bypass permissions'
-    : 'auto-accept edits'
+    : 'ask when needed'
 
   if (isEmptyPlan) {
     const emptyOptions = [

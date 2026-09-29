@@ -166,7 +166,7 @@ export function submitButtonView(input: { streaming: boolean; empty: boolean }):
  */
 export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
   default: '请求批准',
-  acceptEdits: '接受编辑',
+  auto: '必要时询问',
   plan: '计划模式',
   bypass: '绕过权限',
   readonly: '只读',
@@ -174,8 +174,8 @@ export const PERMISSION_MODE_LABELS: Record<PermissionMode, string> = {
 
 export const PERMISSION_PILL_MODES: readonly PermissionMode[] = [
   'default',
-  'acceptEdits',
   'plan',
+  'auto',
   'bypass',
 ] as const
 

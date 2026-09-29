@@ -37,7 +37,7 @@ test('a non-empty plan gets the full slot list, bypass first when available', ()
 
   assert.deepEqual(withBypass, buildExitPlanModeOptions({ isBypassAvailable: true }))
   assert.equal(withBypass[0]?.kind, 'approve_bypass_keep')
-  assert.equal(without[0]?.kind, 'approve_acceptEdits_keep')
+  assert.equal(without[0]?.kind, 'approve_auto_keep')
   assert.equal(isEmptyPlan('# Plan'), false)
 })
 
@@ -62,9 +62,9 @@ test('approvals carry the plan and only rejection carries feedback', () => {
 
 test('the elevated shortcut picks bypass only when it is available', () => {
   assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: true }), 'approve_bypass_keep')
-  assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: false }), 'approve_acceptEdits_keep')
+  assert.equal(elevatedExitPlanModeDecision({ isBypassAvailable: false }), 'approve_auto_keep')
   assert.equal(elevatedExitPlanModeDecision(true), 'approve_bypass_keep')
-  assert.equal(elevatedExitPlanModeDecision(false), 'approve_acceptEdits_keep')
+  assert.equal(elevatedExitPlanModeDecision(false), 'approve_auto_keep')
 })
 
 test('the enter-plan options are two, ordered yes then no', () => {

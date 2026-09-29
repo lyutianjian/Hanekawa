@@ -1,6 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import path from 'node:path'
-import { getSkillsDir } from '../../utils/paths.js'
+import { getSharedSkillsDir, getSkillsDir } from '../../utils/paths.js'
 import { parseYamlFrontmatter } from '../../utils/frontmatter.js'
 import { disabledSkillNames, loadMergedSettings } from '../../config/settings.js'
 import type { EffortLevel } from '../../config/effort.js'
@@ -46,7 +46,20 @@ export class SkillsService {
 
   /** Every skill on disk, switched off ones included. For the settings screen. */
   async listAll(): Promise<SkillDefinition[]> {
-    const skillsDir = getSkillsDir(this.cwd)
+    const skills: SkillDefinition[] = []
+    const seen = new Set<string>()
+    // Project skills first: they shadow a shared skill of the same name.
+    for (const dir of [getSkillsDir(this.cwd), getSharedSkillsDir()]) {
+      for (const skill of await this.readDir(dir)) {
+        if (seen.has(skill.name)) continue
+        seen.add(skill.name)
+        skills.push(skill)
+      }
+    }
+    return skills
+  }
+
+  private async readDir(skillsDir: string): Promise<SkillDefinition[]> {
     let entries: string[]
 
     try {
@@ -63,10 +76,8 @@ export class SkillsService {
       const skillPath = path.join(skillsDir, entry, 'SKILL.md')
       try {
         const raw = await readFile(skillPath, 'utf8')
-        const skill = this.parse(raw, path.dirname(skillPath))
-        skills.push(skill)
+        skills.push(this.parse(raw, path.dirname(skillPath)))
       } catch (error) {
-        // Skip skills that can't be read or parsed
         // ENOTDIR: a stray file such as macOS's .DS_Store sitting beside the skill folders
         const code = (error as NodeJS.ErrnoException).code
         if (code !== 'ENOENT' && code !== 'ENOTDIR') {

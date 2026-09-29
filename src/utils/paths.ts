@@ -217,6 +217,11 @@ export function getSkillsDir(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'skills')
 }
 
+/** Cross-tool skills folder (`~/.agents/skills`), read alongside the project's own. */
+export function getSharedSkillsDir(): string {
+  return path.join(userHome(), '.agents', 'skills')
+}
+
 export function getAgentsDir(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'agents')
 }

@@ -60,6 +60,8 @@ async function createHarness(options: {
   untitled?: boolean
   /** The stub loop's image capability; defaults to capable. */
   imageCapable?: boolean
+  /** What the side model answers when asked to name the session. */
+  titleReply?: string
 } = {}): Promise<Harness> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-controller-'))
   const store = new SessionStore(cwd)
@@ -73,6 +75,10 @@ async function createHarness(options: {
 
   const loop = {
     run: options.run ?? (async () => okResult()),
+    getSideModel: () => ({
+      model: 'side-model',
+      provider: { name: 'stub', createMessage: async () => ({ content: options.titleReply ?? '' }) },
+    }),
     getActiveModel: () => ({
       model: 'test-model',
       modelKey: 'main',
@@ -968,3 +974,31 @@ async function waitUntil(ready: () => boolean, what: string): Promise<void> {
   }
   throw new Error(`Timed out waiting for ${what}`)
 }
+
+test('a model-written title replaces the first-message fallback, unless the user renamed meanwhile', async () => {
+  const record = (): SessionRecord => ({
+    id: randomUUID(),
+    type: 'message',
+    role: 'user',
+    content: '帮我把登录页的按钮改成蓝色',
+    createdAt: new Date().toISOString(),
+  })
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+  const named = await createHarness({ untitled: true, titleReply: '"修改登录按钮颜色"\n' })
+  const first = record()
+  await named.store.appendRecord(named.session.id, first)
+  named.proxy.onRecord(first)
+  await settle()
+  assert.equal(named.controller.getSessionMeta().title, '修改登录按钮颜色')
+  assert.equal((await named.store.list()).find((m) => m.id === named.session.id)?.title, '修改登录按钮颜色')
+  assert.equal(named.events.filter((event) => event.type === 'session-meta').length, 2)
+
+  const renamed = await createHarness({ untitled: true, titleReply: '修改登录按钮颜色' })
+  const second = record()
+  await renamed.store.appendRecord(renamed.session.id, second)
+  renamed.proxy.onRecord(second)
+  renamed.controller.refreshSessionMeta({ ...renamed.controller.getSessionMeta(), title: '我自己的名字' })
+  await settle()
+  assert.equal(renamed.controller.getSessionMeta().title, '我自己的名字')
+})

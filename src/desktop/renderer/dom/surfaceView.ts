@@ -33,7 +33,9 @@ export function createSurfacePanel(container: HTMLElement, onActivate: SurfaceAc
   let open = false
   const presence = createPresence(container, { onClosed: () => replace(container) })
 
-  const paint = (title: string, children: HTMLElement[]) => {
+  const paint = (title: string, children: HTMLElement[], surface?: string) => {
+    if (surface) container.dataset.surface = surface
+    else delete container.dataset.surface
     replace(container, el('h2', undefined, title), ...children)
     presence.set(true)
     open = true
@@ -63,11 +65,22 @@ export function createSurfacePanel(container: HTMLElement, onActivate: SurfaceAc
           node.setAttribute('aria-selected', String(index === selectedIndex))
           node.addEventListener('click', () => onActivate(action))
         }
+        const secondary = row.secondary
+        if (secondary) {
+          const control = el('button', `row-action${secondary.danger ? ' danger' : ''}`, secondary.label)
+          control.setAttribute('type', 'button')
+          control.addEventListener('click', (event) => {
+            event.stopPropagation()
+            onActivate(secondary.action)
+          })
+          node.appendChild(control)
+        }
         return node
       })
       paint(
         view.title,
         rows.length > 0 ? rows : [el('div', 'row', el('span', 'value', view.emptyMessage))],
+        view.surface,
       )
     },
 

@@ -83,6 +83,21 @@ const PAGES = {
     </script>`,
   // The HTML is parsed at once; the image holds the load back.
   '/slow': `<!doctype html><title>Slow</title><p>parsed</p><img src="/slow.png">`,
+  // A panel slides in while the data it shows is still on its way, next to a
+  // spinner that never stops: settling has to wait for the first two only.
+  '/settle': `<!doctype html><title>Settle</title>
+    <style>
+      #panel { width: 200px; height: 100px; background: #f00; transform: translateX(-300px); transition: transform 800ms linear }
+      #panel.open { transform: none }
+      .spin { width: 20px; height: 20px; background: #00f; animation: spin 1s linear infinite }
+      @keyframes spin { to { transform: rotate(360deg) } }
+    </style>
+    <div class="spin"></div><div id="panel"></div>
+    <script>
+      requestAnimationFrame(() => requestAnimationFrame(() => document.getElementById('panel').classList.add('open')))
+      fetch('/api/slow').then((r) => r.text()).then((t) => document.body.insertAdjacentHTML('beforeend', '<p id="data">' + t + '</p>'))
+    </script>`,
+  '/poll': `<!doctype html><title>Poll</title><p>live</p><script>fetch('/api/hang')</script>`,
   '/spa': `<!doctype html><title>Spa</title>
     <button id="push" style="width:200px;height:40px" onclick="history.pushState({}, '', '/spa/two')">push</button>`,
 }
@@ -92,6 +107,11 @@ const server = createServer((request, response) => {
   if (path === '/report.csv') {
     response.writeHead(200, { 'content-type': 'text/csv', 'content-disposition': 'attachment; filename="report 1.csv"' })
     response.end('a,b\n1,2\n')
+    return
+  }
+  if (path === '/api/slow' || path === '/api/hang') {
+    const timer = setTimeout(() => response.end('data'), path === '/api/slow' ? 900 : 8000)
+    response.once('close', () => clearTimeout(timer))
     return
   }
   if (path === '/slow.png') {
@@ -428,6 +448,32 @@ async function run() {
   const reset = await host.emulate(emulator, tab.tabId, { reset: true }).catch((error) => error)
   const plain = await probe()
   check('reset restores the real viewport and user agent', plain.w === before.w && plain.ua === before.ua && plain.dpr === before.dpr, `${reset?.text ?? reset?.message} ${JSON.stringify(plain)}`)
+
+  // N: waiting for the page to settle, against real transitions and requests.
+  host.turnEnded(caller.sessionId)
+  const settler = { sessionId: caller.sessionId, turnId: 'turn-7' }
+  const moving = () => contents.executeJavaScript(
+    "({ data: !!document.getElementById('data'), transform: getComputedStyle(document.getElementById('panel')).transform })",
+  )
+  await host.navigate(settler, tab.tabId, `${origin}/settle`)
+  const idle = await host.waitForLoad(settler, tab.tabId, { timeoutMs: 10_000, until: 'networkidle' }).catch((error) => error)
+  const afterIdle = await moving()
+  check('networkidle waits out the slow request and the slide, not the spinner', /^The page was settled after \d+ms/.test(idle?.settle ?? '') && afterIdle.data && afterIdle.transform === 'none', `${idle?.settle ?? idle?.message} ${JSON.stringify(afterIdle)}`)
+  await host.navigate(settler, tab.tabId, `${origin}/settle`)
+  await host.waitForLoad(settler, tab.tabId, { timeoutMs: 5000 })
+  const early = await moving()
+  const settledShot = await host.screenshot(settler, tab.tabId).catch((error) => error)
+  const atShot = await moving()
+  const shotWaitMs = Number(/after (\d+)ms/.exec(settledShot?.settle ?? '')?.[1] ?? 0)
+  check('a screenshot right after load waits for the page to settle', !early.data && atShot.data && atShot.transform === 'none' && /^The page was settled/.test(settledShot?.settle ?? '') && shotWaitMs >= 500, `${settledShot?.settle ?? settledShot?.message} before=${JSON.stringify(early)}`)
+  const rushed = await host.screenshot(settler, tab.tabId, { settle: false }).catch((error) => error)
+  check('settle: false captures without waiting or reporting', rushed?.bytes !== undefined && rushed.settle === undefined, rushed?.message)
+  await host.navigate(settler, tab.tabId, `${origin}/poll`)
+  await host.waitForLoad(settler, tab.tabId, { timeoutMs: 5000 })
+  const started = Date.now()
+  const polled = await host.screenshot(settler, tab.tabId).catch((error) => error)
+  const pollMs = Date.now() - started
+  check('a long poll stops holding the page up and is named', /^The page was settled.*long-running request not waited for: 127\.0\.0\.1:\d+\/api\/hang/.test(polled?.settle ?? '') && pollMs < 3000, `${polled?.settle ?? polled?.message} in ${pollMs}ms`)
 
   host.dispose()
   tabs.dispose()

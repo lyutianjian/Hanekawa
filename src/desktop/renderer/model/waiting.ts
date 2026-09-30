@@ -4,6 +4,7 @@ import {
   type ActivityStep,
   type TranscriptEntry,
   type TranscriptItem,
+  type TurnPhase,
 } from './transcript.js'
 
 /**
@@ -20,13 +21,17 @@ import {
  * knows it is running (`liveGroupId`):
  *
  * - the row reads 「正在思考」 in the gap before the first step, and once a group
- *   is open, `groupActivityLabel`: the running tool's own name, or 「正在思考」
+ *   is open, `groupActivity`: what the running calls do, or 「正在思考」
  *   when nothing is running and the model is deciding.
+ * - a wait no record shows — an automatic compaction, a retry backoff — outranks
+ *   both (`phaseLabel`): the steps above it are not what the turn is doing.
  * - the live group's head stays quiet (「工作中 · 3 步」, no bead or clock) and
  *   seals to `groupHeaderLabel`'s 「已处理 …」 when the turn ends.
  *
  * Never a second voice beside a growing draft: if the transcript's last loose
  * item is visibly arriving, the row is withdrawn — the text itself is the status.
+ * A draft stops arriving once the model moves on to a tool call's arguments
+ * (`tool_input_delta`), which is a wait of its own.
  *
  * DOM-free, like every other `model/` unit: the clock lives in the view, and
  * `startedAt` is only carried through so a test can pin the contents without one.
@@ -50,6 +55,8 @@ export interface WaitingInput {
   readonly startedAt: number | undefined
   /** The turn whose records are arriving (`TranscriptState.turnId`). */
   readonly turnId: string | undefined
+  /** A wait no record shows (`TranscriptState.phase`); outranks what the steps say. */
+  readonly phase?: TurnPhase
 }
 
 export interface WaitingRow {
@@ -112,13 +119,33 @@ export function turnActivity(entries: readonly TranscriptEntry[], input: Waiting
   if (!input.isStreaming) return IDLE
   const group = liveGroup(entries, input.turnId)
   const liveGroupId = group?.turnId
+  if (input.phase) {
+    return { liveGroupId, row: { label: phaseLabel(input.phase), hint: WAITING_HINT, startedAt: input.startedAt, announce: true } }
+  }
   const last = entries[entries.length - 1]
   if (last !== undefined && last.kind === 'item' && isArriving(last.item)) return { liveGroupId, row: undefined }
-  const label = group === undefined ? WAITING_LABEL : groupActivityLabel(group)
+  const { label, awaiting } = group === undefined ? { label: WAITING_LABEL, awaiting: false } : groupActivity(group)
   return {
     liveGroupId,
-    row: { label, hint: WAITING_HINT, startedAt: input.startedAt, announce: group === undefined },
+    row: { label, hint: awaiting ? '' : WAITING_HINT, startedAt: input.startedAt, announce: group === undefined },
   }
+}
+
+const RETRY_REASONS: Record<Extract<TurnPhase, { kind: 'retrying' }>['reason'], string> = {
+  rate_limit: '请求被限流',
+  overload: '服务过载',
+  server_error: '服务端出错',
+  transient: '连接中断',
+  auth: '认证失败',
+  unknown: '请求失败',
+}
+
+/**
+ * 「正在压缩上下文」, or 「服务过载 · 第 2 次重试」. The attempt that failed is
+ * the retry's ordinal: attempt 1 failing is the first retry.
+ */
+export function phaseLabel(phase: TurnPhase): string {
+  return phase.kind === 'compacting' ? '正在压缩上下文' : `${RETRY_REASONS[phase.reason]} · 第 ${phase.attempt} 次重试`
 }
 
 function liveGroup(entries: readonly TranscriptEntry[], turnId: string | undefined): ActivityGroup | undefined {
@@ -132,33 +159,91 @@ function liveGroup(entries: readonly TranscriptEntry[], turnId: string | undefin
 }
 
 /**
- * The tail row's label while a group is open: the running tool's name, else
- * 「正在思考」.
+ * The tail row's label while a group is open: what the running calls do, in
+ * words — 「读取 waiting.ts」, 「运行 npm test」 — else 「正在思考」.
  *
- * The *name* only — not the call's arguments. A status that is read to find out
- * what is happening wants one word, and the command it ran is one line below,
- * on the step's own head, where it can be opened.
- *
- * The last pending action wins, because a batch's calls settle in order and the
- * one still open is the one being waited on. A pending *thinking* step is not an
- * action and needs no name of its own: 「正在思考」 is already what it would say.
+ * Calls that run together are said once: the same tool as a count
+ * (「读取 3 个文件」), a mix as the last one plus how many (「… 等 3 项」), the
+ * last because a batch settles in order and the one still open is the one
+ * being waited on. A call the user still has to allow outranks all of them —
+ * the turn is waiting on the reader, not on the tool — and drops the `Esc`
+ * hint, since the dialog owns that key then.
  */
-export function groupActivityLabel(group: ActivityGroup): string {
-  for (let index = group.steps.length - 1; index >= 0; index -= 1) {
-    const name = pendingActionName(group.steps[index]!)
-    if (name !== undefined) return name
-  }
-  return WAITING_LABEL
+export function groupActivity(group: ActivityGroup): { readonly label: string; readonly awaiting: boolean } {
+  const running = group.steps.filter(isRunningCall)
+  const waiting = running.filter((step) => step.tool.awaitingApproval === true).at(-1)
+  if (waiting) return { label: `等待确认 · ${callPhrase(waiting)}`, awaiting: true }
+  const last = running[running.length - 1]
+  if (last === undefined) return { label: WAITING_LABEL, awaiting: false }
+  if (running.length === 1) return { label: callPhrase(last), awaiting: false }
+  const plural = last.toolName !== undefined && running.every((step) => step.toolName === last.toolName)
+    ? PLURALS[last.toolName]
+    : undefined
+  return { label: plural ? `${plural[0]} ${running.length} ${plural[1]}` : `${callPhrase(last)} 等 ${running.length} 项`, awaiting: false }
 }
 
-function pendingActionName(step: ActivityStep): string | undefined {
-  if (step.kind === 'tool' || step.kind === 'task') {
-    if (step.pending !== true) return undefined
-    const name = step.tool.displayName.length > 0 ? step.tool.displayName : step.toolName
-    return name === undefined || name.length === 0 ? undefined : name
-  }
-  if (step.kind === 'subagent') return step.pending === true ? step.text : undefined
-  return undefined
+type RunningCall = Extract<ActivityStep, { kind: 'tool' | 'task' }>
+
+function isRunningCall(step: ActivityStep): step is RunningCall {
+  return (step.kind === 'tool' || step.kind === 'task') && step.pending === true
+}
+
+/** How each built-in reads as an activity: the verb, and which target it names. */
+const PHRASES: Record<string, { readonly verb: string; readonly target?: 'file' | 'text' }> = {
+  Read: { verb: '读取', target: 'file' },
+  Edit: { verb: '编辑', target: 'file' },
+  MultiEdit: { verb: '编辑', target: 'file' },
+  NotebookEdit: { verb: '编辑', target: 'text' },
+  Write: { verb: '写入', target: 'file' },
+  Delete: { verb: '删除', target: 'file' },
+  Grep: { verb: '搜索', target: 'text' },
+  Glob: { verb: '查找文件', target: 'text' },
+  Bash: { verb: '运行', target: 'text' },
+  BashOutput: { verb: '读取输出' },
+  KillShell: { verb: '结束进程' },
+  WebFetch: { verb: '抓取', target: 'text' },
+  WebSearch: { verb: '联网搜索', target: 'text' },
+  Browser: { verb: '浏览器', target: 'text' },
+  Skill: { verb: '使用技能', target: 'text' },
+  Agent: { verb: '子代理', target: 'text' },
+  SendMessage: { verb: '发送消息', target: 'text' },
+  AskUserQuestion: { verb: '等待回答' },
+  TodoWrite: { verb: '更新任务' },
+  TaskCreate: { verb: '更新任务' },
+  TaskUpdate: { verb: '更新任务' },
+  TaskList: { verb: '查看任务' },
+  TaskGet: { verb: '查看任务' },
+  EnterPlanMode: { verb: '进入计划模式' },
+  ExitPlanMode: { verb: '提交计划' },
+  Config: { verb: '修改设置' },
+}
+
+const PLURALS: Record<string, readonly [string, string]> = {
+  Read: ['读取', '个文件'],
+  Edit: ['编辑', '个文件'],
+  MultiEdit: ['编辑', '个文件'],
+  Write: ['写入', '个文件'],
+  Delete: ['删除', '个文件'],
+  Grep: ['搜索', '处'],
+  Glob: ['查找', '组文件'],
+  Bash: ['运行', '个命令'],
+  WebFetch: ['抓取', '个网页'],
+  WebSearch: ['联网搜索', '次'],
+  Agent: ['运行', '个子代理'],
+}
+
+const TARGET_MAX = 40
+
+function callPhrase(step: RunningCall): string {
+  const phrase = step.toolName === undefined ? undefined : PHRASES[step.toolName]
+  if (phrase === undefined) return `调用 ${step.tool.displayName || step.toolName || '工具'}`
+  if (phrase.target === undefined) return phrase.verb
+  // Grep and Glob caption as `pattern · glob · path`; the pattern is the target.
+  const raw = step.tool.description ?? step.tool.useSummary.split(' · ')[0] ?? ''
+  const oneLine = raw.replace(/\s+/g, ' ').trim()
+  const target = phrase.target === 'file' ? oneLine.split(/[\\/]/).pop()! : oneLine
+  if (target.length === 0) return phrase.verb
+  return `${phrase.verb}${step.toolName === 'Agent' ? ' · ' : ' '}${target.length > TARGET_MAX ? `${target.slice(0, TARGET_MAX - 1)}…` : target}`
 }
 
 /**

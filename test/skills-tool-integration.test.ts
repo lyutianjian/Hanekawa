@@ -126,6 +126,7 @@ test('Skill tool execution returns skill content', async () => {
     assert.equal(result.ok, true)
     assert.match(result.content, /Debug Workflow/)
     assert.match(result.content, /Reproduce/)
+    assert.ok(result.content.startsWith(`Base directory for this skill: ${path.join(skillsDir, 'debugging')}\n`))
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

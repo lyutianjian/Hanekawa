@@ -39,13 +39,16 @@ import type { SessionMeta } from '../../../sessions/service.js'
  * is already defined by the tab bar: one pane per session, so `open-pane`
  * focuses the window that has it or opens one.
  *
- * `background-tasks` peeks rather than kills. `killTask` is destructive and gets
- * no keyboard-adjacent affordance in this pass.
+ * `background-tasks` rows peek on Enter or click; stopping is a separate
+ * button that takes two presses (`arm-kill`, then `kill-task`), so no key and
+ * no stray click ends a process.
  */
 export type SurfaceAction =
   | { readonly kind: 'run-command'; readonly line: string }
   | { readonly kind: 'open-pane'; readonly sessionId: string }
   | { readonly kind: 'peek-task'; readonly taskId: string }
+  | { readonly kind: 'arm-kill'; readonly taskId: string }
+  | { readonly kind: 'kill-task'; readonly taskId: string }
 
 export interface SurfaceRow {
   readonly id: string
@@ -56,6 +59,8 @@ export interface SurfaceRow {
   readonly disabledReason?: string
   /** Absent on a disabled row, which is shown to explain itself, not to be picked. */
   readonly action?: SurfaceAction
+  /** A button at the row's end, reachable by pointer only. */
+  readonly secondary?: { readonly label: string; readonly action: SurfaceAction; readonly danger?: boolean }
 }
 
 export interface SurfaceView {
@@ -156,22 +161,61 @@ export function effortPickerView(input: {
   }
 }
 
-export function backgroundTasksView(tasks: readonly BackgroundTaskSnapshot[]): SurfaceView {
+const TASK_STATUS_LABELS: Record<BackgroundTaskSnapshot['status'], string> = {
+  running: '运行中',
+  completed: '已完成',
+  failed: '失败',
+  killed: '已结束',
+  orphaned: '已脱管',
+}
+
+/** Running shell processes — what the composer's chip counts. Agents have their own panel. */
+export function runningProcessCount(tasks: readonly BackgroundTaskSnapshot[]): number {
+  return tasks.filter((task) => task.kind === 'shell' && task.status === 'running').length
+}
+
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m${seconds % 60}s`
+  return `${Math.floor(minutes / 60)}h${minutes % 60}m`
+}
+
+/** Running first, then newest. `armedKillId` is the row whose stop button awaits its second press. */
+export function backgroundTasksView(
+  tasks: readonly BackgroundTaskSnapshot[],
+  now: number,
+  armedKillId?: string,
+): SurfaceView {
+  const sorted = [...tasks].sort((a, b) =>
+    Number(b.status === 'running') - Number(a.status === 'running') || b.startedAt - a.startedAt)
   return {
     surface: 'background-tasks',
     title: '后台任务',
-    rows: tasks.map((task) => ({
-      id: task.id,
-      label: task.kind === 'agent'
-        ? `${task.agentType ?? 'agent'}: ${task.description ?? task.agentId ?? task.id}`
-        : task.command ?? task.id,
-      detail: [
-        task.status,
-        task.exitCode !== undefined && task.exitCode !== null ? `exit ${task.exitCode}` : undefined,
-        task.unreadBytes > 0 ? `${task.unreadBytes} new bytes` : undefined,
-      ].filter((part): part is string => typeof part === 'string').join(' · '),
-      action: { kind: 'peek-task', taskId: task.id } as const,
-    })),
+    rows: sorted.map((task) => {
+      const running = task.status === 'running'
+      return {
+        id: task.id,
+        label: task.kind === 'agent'
+          ? `${task.agentType ?? 'agent'}: ${task.description ?? task.agentId ?? task.id}`
+          : task.command ?? task.id,
+        detail: [
+          TASK_STATUS_LABELS[task.status],
+          formatElapsed((task.finishedAt ?? now) - task.startedAt),
+          task.exitCode !== undefined && task.exitCode !== null ? `exit ${task.exitCode}` : undefined,
+          task.unreadBytes > 0 ? `${task.unreadBytes} 字节新输出` : undefined,
+        ].filter((part): part is string => typeof part === 'string').join(' · '),
+        action: { kind: 'peek-task', taskId: task.id } as const,
+        ...(running
+          ? {
+              secondary: armedKillId === task.id
+                ? { label: '确认结束', action: { kind: 'kill-task', taskId: task.id } as const, danger: true }
+                : { label: '结束', action: { kind: 'arm-kill', taskId: task.id } as const },
+            }
+          : {}),
+      }
+    }),
     emptyMessage: '没有后台任务。',
   }
 }

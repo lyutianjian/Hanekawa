@@ -473,3 +473,115 @@ test('click_at reaches the host with its point, and includeBounds reaches the sc
     includeBounds: true,
   })
 })
+
+function imageContext(): ToolContext {
+  const ref = makeImageAttachmentRef({ name: 'screenshot-x.test-abcd1234.png' })
+  const store: ImageAttachmentImporter = {
+    importImage: async () => ({
+      ok: true,
+      value: {
+        ref,
+        metadata: { originalWidth: 800, originalHeight: 600, sentWidth: ref.width, sentHeight: ref.height, localPath: '/tmp/shot.png' },
+        animated: false,
+      },
+    }),
+  }
+  return context({ imageAttachments: store, getSupportsImageInput: () => true })
+}
+
+test('a screenshot settles by default, says how it went, and can be told not to wait', async () => {
+  const { host, calls } = stubHost({
+    screenshot: async (...args: unknown[]) => {
+      calls.push({ method: 'screenshot', args })
+      return { bytes: Buffer.from([1]), name: 's.png', width: 800, height: 600, settle: 'The page was settled after 120ms.' }
+    },
+  })
+  const tool = createBrowserTool(host)
+  const shot = await run(tool, { operation: 'page.screenshot', tabId: 'tab-1' }, imageContext())
+  assert.match(shot.content, /settled after 120ms/)
+  await run(tool, normalizeToolInput('Browser', { operation: 'page.screenshot', tabId: 'tab-1', settle: 'false' }), imageContext())
+  assert.deepEqual(calls.map((call) => call.args[2]), [{ settle: true }, { settle: false }])
+
+  await run(tool, { operation: 'tab.wait_for_load', tabId: 'tab-1', until: 'networkidle' })
+  assert.equal(validateBrowserInput({ operation: 'tab.wait_for_load', tabId: 'tab-1', until: 'networkidle' }).ok, true)
+})
+
+test('a batch runs its steps in order, filling each missing tabId from the tab it opened', async () => {
+  const { host, calls } = stubHost({
+    createTab: async (...args: unknown[]) => {
+      calls.push({ method: 'createTab', args })
+      return { tabId: 'tab-new', url: 'https://x.test/', title: '', loading: true }
+    },
+  })
+  const tool = createBrowserTool(host)
+  const input = normalizeToolInput('Browser', {
+    operation: 'batch',
+    actions: [
+      { operation: 'browser.create_tab', url: 'https://x.test/' },
+      { operation: 'tab.wait_for_load', until: 'networkidle' },
+      { operation: 'page.scroll', direction: 'bottom' },
+      { operation: 'page.screenshot' },
+      { operation: 'tab.navigate', url: 'https://x.test/about' },
+      { operation: 'page.screenshot', settle: 'false' },
+    ],
+  })
+  const result = await run(tool, input, imageContext())
+  assert.equal(result.ok, true, result.content)
+  assert.deepEqual(calls.map((call) => call.method), ['createTab', 'waitForLoad', 'scroll', 'screenshot', 'navigate', 'screenshot'])
+  assert.ok(calls.slice(1).every((call) => call.args[1] === 'tab-new'))
+  assert.equal(result.images?.length, 2)
+  assert.match(result.content, /^\[1\/6\] browser\.create_tab: /)
+  assert.match(result.content, /\[Image 2: /)
+  assert.equal(tool.getActivityDescription?.(input), 'Running 6 browser steps')
+})
+
+test('a batch stops at the first failing step, keeps what ran, and says what was skipped', async () => {
+  const { host, calls } = stubHost({
+    click: async () => {
+      throw Object.assign(new Error('Covered by <div class="cookie">.'), { code: 'ELEMENT_COVERED' })
+    },
+  })
+  const result = await run(createBrowserTool(host), {
+    operation: 'batch',
+    tabId: 'tab-1',
+    steps: [
+      { operation: 'page.screenshot' },
+      { operation: 'page.click', selector: '#go' },
+      { operation: 'page.text.snapshot' },
+      { operation: 'page.screenshot' },
+    ],
+  }, imageContext())
+  assert.equal(result.ok, false)
+  assert.equal(result.images?.length, 1)
+  assert.match(result.content, /\[2\/4\] page\.click failed: Covered by/)
+  assert.match(result.content, /remaining 2 steps were not run/)
+  assert.deepEqual(calls.map((call) => call.method), ['screenshot'])
+})
+
+test('a batch is checked whole before anything runs', () => {
+  const bad = (steps: unknown[], tabId?: string) =>
+    validateBrowserInput({ operation: 'batch', steps, ...(tabId ? { tabId } : {}) })
+
+  const noTab = bad([{ operation: 'page.screenshot' }])
+  assert.equal(noTab.ok, false)
+  assert.match(noTab.errors[0]!.message, /steps\[0\] \(page\.screenshot\) needs a tabId/)
+
+  const typo = bad([{ operation: 'page.screenshot' }, { operation: 'page.click' }], 'tab-1')
+  assert.match(typo.errors[0]!.message, /^steps\[1\]: page\.click needs an element/)
+
+  assert.match(bad([{ operation: 'batch', steps: [] }]).errors[0]!.message, /cannot contain another batch/)
+  assert.match(
+    bad([{ operation: 'tab.navigate', url: 'https://a.test/' }, { operation: 'tab.navigate', url: 'https://b.test/' }], 't').errors[0]!.message,
+    /one host only.*a\.test, b\.test/,
+  )
+  assert.equal(bad([{ operation: 'tab.navigate', url: 'https://a.test/1' }, { operation: 'tab.navigate', url: 'https://a.test/2' }], 't').ok, true)
+})
+
+test('a batch is read-only, and concurrency safe, only when every step is', () => {
+  const tool = createBrowserTool(stubHost().host)
+  const reads = { operation: 'batch', tabId: 't', steps: [{ operation: 'page.screenshot' }, { operation: 'page.text.snapshot' }] }
+  const acts = { operation: 'batch', tabId: 't', steps: [{ operation: 'page.screenshot' }, { operation: 'page.scroll' }] }
+  assert.equal(tool.isConcurrencySafeInput?.(reads), true)
+  assert.equal(tool.isConcurrencySafeInput?.(acts), false)
+  assert.equal(tool.classifyRisk?.(acts, {} as never), 'normal')
+})

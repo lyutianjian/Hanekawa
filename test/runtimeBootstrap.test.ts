@@ -13,6 +13,7 @@ import type { McpServerConfig } from '../src/services/mcp/index.js'
 import { createSessionPane } from '../src/runtime/sessionWorkspace.js'
 import { refreshRuntimeSlot } from '../src/runtime/providerRuntime.js'
 import { localSettingsPath } from '../src/config/settings.js'
+import { resolveContextWindow } from '../src/runtime/createRuntime.js'
 
 // `config.json` lives in `~/.myagent` alone and `loadMergedSettings` layers a
 // shared `~/.myagent` beneath the project one, so every test needs its own home.
@@ -562,4 +563,11 @@ test('a server dropped from the settings loses its tools on reload', async () =>
   assert.deepEqual(host.mcp.failed, [], 'a server nobody configures any more is not a failure')
   assert.deepEqual(host.mcp.connected, [])
   await host.shutdown('test over')
+})
+
+test('a model without its own context window falls back to agent.contextManagement', () => {
+  const model = { provider: 'anthropic', model: 'claude-test' } as const
+  assert.equal(resolveContextWindow({ ...model, contextWindow: 1_000_000 }, { contextWindow: 64_000 }), 1_000_000)
+  assert.equal(resolveContextWindow(model, { contextWindow: 64_000 }), 64_000)
+  assert.equal(resolveContextWindow(model, undefined), 200_000)
 })

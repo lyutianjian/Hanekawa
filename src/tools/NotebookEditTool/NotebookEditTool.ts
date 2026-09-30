@@ -4,7 +4,7 @@ import { z } from 'zod/v3'
 import type { Tool, ToolContext, ToolResult } from '../../harness/types.js'
 import { requireFreshRead, readFileAndRemember } from '../fileState.js'
 import { assertParentNotSymlink, assertFileNotSymlink } from '../pathSafety.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { patchDetail } from '../editPatch.js'
 import { trackFileEdit } from '../trackFileEdit.js'
 import { DESCRIPTION } from './prompt.js'
@@ -143,7 +143,7 @@ export const notebookEditTool: Tool = {
   async execute(input, context) {
     const options = input as NotebookEditInput
     const editMode = options.edit_mode ?? 'replace'
-    const absolutePath = assertInsideCwd(context.cwd, options.notebook_path)
+    const absolutePath = resolveToolPath(context, options.notebook_path)
 
     // Validate extension (case-insensitive for Windows/macOS)
     if (!absolutePath.toLowerCase().endsWith('.ipynb')) {

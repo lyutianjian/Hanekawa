@@ -17,10 +17,7 @@
  * same tick and no caller has to learn a new contract. Only a burst — which is
  * to say, only streaming — is deferred, and then by one frame.
  *
- * The scheduler is a parameter so this file can be tested without a browser, and
- * its default has a `setTimeout` fallback because the renderer bundle is also
- * evaluated under `test/helpers/domStub.ts`, which has no
- * `requestAnimationFrame`.
+ * The scheduler is a parameter so this file can be tested without a fake clock.
  */
 
 /** Schedules `run` for the next frame and hands back the cancel for it. */
@@ -38,15 +35,15 @@ export interface Repaint {
   cancel(): void
 }
 
+/**
+ * A fixed ~30fps beat rather than `requestAnimationFrame`: streamed text reads
+ * just as smoothly, and a 120Hz display no longer quadruples the paint work of
+ * a turn. `turn-end` flushes, so the last chunk never waits out a beat.
+ */
+const STREAM_FRAME_MS = 33
+
 const defaultScheduler: Scheduler = (run) => {
-  const raf = (globalThis as { requestAnimationFrame?: (cb: () => void) => number }).requestAnimationFrame
-  if (typeof raf === 'function') {
-    const handle = raf(run)
-    const cancel = (globalThis as { cancelAnimationFrame?: (handle: number) => void }).cancelAnimationFrame
-    return () => cancel?.(handle)
-  }
-  // ~60fps, and the only path taken outside a browser.
-  const timer = setTimeout(run, 16)
+  const timer = setTimeout(run, STREAM_FRAME_MS)
   return () => clearTimeout(timer)
 }
 
@@ -60,7 +57,7 @@ export function createRepaint(paint: () => void, schedule: Scheduler = defaultSc
   /**
    * Closes the window and opens it again a frame later, painting once more if
    * anything asked in between. The window keeps re-arming while requests keep
-   * coming, so a stream that never pauses still paints at exactly frame rate.
+   * coming, so a stream that never pauses still paints at exactly the beat.
    */
   function openFrame(): void {
     closed = true

@@ -54,3 +54,5 @@ motion-evidence/
 # measure-api.ts spends real money against the configured provider.
 scripts/measure-perf.ts
 scripts/measure-api.ts
+
+/archive

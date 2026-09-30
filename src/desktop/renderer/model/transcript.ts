@@ -1,4 +1,4 @@
-import type { SessionRecord, SubagentTaskStatus, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
+import type { ModelStreamEvent, SessionRecord, SubagentTaskStatus, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
 import type { SessionEvent, SubagentActivity } from '../../../runtime/sessionController.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
@@ -149,6 +149,8 @@ export interface ToolStepDetail {
   readonly durationMs?: number
   /** The call has a `tool_use` record but no approval yet (§3). */
   readonly awaitingApproval?: boolean
+  /** `Bash` only: the model's own words for what the command does (`input.description`). */
+  readonly description?: string
   /** The Agent family: the task the parent handed the sub-agent (`input.task`). */
   readonly task?: string
   /** The Agent family: the sub-agent run's own facts (§6.2 Agent). */
@@ -298,7 +300,15 @@ export interface TranscriptState {
    * be reopened by the next request's first delta (§4.2).
    */
   readonly liveThinkingId?: string
+  /** A wait the loop announced that no record shows: a compaction or a retry backoff (`model/waiting.ts`). */
+  readonly phase?: TurnPhase
 }
+
+export type TurnPhase =
+  | { readonly kind: 'compacting' }
+  | { readonly kind: 'retrying'; readonly attempt: number; readonly reason: RetryReason }
+
+export type RetryReason = Extract<ModelStreamEvent, { type: 'retry' }>['reason']
 
 /** What the caller must act on outside the transcript itself. */
 export interface TranscriptOutcome {
@@ -465,6 +475,7 @@ export function applySessionEvent(
           isThinking: false,
           turnId: undefined,
           liveThinkingId: undefined,
+          phase: undefined,
         },
       }
     }
@@ -551,24 +562,51 @@ function applyStream(state: TranscriptState, event: Extract<SessionEvent, { type
         draftCount: (state.draftCount ?? 0) + (fresh ? 1 : 0),
       }
     }
+    case 'tool_input_delta':
+      // The text has stopped; the model is now writing a tool call's arguments,
+      // which can take as long as the file it is writing. The draft is no longer
+      // arriving, so the status row comes back (`model/waiting.ts`).
+      return settleDraft(state)
+    case 'retry':
+      // A stream that failed partway leaves its draft pending; settled, so the
+      // row can say the request is being sent again.
+      return { ...settleDraft(state), phase: { kind: 'retrying', attempt: event.attempt, reason: event.reason } }
+    case 'compact': {
+      if (event.phase === 'start') return { ...state, phase: { kind: 'compacting' } }
+      const { phase: _phase, ...rest } = state
+      return rest
+    }
     case 'thinking_delta':
       return appendThinking(state, event.thinking, now)
     case 'thinking_stop':
       return { ...state, isThinking: false, items: stampThinkingDuration(state, now) }
-    case 'message_start':
+    case 'message_start': {
       // One model request is one thinking segment (§4.2): a second request within
       // the turn — a tool round trip — closes the open segment and the next delta
       // opens a fresh one, which is exactly what replaying `thinkingBlocks` per
       // record produces. The previous draft has already been replaced by its
       // record; the filter only catches a request that produced no message at all.
+      // The response has begun, so a retry that was waiting for it is over.
+      const { phase, ...rest } = state
       return {
-        ...state,
+        ...rest,
+        ...(phase?.kind === 'compacting' ? { phase } : {}),
         items: closeThinkingSegments(state.items.filter((item) => item.id !== DRAFT_ID)),
         liveThinkingId: undefined,
       }
+    }
     default:
       return state
   }
+}
+
+function settleDraft(state: TranscriptState): TranscriptState {
+  const index = indexOfItem(state.items, DRAFT_ID)
+  if (index === -1 || state.items[index]!.pending !== true) return state
+  const items = [...state.items]
+  const { pending: _pending, ...settled } = items[index]!
+  items[index] = settled
+  return { ...state, items }
 }
 
 /**
@@ -819,6 +857,7 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         ...(context.approved?.has(record.id) === true ? {} : { awaitingApproval: true }),
         ...(dto ? { captioned: true } : {}),
         ...(record.tool === AGENT_TOOL ? agentTask(record.input) : {}),
+        ...(record.tool === 'Bash' ? bashDescription(record.input) : {}),
       }
       return [{
         id: record.id,
@@ -1166,6 +1205,11 @@ function searchCaption(tool: string, input: unknown): { displayName: string; use
     if (typeof value === 'string' && value.trim().length > 0 && value.trim() !== '.') parts.push(truncate(value.trim(), 60))
   }
   return { displayName: tool, useSummary: parts.join(' · ') }
+}
+
+function bashDescription(input: unknown): { description?: string } {
+  const value = typeof input === 'object' && input !== null ? (input as { description?: unknown }).description : undefined
+  return typeof value === 'string' && value.trim().length > 0 ? { description: value.trim() } : {}
 }
 
 function toolCallDetail(input: unknown): string {

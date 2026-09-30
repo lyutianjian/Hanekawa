@@ -836,8 +836,7 @@ export function createComposerView(els: {
         let shell = entryShells.get(entry.key)
         let row = entryRows.get(entry.key)
         if (shell && row) {
-          row.title = `${entry.label}：${entry.value}`
-          row.setAttribute('aria-label', row.title)
+          row.setAttribute('aria-label', `${entry.label}：${entry.value}`)
           row.querySelector('.chip-menu-value')!.textContent = entry.value
           return shell
         }
@@ -848,6 +847,9 @@ export function createComposerView(els: {
           `${entry.label}：${entry.value}`,
           () => openFlyout(entry.key),
         )
+        // No native tooltip: the row already shows both halves, and the OS
+        // tooltip landed on top of the flyout it had just opened.
+        row.removeAttribute('title')
         row.setAttribute('role', 'menuitem')
         row.setAttribute('aria-haspopup', 'listbox')
         row.setAttribute('aria-expanded', 'false')

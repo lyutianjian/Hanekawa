@@ -283,3 +283,22 @@ test('stream segments keep source keys and distinguish a growing tail from a clo
   assert.equal(parseMarkdownSegments('```ts\nlet a = 1\n```').at(-1)!.closed, true)
   assert.equal(parseMarkdownSegments('$$x^2$$').at(-1)!.closed, true)
 })
+
+test('a streamed draft lexed from its resume point matches a full parse at every chunk', () => {
+  const doc = [
+    '# Title\n\nIntro with **bold** and a [link](https://a.example).\n\n',
+    '- one\n- two\n\n  still two\n\n- three\n\nAfter the list.\n\n',
+    '```ts\nconst a = 1\n\nconst b = 2\n```\n\n    indented\n\n    still code\n\n',
+    '> quoted\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n$$x^2$$\n\n---\n\n',
+    'See [ref][r] here.\n\n[r]: https://r.example\n\nTail paragraph',
+  ].join('')
+  const prefixes = Array.from({ length: doc.length }, (_, index) => doc.slice(0, index + 1))
+  const fresh = prefixes.map((prefix) => {
+    resetMarkdownCache()
+    return parseMarkdownSegments(prefix)
+  })
+  resetMarkdownCache()
+  for (const [index, prefix] of prefixes.entries()) {
+    assert.deepEqual(parseMarkdownSegments(prefix), fresh[index], JSON.stringify(prefix))
+  }
+})

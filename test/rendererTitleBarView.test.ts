@@ -34,6 +34,7 @@ interface Rendered {
   readonly menuRequests: Array<string | undefined>
   render(view: TitleBarView): void
   root(): StubView
+  bar(): StubView
 }
 
 function viewOf(overrides: Partial<TitleBarView> = {}): TitleBarView {
@@ -64,7 +65,9 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     actions,
     menuRequests,
     render: (view) => dom.render(view),
-    root: () => stub.inspect(container),
+    // The rail and the menus live in the lead group; the browser rail follows the header slot.
+    root: () => stub.inspect(container).children[0]!,
+    bar: () => stub.inspect(container),
   }
 }
 
@@ -286,7 +289,7 @@ test('the browser rail sits at the far end and reports its state', (t) => {
 
   // Last child, because the panel it opens is on that side: a control for it
   // beside the sidebar's rail would point the wrong way.
-  const rail = r.root().children.at(-1)!
+  const rail = r.bar().children.at(-1)!
   assert.ok(rail.classes.includes('titlebar-rail-end'), 'the browser rail is the strip\'s last control')
   assert.equal(rail.attributes.get('aria-label'), '显示浏览器')
   assert.equal(rail.attributes.get('aria-pressed'), 'false')
@@ -295,7 +298,7 @@ test('the browser rail sits at the far end and reports its state', (t) => {
   assert.deepEqual(r.actions, ['toggle-browser'])
 
   r.render(viewOf({ browserOpen: true }))
-  const open = r.root().children.at(-1)!
+  const open = r.bar().children.at(-1)!
   assert.equal(open.attributes.get('aria-label'), '隐藏浏览器')
   assert.equal(open.attributes.get('aria-pressed'), 'true')
   assert.ok(open.classes.includes('open'))

@@ -325,6 +325,11 @@ export class AgentLoop {
    * run — `requestModel`, which resolves plan routing before the turn starts
    * too, not just once a request is in flight.
    */
+  /** The cheap model for side calls (naming, summaries): the compact route, else the primary. */
+  getSideModel(): ActiveModelRuntime {
+    return this.options.compactModel ?? this.modelState.primary
+  }
+
   getActiveModel(): Omit<ActiveModelRuntime, 'provider'> {
     const visibleModel = this.isPlanModelActive() ? this.modelState.primary : this.activeModel
     return {
@@ -667,6 +672,9 @@ export class AgentLoop {
         const useCachedTokenEstimate = !progressive.microCompacted && !progressive.snipped
         // An inheriting fork compacts only its own records: the parent prefix ahead
         // of them is sent unchanged, so its cache still hits.
+        // The summary is a model call of its own, often the longest wait in the
+        // turn; bracketed so a shell can say so while it runs.
+        let compacting = false
         const compactResult = await autoCompactIfNeeded({
           records: recordsBeforeCompact,
           provider: this.activeModel.provider,
@@ -695,8 +703,14 @@ export class AgentLoop {
             : {}),
           ...(signal ? { signal } : {}),
           appendRecord: (record) => this.appendRecord(record),
-          onBeforeCompact: (event) => this.runCompactHooks('preCompact', event, turnId, signal),
+          onBeforeCompact: (event) => {
+            compacting = true
+            this.options.onStreamEvent?.({ type: 'compact', phase: 'start' })
+            return this.runCompactHooks('preCompact', event, turnId, signal)
+          },
           onAfterCompact: (event) => this.runCompactHooks('postCompact', event, turnId, signal),
+        }).finally(() => {
+          if (compacting) this.options.onStreamEvent?.({ type: 'compact', phase: 'end' })
         })
         usage = addTokenUsage(usage, compactResult.usage)
         if (compactResult.compacted) {

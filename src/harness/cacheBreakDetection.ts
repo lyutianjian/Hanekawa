@@ -30,6 +30,7 @@ export type CacheBreakSource =
   | 'sdk'
   | 'compact'
   | 'tool_use_summary'
+  | 'session_title'
   | 'hook_agent'
   | 'hook_prompt'
   | 'side_question'
@@ -95,6 +96,10 @@ export function compactCacheSource(root?: string): CacheBreakSource {
 
 export function toolUseSummaryCacheSource(root?: string): CacheBreakSource {
   return bindRoot('tool_use_summary', root)
+}
+
+export function sessionTitleCacheSource(root?: string): CacheBreakSource {
+  return bindRoot('session_title', root)
 }
 
 /** One per fork run: concurrent forks must not share a cache-read baseline. */

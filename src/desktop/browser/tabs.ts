@@ -31,6 +31,7 @@ import type { WireBrowserRect, WireBrowserTabInfo } from '../shellProtocol.js'
 import { BrowserHostError } from './errors.js'
 import { faviconDataUrl } from './favicon.js'
 import { isInputActive } from './input.js'
+import { NetworkActivity, type NetworkState } from './network.js'
 
 export { BrowserHostError }
 
@@ -147,6 +148,7 @@ export class BrowserTabHost {
   private changePending = false
   private disposed = false
   private sessionWired = false
+  private readonly network = new NetworkActivity()
 
   // --- window lifetime -------------------------------------------------------
 
@@ -429,6 +431,14 @@ export class BrowserTabHost {
     }
   }
 
+  /** The tab's requests in flight, for the settle wait; see `network.ts`. */
+  networkOf(tabId: string): NetworkState {
+    const contents = this.tabs.get(tabId)?.view?.webContents
+    return contents === undefined || contents.isDestroyed()
+      ? { pending: [], quietMs: Infinity }
+      : this.network.state(contents.id)
+  }
+
   onChanged(listener: (tabs: WireBrowserTabInfo[]) => void): () => void {
     this.listeners.add(listener)
     return () => {
@@ -566,6 +576,20 @@ export class BrowserTabHost {
       callback(false)
     })
     ses.setPermissionCheckHandler(() => false)
+
+    // Every request the partition makes, counted per page for the settle wait.
+    // A WebSocket is a connection rather than a request and would never end.
+    ses.webRequest.onBeforeRequest((details, callback) => {
+      if (details.webContentsId !== undefined && details.resourceType !== 'webSocket') {
+        this.network.started(details.webContentsId, details.id, details.url)
+      }
+      callback({})
+    })
+    const ended = (details: { webContentsId?: number; id: number }): void => {
+      if (details.webContentsId !== undefined) this.network.ended(details.webContentsId, details.id)
+    }
+    ses.webRequest.onCompleted(ended)
+    ses.webRequest.onErrorOccurred(ended)
 
     // A download would otherwise open the system save dialog or land silently
     // in the default folder, and the agent would know about neither. It is
@@ -710,7 +734,9 @@ export class BrowserTabHost {
       this.emitChange()
     })
 
+    const contentsId = contents.id
     contents.on('destroyed', () => {
+      this.network.forget(contentsId)
       if (alive() && entry.view?.webContents === contents) entry.view = undefined
     })
   }

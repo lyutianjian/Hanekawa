@@ -15,8 +15,9 @@ import { createPresence } from './presence.js'
 /**
  * The frameless window's own title bar (5g).
  *
- * Left to right: the sidebar rail toggle, then 文件 / 视图 / 帮助, and — pushed to
- * the far end — the browser panel's rail toggle. The strip between them is empty. `dom/windowChrome.ts` reserves the native
+ * Left to right: the sidebar rail toggle and 文件 / 视图 / 帮助 (the lead group,
+ * as wide as the sidebar so what follows starts on the canvas's edge), then the
+ * canvas header, then the browser panel's rail toggle at the far end. `dom/windowChrome.ts` reserves the native
  * controls' measured space: left on macOS, normally right on Windows/Linux.
  *
  * The strip is `-webkit-app-region: drag`; every control in it is `no-drag`, or
@@ -40,6 +41,8 @@ export function createTitleBarView(
   onAction: (action: TitleBarAction) => void,
   /** Reports the menu the user opened or closed; `app.ts` owns the flag. */
   onOpenMenu: (id: string | undefined) => void,
+  /** The canvas header's host, owned by `canvasHeaderView.ts`; this view only places it. */
+  center?: HTMLElement,
 ): TitleBarDom {
   let openMenu: string | undefined
   let drawn: string | undefined
@@ -98,6 +101,7 @@ export function createTitleBarView(
   }
   let menuSource: readonly TitleBarMenu[] | undefined
   let menus: ReturnType<typeof menuNode>[] = []
+  const lead = el('div', 'titlebar-lead')
   const rail = button('titlebar-rail', '', '', () => onAction('toggle-sidebar'), { icon: 'sidebar' })
   // The browser's own rail, mirrored to the far end of the strip — the panel it
   // opens is on that side, and a control for it next to the sidebar's would
@@ -119,7 +123,8 @@ export function createTitleBarView(
         for (const entry of menus) entry.presence.dispose()
         menuSource = view.menus
         menus = view.menus.map(menuNode)
-        reconcile(container, [rail, ...menus.map((entry) => entry.shell), browserRail])
+        reconcile(lead, [rail, ...menus.map((entry) => entry.shell)])
+        reconcile(container, [lead, center, browserRail])
       }
       const chord = view.menus.flatMap((menu) => menu.items).find((item) => item.action === 'toggle-sidebar')?.chord
       rail.title = `${view.sidebarCollapsed ? '展开侧栏' : '收起侧栏'}${chord ? `（${chord}）` : ''}`

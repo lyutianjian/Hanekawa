@@ -66,8 +66,7 @@ import {
   readCurrentPlanFile as readCurrentPlanFileFromRuntime,
 } from '../../runtime/planFile.js'
 import type { EffortLevel } from '../../config/effort.js'
-import { getContextWindowForModel } from '../../prompts/budget.js'
-import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../../prompts/budget.js'
+import { resolveContextWindow } from '../../runtime/createRuntime.js'
 import { shouldRenderStatusLine } from '../statusLineVisibility.js'
 import { createQueueImageRebinder } from '../../runtime/attachmentHandoff.js'
 import { MessageQueue } from '../../runtime/messageQueue.js'
@@ -1389,12 +1388,9 @@ export function App({
           permissionMode={permissionMode}
           hintMessage={hintMessage}
           effortLevel={effortLevel}
-          contextWindow={runtime ? getContextWindowForModel(
-            {
-              ...providerConfig.get().agent.contextManagement,
-              contextWindow: runtime.modelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
-            },
-          ) : undefined}
+          contextWindow={runtime
+            ? resolveContextWindow(runtime.modelConfig, providerConfig.get().agent.contextManagement)
+            : undefined}
           backgroundTaskCount={backgroundTaskSnapshot.filter((task) => task.status === 'running').length}
         />
       )}

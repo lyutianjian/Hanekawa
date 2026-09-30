@@ -115,12 +115,25 @@ function extractUrl(input: unknown): string {
  */
 const HOST_SCOPED_TOOLS: Record<string, (input: unknown) => string> = {
   WebFetch: extractUrl,
-  Browser: (input) => {
-    if (!input || typeof input !== 'object') return ''
-    const operation = (input as { operation?: unknown }).operation
-    if (operation !== 'tab.navigate' && operation !== 'browser.create_tab') return ''
-    return extractUrl(input)
-  },
+  Browser: browserNavigationUrl,
+}
+
+/**
+ * A `batch` asks about the URL of its first navigating step: validation, which
+ * runs before permission, refuses a batch whose navigations span two hosts.
+ */
+function browserNavigationUrl(input: unknown): string {
+  if (!input || typeof input !== 'object') return ''
+  const { operation, steps } = input as { operation?: unknown; steps?: unknown }
+  if (operation === 'batch' && Array.isArray(steps)) {
+    for (const step of steps) {
+      const url = browserNavigationUrl(step)
+      if (url) return url
+    }
+    return ''
+  }
+  if (operation !== 'tab.navigate' && operation !== 'browser.create_tab') return ''
+  return extractUrl(input)
 }
 
 function hostScopedUrl(toolName: string, input: unknown): string {

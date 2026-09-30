@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { toolToAPISchema } from '../src/harness/toolApiSchema.js'
 import { CommandRegistry } from '../src/commands/index.js'
 import { buildSkillCommandPrompt, buildSkillPrompt, registerSkillCommands } from '../src/commands/skills.js'
-import { SkillsService } from '../src/services/skills/skillsService.js'
+import { SkillsService, withSkillDir } from '../src/services/skills/skillsService.js'
 import { importSkill } from '../src/services/skills/importSkill.js'
 import { createSkillTool } from '../src/tools/SkillTool/SkillTool.js'
 import { localSettingsPath } from '../src/config/settings.js'
@@ -434,8 +434,9 @@ test('createSkillTool() execute returns skill content', async () => {
     const result = await tool.execute({ skill: 'debugging' }, context)
 
     assert.equal(result.ok, true)
-    assert.equal(result.content, 'Debug workflow content')
-    assert.equal(context.invokedSkills.get('debugging')?.content, 'Debug workflow content')
+    const expected = withSkillDir(path.join(skillsDir, 'debugging'), 'Debug workflow content')
+    assert.equal(result.content, expected)
+    assert.equal(context.invokedSkills.get('debugging')?.content, expected)
     assert.equal(typeof context.invokedSkills.get('debugging')?.timestamp, 'number')
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -532,7 +533,7 @@ test('buildSkillCommandPrompt expands inline shell before applying arguments', a
   })
 
   assert.deepEqual(commands, ['echo ready'])
-  assert.equal(prompt, 'Shell: ready\nArgs: hello !`do not run`')
+  assert.equal(prompt, withSkillDir(process.cwd(), 'Shell: ready\nArgs: hello !`do not run`'))
 })
 
 test('buildSkillCommandPrompt rejects failed inline shell and does not continue', async () => {
@@ -580,7 +581,7 @@ test('registerSkillCommands registers disk skills as slash commands', async () =
     })
 
     assert.deepEqual(submitted, [{
-      input: 'Prompt: hello world',
+      input: withSkillDir(path.join(skillsDir, 'slash-runner'), 'Prompt: hello world'),
       options: {
         skillName: 'slash-runner',
         skillArgs: 'hello world',
@@ -620,7 +621,7 @@ test('registered skill command display input omits trailing space without args',
     })
 
     assert.deepEqual(submitted, [{
-      input: 'Prompt body',
+      input: withSkillDir(path.join(skillsDir, 'slash-display'), 'Prompt body'),
       options: {
         skillName: 'slash-display',
         skillArgs: '',
@@ -678,7 +679,7 @@ test('registered skill command submits rich execution options', async () => {
     })
 
     assert.deepEqual(shellCommands, ['echo shell'])
-    assert.equal(submitted[0]?.input, 'Prompt: shell-output hello world')
+    assert.equal(submitted[0]?.input, withSkillDir(path.join(skillsDir, 'slash-rich'), 'Prompt: shell-output hello world'))
     assert.deepEqual(submitted[0]?.options, {
       allowedTools: ['Read', 'Bash'],
       model: 'powerful',

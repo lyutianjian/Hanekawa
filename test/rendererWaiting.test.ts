@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { groupTranscript, type TranscriptItem } from '../src/desktop/renderer/model/transcript.js'
 import {
-  groupActivityLabel,
+  applySessionEvent,
+  createTranscriptState,
+  groupTranscript,
+  type TranscriptItem,
+} from '../src/desktop/renderer/model/transcript.js'
+import {
+  groupActivity,
   turnActivity,
   waitingElapsedLabel,
   WAITING_CLOCK_AFTER_MS,
@@ -37,7 +42,7 @@ const RUNNING_BASH: TranscriptItem = {
   toolName: 'Bash',
   pending: true,
   turnId: TURN,
-  tool: { displayName: 'Bash', useSummary: 'npm run test -- --reporter dot' },
+  tool: { displayName: 'Bash', useSummary: 'npm run test -- --reporter dot', description: '跑测试' },
 }
 const DONE_BASH: TranscriptItem = { ...RUNNING_BASH, pending: false, tool: { ...RUNNING_BASH.tool!, durationMs: 12 } }
 
@@ -79,7 +84,7 @@ test('the group stays live between steps, where the group itself reads “done�
   const between = activity(group([THINKING, DONE_BASH]))
   assert.equal(between.liveGroupId, TURN)
   assert.equal(between.row?.label, '正在思考')
-  assert.equal(activity(group([THINKING, RUNNING_BASH])).row?.label, 'Bash')
+  assert.equal(activity(group([THINKING, RUNNING_BASH])).row?.label, '运行 跑测试')
 })
 
 test('a group from an earlier turn is never lit up by the next one', () => {
@@ -98,22 +103,61 @@ test('an interrupted turn is not live: its own head already says 已中断', () 
   assert.equal(activity(group([DONE_BASH, interrupted])).liveGroupId, undefined)
 })
 
-test('the row reads the running tool’s name, and 正在思考 in between', () => {
-  const groupOf = (items: readonly TranscriptItem[]) => {
-    const entry = groupTranscript(items).find((one) => one.kind === 'group')
+test('the row says what the running calls do, and 正在思考 in between', () => {
+  const label = (steps: readonly TranscriptItem[]) => {
+    const entry = groupTranscript(group(steps)).find((one) => one.kind === 'group')
     assert.ok(entry?.kind === 'group')
-    return entry.group
+    return groupActivity(entry.group)
   }
-  // The name only. The command it ran is one line below, on the step's own head,
-  // where it can be opened — a head read to find out what is happening wants one
-  // word, not a shell line.
-  assert.equal(groupActivityLabel(groupOf(group([THINKING, RUNNING_BASH]))), 'Bash')
-  assert.equal(groupActivityLabel(groupOf(group([THINKING, DONE_BASH]))), '正在思考')
-  assert.equal(groupActivityLabel(groupOf(group([THINKING]))), '正在思考')
-  // The last pending action wins: a batch settles in order, and the one still
-  // open is the one being waited on.
-  const second: TranscriptItem = { ...RUNNING_BASH, id: 'call-2', toolName: 'Read', tool: { displayName: 'Read', useSummary: 'a.ts' } }
-  assert.equal(groupActivityLabel(groupOf(group([RUNNING_BASH, second]))), 'Read')
+  const read = (id: string, path: string): TranscriptItem =>
+    ({ ...RUNNING_BASH, id, toolName: 'Read', tool: { displayName: 'Read', useSummary: path } })
+  assert.equal(label([THINKING, RUNNING_BASH]).label, '运行 跑测试')
+  assert.equal(label([THINKING, DONE_BASH]).label, '正在思考')
+  assert.equal(label([read('r1', '/repo/src/model/waiting.ts')]).label, '读取 waiting.ts')
+  // Same tool in parallel is counted; a mix names the last one still open.
+  assert.equal(label([read('r1', 'a.ts'), read('r2', 'b.ts'), read('r3', 'c.ts')]).label, '读取 3 个文件')
+  assert.equal(label([RUNNING_BASH, read('r1', 'a.ts')]).label, '读取 a.ts 等 2 项')
+  // Unknown tools fall back to their name; long targets are cut to one short line.
+  const mcp: TranscriptItem = { ...RUNNING_BASH, id: 'm', toolName: 'mcp__x__y', tool: { displayName: 'x - y', useSummary: '' } }
+  assert.equal(label([mcp]).label, '调用 x - y')
+  const long: TranscriptItem = { ...RUNNING_BASH, id: 'l', tool: { displayName: 'Bash', useSummary: `echo ${'x'.repeat(80)}\nls` } }
+  assert.ok(label([long]).label.endsWith('…') && !label([long]).label.includes('\n'))
+})
+
+test('a call waiting for approval outranks the rest and drops the Esc hint', () => {
+  const asking: TranscriptItem = { ...RUNNING_BASH, id: 'w', toolName: 'Write', tool: { displayName: 'Write', useSummary: 'src/a.ts', awaitingApproval: true } }
+  const row = activity(group([asking, RUNNING_BASH])).row
+  assert.equal(row?.label, '等待确认 · 写入 a.ts')
+  assert.equal(row?.hint, '')
+})
+
+test('a draft that has moved on to a tool call’s arguments brings the row back', () => {
+  let state = createTranscriptState()
+  const apply = (event: Parameters<typeof applySessionEvent>[1]) => { state = applySessionEvent(state, event).state }
+  apply({ type: 'stream', event: { type: 'text_delta', text: '先读一下文件' } })
+  assert.equal(activity([USER, ...state.items], true, undefined).row, undefined)
+  apply({ type: 'stream', event: { type: 'tool_input_delta', partialJson: '{"file' } })
+  assert.equal(activity([USER, ...state.items], true, undefined).row?.label, '正在思考')
+})
+
+test('a retry backoff and a compaction take the row until they are over', () => {
+  let state = createTranscriptState()
+  const apply = (event: Parameters<typeof applySessionEvent>[1]) => { state = applySessionEvent(state, event).state }
+  const label = () => turnActivity(groupTranscript([USER, ...state.items]), {
+    isStreaming: true, startedAt: STARTED_AT, turnId: undefined, ...(state.phase ? { phase: state.phase } : {}),
+  }).row?.label
+
+  apply({ type: 'stream', event: { type: 'compact', phase: 'start' } })
+  assert.equal(label(), '正在压缩上下文')
+  apply({ type: 'stream', event: { type: 'compact', phase: 'end' } })
+  assert.equal(label(), '正在思考')
+
+  // A stream that broke partway: its draft stops arriving, so the row returns.
+  apply({ type: 'stream', event: { type: 'text_delta', text: '先读' } })
+  apply({ type: 'stream', event: { type: 'retry', attempt: 2, reason: 'overload', delayMs: 2000 } })
+  assert.equal(label(), '服务过载 · 第 2 次重试')
+  apply({ type: 'stream', event: { type: 'message_start' } })
+  assert.equal(state.phase, undefined)
 })
 
 test('the clock is carried through, missing and all', () => {

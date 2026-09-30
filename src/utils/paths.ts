@@ -181,24 +181,21 @@ export function getProjectPlansDir(cwd: string): string {
 }
 
 /**
- * The file tools' path guard: `assertInsideCwd`, plus the two places outside
- * the project the model is *told* to use — this session's spilled tool output
- * (the preview hands it the path to Read) and the project's plan files (plan
- * mode has it Write them). Nothing else under `~/.myagent` is reachable, the
+ * The file tools' path guard. The workspace boundary is not decided here: the
+ * risk classifier grades a path outside it and the permission gate rules on
+ * that grade, as it does for Bash. The one hard wall is Hanekawa's own
+ * `~/.myagent` — only the two places there the model is *told* to use stay
+ * reachable: this session's spilled tool output (the preview hands it the path
+ * to Read) and the project's plan files (plan mode has it Write them). The
  * session transcripts least of all.
  */
 export function resolveToolPath(context: { cwd: string; sessionId?: string }, filePath: string): string {
-  try {
-    return assertInsideCwd(context.cwd, filePath)
-  } catch (error) {
-    const absolute = path.resolve(context.cwd, filePath)
-    const roots = [getProjectPlansDir(context.cwd)]
-    if (context.sessionId) roots.push(getToolResultSpillDir(context.cwd, context.sessionId))
-    for (const root of roots) {
-      if (isUnderRoot(root, absolute)) return absolute
-    }
-    throw error
-  }
+  const absolute = path.resolve(context.cwd, filePath)
+  if (!isUnderRoot(getGlobalMyAgentDir(), absolute)) return absolute
+  const roots = [getProjectPlansDir(context.cwd)]
+  if (context.sessionId) roots.push(getToolResultSpillDir(context.cwd, context.sessionId))
+  if (roots.some((root) => isUnderRoot(root, absolute))) return absolute
+  throw new Error(`Path "${filePath}" is inside Hanekawa's runtime data (~/.myagent), which file tools cannot reach`)
 }
 
 function isUnderRoot(root: string, absolute: string): boolean {

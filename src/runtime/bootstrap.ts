@@ -294,7 +294,7 @@ export async function bootstrap(options: BootstrapOptions): Promise<RuntimeHost>
   const contextManagement = config.get().agent.contextManagement
   const isGitRepo = existsSync(join(cwd, '.git'))
 
-  const createActiveModelRuntime = createActiveModelRuntimeFactory(config)
+  const createActiveModelRuntime = createActiveModelRuntimeFactory(config, contextManagement)
 
   const scopeDeps: SessionScopeDeps = {
     cwd,

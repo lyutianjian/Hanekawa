@@ -45,6 +45,14 @@ function createModelProvider(modelKey: string, modelConfig: ModelConfig) {
   return provider
 }
 
+/** The model's own window, else the global default from `agent.contextManagement`. */
+export function resolveContextWindow(
+  model: ModelConfig,
+  contextManagement: Partial<ContextManagementConfig> | undefined,
+): number {
+  return model.contextWindow ?? contextManagement?.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT
+}
+
 /**
  * Resolves a model key into the provider/model pair the loop runs on.
  * Re-reads `config` on every call, so `/provider` edits take effect without
@@ -52,6 +60,7 @@ function createModelProvider(modelKey: string, modelConfig: ModelConfig) {
  */
 export function createActiveModelRuntimeFactory(
   config: ConfigService,
+  contextManagement?: Partial<ContextManagementConfig>,
 ): (modelKey: string) => ActiveModelRuntime {
   return (modelKey: string): ActiveModelRuntime => {
     const targetModelConfig = config.getModel(modelKey)
@@ -63,7 +72,7 @@ export function createActiveModelRuntimeFactory(
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,
-      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
+      contextWindow: resolveContextWindow(targetModelConfig, contextManagement),
       providerName: targetProvider.name,
       promptCacheRetention: targetModelConfig.promptCacheRetention,
       supportsImageInput: resolveImageCapability(targetModelConfig),
@@ -228,7 +237,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,
-      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
+      contextWindow: resolveContextWindow(targetModelConfig, contextManagement),
       providerName: targetProvider.name,
       promptCacheRetention: targetModelConfig.promptCacheRetention,
       supportsImageInput: resolveImageCapability(targetModelConfig),
@@ -288,7 +297,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,
-      contextWindow: targetModelConfig.contextWindow ?? MODEL_CONTEXT_WINDOW_DEFAULT,
+      contextWindow: resolveContextWindow(targetModelConfig, contextManagement),
       tools: runtimeTools,
       contextBuilder: new ContextBuilder(undefined, contextManagement, promptSections),
       toolRunner: runtimeToolRunner,

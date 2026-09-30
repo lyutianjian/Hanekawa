@@ -1,6 +1,6 @@
 import { z } from 'zod/v3'
 import type { Tool } from '../../harness/types.js'
-import { SkillsService } from '../../services/skills/skillsService.js'
+import { SkillsService, withSkillDir } from '../../services/skills/skillsService.js'
 import { evictOldestIfNeeded } from '../../utils/cache.js'
 import { DESCRIPTION } from './prompt.js'
 
@@ -34,15 +34,16 @@ export function createSkillTool(): Tool {
       const parsed = parseSkillInput(input)
       const service = new SkillsService(context.cwd)
       const skill = await service.load(parsed.skill)
+      const skillContent = withSkillDir(skill.skillDir, skill.content)
       context.invokedSkills ??= new Map()
       evictOldestIfNeeded(context.invokedSkills, 50)
       context.invokedSkills.set(skill.name, {
-        content: skill.content,
+        content: skillContent,
         timestamp: Date.now(),
       })
       const content = parsed.args
-        ? `${skill.content}\n\nArguments: ${parsed.args}`
-        : skill.content
+        ? `${skillContent}\n\nArguments: ${parsed.args}`
+        : skillContent
       return {
         ok: true,
         content,

@@ -381,7 +381,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--ease-standard': 'cubic-bezier(0.22, 0, 0.22, 1)',
       '--ease-exit': 'cubic-bezier(0.4, 0, 1, 1)',
       '--reading-measure': '980px',
-      '--reading-gutter': '40px',
+      '--reading-gutter': 'clamp(16px, 4cqi, 40px)',
       '--composer-overhang': '16px',
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
@@ -494,7 +494,7 @@ test('the palette is the one that was agreed, value for value', () => {
       '--ease-standard': 'cubic-bezier(0.22, 0, 0.22, 1)',
       '--ease-exit': 'cubic-bezier(0.4, 0, 1, 1)',
       '--reading-measure': '980px',
-      '--reading-gutter': '40px',
+      '--reading-gutter': 'clamp(16px, 4cqi, 40px)',
       '--composer-overhang': '16px',
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
@@ -1620,13 +1620,14 @@ test('the bead is the tool step\'s whole status vocabulary, and it stays flat', 
 
 test('running signals stay readable, and completion never scales', () => {
   const source = stripComments(css)
-  assert.match(blockFor('.waiting-bead').decls.find((decl) => decl.prop === 'animation')!.value, /^breathe /)
-  // The tail row's words carry the thinking row's sheen, over secondary text so
+  assert.match(blockFor('.waiting-bead').decls.find((decl) => decl.prop === 'animation')!.value, /^waiting-breathe /)
+  // The tail row's words carry the thinking row's sheen, over tertiary text so
   // every frame stays readable.
-  const label = blockFor('.waiting-label')
-  assert.match(label.decls.find((decl) => decl.prop === 'animation')!.value, /^label-sheen /)
-  assert.ok(declares(label, 'background-clip', 'text'))
-  assert.match(label.decls.find((decl) => decl.prop === 'background')!.value, /var\(--text-secondary\)/)
+  assert.ok(declares(blockFor('.waiting-label'), 'color', 'var(--text-tertiary)'))
+  assert.match(blockFor('.waiting-sheen').decls.find((decl) => decl.prop === 'animation')!.value, /^label-sheen /)
+  assert.ok(declares(blockFor('.waiting-sheen::after'), 'color', 'var(--text-primary)'))
+  // Every sheen runs on the compositor: a painted property would repaint per frame.
+  assert.doesNotMatch(source, /@keyframes[^{]*\{[^@]*background-position/)
   assert.doesNotMatch(source, /\.waiting-bead::after|@keyframes (?:halo|sweep)\b/)
   assert.doesNotMatch(source, /\.thinking-header\s*\{[^}]*animation:/)
   for (const name of ['breathe', 'blink']) {
@@ -1887,7 +1888,8 @@ test('motion comes from the tokens, and the things that rebuild themselves have 
 
   // The three entrance keyframes travel one distance and arrive from one scale.
   // The parser flattens `@keyframes`, so its `from` steps come through as blocks
-  // named `from` — every one of them that moves is one of these three.
+  // named `from` — every one of them that moves is one of these three. The
+  // looping sweeps (the sheens) start at `0%` so they stay out of this count.
   let entranceSteps = 0
   for (const block of blocks) {
     if (block.selector !== 'from') continue

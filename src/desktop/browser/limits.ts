@@ -96,3 +96,21 @@ export const INTERACTIVE_SELECTOR =
  * idle tab hands the channel back before the user reaches for DevTools.
  */
 export const CDP_IDLE_DETACH_MS = 30_000
+
+/**
+ * Waiting for the page to stop moving before a screenshot or a press.
+ *
+ * Both caps are short on purpose: settling is a courtesy, not a condition. A
+ * page that never goes quiet (analytics beacons, a ticking clock) still gets
+ * its picture taken — with a line saying what was still moving — rather than a
+ * timeout the model has to route around.
+ */
+export const SETTLE_SCREENSHOT_MS = 3000
+export const SETTLE_ACTION_MS = 1500
+/** How long the network must have had nothing starting or finishing. */
+export const NETWORK_QUIET_MS = 500
+/**
+ * A request older than this is taken for a stream or a long poll and no longer
+ * holds the page up: it may never finish, and waiting on it is waiting forever.
+ */
+export const LONG_REQUEST_MS = 2000

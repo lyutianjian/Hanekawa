@@ -47,6 +47,64 @@ const EDIT_ITEM_SPEC: AliasSpec = {
   booleans: ['replaceAll'],
 }
 
+// The published `Browser` schema is flat (see `BrowserTool/schema.ts`), so
+// the model has no per-operation shape to copy and reaches for the names it
+// knows from other browser tools instead. A batch's steps are Browser calls,
+// so they get the same forgiveness.
+const BROWSER_SPEC: AliasSpec = {
+  rename: {
+    action: 'operation',
+    // A batch's list, by the name other tools give it.
+    actions: 'steps',
+    tab_id: 'tabId',
+    tabID: 'tabId',
+    timeout_ms: 'timeoutMs',
+    timeout: 'timeoutMs',
+    max_chars: 'maxChars',
+    interactive_only: 'interactiveOnly',
+    visible_only: 'visibleOnly',
+    include_bounds: 'includeBounds',
+    // `selector` is a real parameter as of the input operations, so it is no
+    // longer folded onto `scope`: the two mean different things now — what to
+    // act on versus what to restrict a scan to.
+    element: 'ref',
+    element_ref: 'ref',
+    click_count: 'clickCount',
+    press_enter: 'submit',
+    key: 'keys',
+    url_match: 'urlMatch',
+    stable_for_ms: 'stableForMs',
+    // Playwright's name for the load state a navigation waits on.
+    waitUntil: 'until',
+    wait_until: 'until',
+    device_scale_factor: 'deviceScaleFactor',
+    user_agent: 'userAgent',
+    device: 'preset',
+  },
+  // Operation names the model brings from other browser tools, which have
+  // no `tab.` namespace.
+  values: {
+    operation: {
+      back: 'tab.go_back',
+      go_back: 'tab.go_back',
+      'tab.back': 'tab.go_back',
+      forward: 'tab.go_forward',
+      go_forward: 'tab.go_forward',
+      'tab.forward': 'tab.go_forward',
+      reload: 'tab.reload',
+      refresh: 'tab.reload',
+      'tab.refresh': 'tab.reload',
+      hover: 'page.hover',
+      click_at: 'page.click_at',
+      'page.clickAt': 'page.click_at',
+      emulate: 'tab.emulate',
+    },
+  },
+  arrays: ['keys'],
+  numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs', 'x', 'y', 'width', 'height', 'deviceScaleFactor'],
+  booleans: ['interactiveOnly', 'visibleOnly', 'includeBounds', 'clear', 'submit', 'checked', 'mobile', 'reset', 'settle'],
+}
+
 const SPECS: Record<string, AliasSpec> = {
   Read: {
     rename: { ...FILE_PATH_ALIASES },
@@ -102,60 +160,7 @@ const SPECS: Record<string, AliasSpec> = {
   Glob: {
     rename: { file_pattern: 'pattern' },
   },
-  // The published `Browser` schema is flat (see `BrowserTool/schema.ts`), so
-  // the model has no per-operation shape to copy and reaches for the names it
-  // knows from other browser tools instead.
-  Browser: {
-    rename: {
-      action: 'operation',
-      tab_id: 'tabId',
-      tabID: 'tabId',
-      timeout_ms: 'timeoutMs',
-      timeout: 'timeoutMs',
-      max_chars: 'maxChars',
-      interactive_only: 'interactiveOnly',
-      visible_only: 'visibleOnly',
-      include_bounds: 'includeBounds',
-      // `selector` is a real parameter as of the input operations, so it is no
-      // longer folded onto `scope`: the two mean different things now — what to
-      // act on versus what to restrict a scan to.
-      element: 'ref',
-      element_ref: 'ref',
-      click_count: 'clickCount',
-      press_enter: 'submit',
-      key: 'keys',
-      url_match: 'urlMatch',
-      stable_for_ms: 'stableForMs',
-      // Playwright's name for the load state a navigation waits on.
-      waitUntil: 'until',
-      wait_until: 'until',
-      device_scale_factor: 'deviceScaleFactor',
-      user_agent: 'userAgent',
-      device: 'preset',
-    },
-    // Operation names the model brings from other browser tools, which have
-    // no `tab.` namespace.
-    values: {
-      operation: {
-        back: 'tab.go_back',
-        go_back: 'tab.go_back',
-        'tab.back': 'tab.go_back',
-        forward: 'tab.go_forward',
-        go_forward: 'tab.go_forward',
-        'tab.forward': 'tab.go_forward',
-        reload: 'tab.reload',
-        refresh: 'tab.reload',
-        'tab.refresh': 'tab.reload',
-        hover: 'page.hover',
-        click_at: 'page.click_at',
-        'page.clickAt': 'page.click_at',
-        emulate: 'tab.emulate',
-      },
-    },
-    arrays: ['keys'],
-    numbers: ['timeoutMs', 'maxChars', 'limit', 'clickCount', 'amount', 'index', 'stableForMs', 'x', 'y', 'width', 'height', 'deviceScaleFactor'],
-    booleans: ['interactiveOnly', 'visibleOnly', 'includeBounds', 'clear', 'submit', 'checked', 'mobile', 'reset'],
-  },
+  Browser: { ...BROWSER_SPEC, nested: { key: 'steps', spec: BROWSER_SPEC } },
 }
 
 const NUMERIC_LITERAL = /^-?\d+(\.\d+)?$/

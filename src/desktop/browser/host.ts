@@ -29,6 +29,7 @@ import type {
   BrowserHost,
   BrowserPressKeyRequest,
   BrowserScreenshot,
+  BrowserScreenshotRequest,
   BrowserScrollRequest,
   BrowserSelectRequest,
   BrowserSetCheckedRequest,
@@ -60,10 +61,11 @@ import {
   typeText,
   type InputDeps,
 } from './input.js'
-import { SCREENSHOT_TIMEOUT_MS } from './limits.js'
+import { SCREENSHOT_TIMEOUT_MS, SETTLE_ACTION_MS, SETTLE_SCREENSHOT_MS, WAIT_POLL_INTERVAL_MS } from './limits.js'
 import { BrowserOwnership } from './ownership.js'
 import { BrowserProjection } from './projection.js'
 import type { BrowserPage, BrowserTabHost } from './tabs.js'
+import { describeSettle, waitForSettle, type SettleReport } from './settle.js'
 import { waitForCondition } from './wait.js'
 
 /** How often a wait re-asks. Short enough to feel immediate, long enough to idle. */
@@ -204,7 +206,11 @@ export class DesktopBrowserHost implements BrowserHost {
             `The page refused to be left (it may hold unsaved input), so the navigation did not happen and the tab still shows ${row.url || '(blank)'}. Ask the user before retrying.`,
           )
         }
-        return toState(row)
+        if (until !== 'networkidle' || row.error !== undefined) return toState(row)
+        // The rest of the caller's budget, not a fresh cap: they asked for one timeout.
+        const remaining = Math.max(WAIT_POLL_INTERVAL_MS, deadline - performance.now())
+        const report = await this.settle(tabId, check, remaining)
+        return { ...toState(this.requireTab(caller, tabId)), settle: describeSettle(report) }
       }
       // The DOM is parsed, and that is all a `domcontentloaded` wait asked:
       // images, fonts and iframes may still be arriving.
@@ -243,9 +249,12 @@ export class DesktopBrowserHost implements BrowserHost {
     return this.projection.read(ownerOf(page), cursor, maxChars)
   }
 
-  async screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot> {
+  async screenshot(caller: BrowserCaller, tabId: string, request: BrowserScreenshotRequest = {}): Promise<BrowserScreenshot> {
     const revision = this.enter(caller)
     const page = await this.emulatedPage(caller, tabId)
+    const report = request.settle === false
+      ? undefined
+      : await this.settle(tabId, this.guard(caller, revision, request.signal), SETTLE_SCREENSHOT_MS)
     // Through CDP first: `Page.captureScreenshot` asks the renderer for a fresh
     // frame, which a tab parked off the panel still produces — `capturePage()`
     // would hand back whatever the window compositor last drew instead. The
@@ -257,6 +266,7 @@ export class DesktopBrowserHost implements BrowserHost {
     const { width, height } = pngSize(bytes)
     if (width === 0 || height === 0) throw notCaptured()
     const shot: BrowserScreenshot = { bytes, name: screenshotName(this.rowFor(tabId)?.url ?? ''), width, height }
+    if (report !== undefined) shot.settle = describeSettle(report)
     const viewport = await readViewport(page)
     if (viewport !== undefined) {
       shot.cssWidth = viewport.width
@@ -268,13 +278,15 @@ export class DesktopBrowserHost implements BrowserHost {
   async click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
     const page = await this.emulatedPage(caller, tabId)
-    return clickTarget(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+    const check = this.guard(caller, revision, request.signal)
+    return this.afterSettling(tabId, check, () => clickTarget(this.inputDeps(page, check), request))
   }
 
   async clickAt(caller: BrowserCaller, tabId: string, request: BrowserClickAtRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
     const page = this.requirePage(caller, tabId)
-    return clickAt(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+    const check = this.guard(caller, revision, request.signal)
+    return this.afterSettling(tabId, check, () => clickAt(this.inputDeps(page, check), request))
   }
 
   async type(caller: BrowserCaller, tabId: string, request: BrowserTypeRequest): Promise<BrowserActionResult> {
@@ -302,13 +314,15 @@ export class DesktopBrowserHost implements BrowserHost {
   ): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
     const page = await this.emulatedPage(caller, tabId)
-    return setChecked(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+    const check = this.guard(caller, revision, request.signal)
+    return this.afterSettling(tabId, check, () => setChecked(this.inputDeps(page, check), request))
   }
 
   async hover(caller: BrowserCaller, tabId: string, request: BrowserHoverRequest): Promise<BrowserActionResult> {
     const revision = this.enter(caller)
     const page = await this.emulatedPage(caller, tabId)
-    return hoverTarget(this.inputDeps(page, this.guard(caller, revision, request.signal)), request)
+    const check = this.guard(caller, revision, request.signal)
+    return this.afterSettling(tabId, check, () => hoverTarget(this.inputDeps(page, check), request))
   }
 
   async scroll(caller: BrowserCaller, tabId: string, request: BrowserScrollRequest): Promise<BrowserActionResult> {
@@ -367,6 +381,40 @@ export class DesktopBrowserHost implements BrowserHost {
   }
 
   // --- internals -------------------------------------------------------------
+
+  /**
+   * Waits for the tab's page to stop moving, up to `timeoutMs`. Everything is
+   * re-resolved per poll, like `waitFor`'s: the page may navigate mid-wait.
+   */
+  private settle(tabId: string, check: () => void, timeoutMs: number): Promise<SettleReport> {
+    return waitForSettle({
+      evaluate: (script) => {
+        const page = this.deps.tabs.pageFor(tabId)
+        return page === undefined
+          ? Promise.reject(new BrowserHostError('PAGE_NOT_READY', 'The tab has no page right now.', true))
+          : pageEvaluator(page)(script)
+      },
+      network: () => this.deps.tabs.networkOf(tabId),
+      generation: () => this.deps.tabs.pageFor(tabId)?.generation,
+      check,
+      timeoutMs,
+    })
+  }
+
+  /**
+   * A pointer action aimed at a page that has stopped moving, so the press does
+   * not land where a sliding panel *was*. Settling is only mentioned when it
+   * did not happen: that is the case where the answer may surprise.
+   */
+  private async afterSettling(
+    tabId: string,
+    check: () => void,
+    act: () => Promise<BrowserActionResult>,
+  ): Promise<BrowserActionResult> {
+    const report = await this.settle(tabId, check, SETTLE_ACTION_MS)
+    const result = await act()
+    return report.settled ? result : { text: `${result.text} Before acting: ${describeSettle(report)}` }
+  }
 
   /**
    * Everything `input.ts` needs, and nothing it does not.

@@ -85,7 +85,7 @@ test('a renamed project starts empty and its old history stays under the old key
   }
 })
 
-test('file tools reach this session\'s spill dir and the plans dir, nothing else outside the project', async () => {
+test('file tools reach outside the project, but under ~/.myagent only this session\'s spill dir and the plans dir', async () => {
   const cwd = await makeProject()
   try {
     const context = { cwd, sessionId: 'session-a' }
@@ -98,11 +98,14 @@ test('file tools reach this session\'s spill dir and the plans dir, nothing else
     const plan = path.join(getProjectPlansDir(cwd), 'some-slug.md')
     assert.equal(resolveToolPath(context, plan), plan)
     assert.equal(resolveToolPath(context, 'src/a.ts'), path.join(cwd, 'src/a.ts'))
+    // Outside the project is the permission gate's call, not the tool's.
+    const outside = path.join(path.dirname(cwd), 'elsewhere', 'SKILL.md')
+    assert.equal(resolveToolPath(context, outside), outside)
 
     const otherSpill = path.join(getToolResultSpillDir(cwd, 'session-b'), 'toolu_1.txt')
-    assert.throws(() => resolveToolPath(context, otherSpill), /outside the working directory/)
-    assert.throws(() => resolveToolPath(context, path.join(getSessionsDir(cwd), 'index.json')), /outside the working directory/)
-    assert.throws(() => resolveToolPath(context, path.join(getProjectPlansDir(cwd), '..', 'sessions', 'x.jsonl')), /outside the working directory/)
+    assert.throws(() => resolveToolPath(context, otherSpill), /runtime data/)
+    assert.throws(() => resolveToolPath(context, path.join(getSessionsDir(cwd), 'index.json')), /runtime data/)
+    assert.throws(() => resolveToolPath(context, path.join(getProjectPlansDir(cwd), '..', 'sessions', 'x.jsonl')), /runtime data/)
   } finally {
     await rm(cwd, { recursive: true, force: true })
   }

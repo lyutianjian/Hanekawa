@@ -280,7 +280,7 @@ async function step2(ctx) {
   const rowA2 = rowFor(await read(ctx, probes.sidebar()), a2.id)
   ctx.ok('the canvas header is drawn for the active session', headerA2.hidden === false, JSON.stringify(headerA2))
   ctx.eq('and it names the same session the sidebar row does', headerA2.title, rowA2?.title ?? '')
-  ctx.ok('and it offers 打开位置', headerA2.openLocation.includes('打开位置'), headerA2.openLocation)
+  ctx.ok('and it offers to open the project in VS Code', headerA2.openLocation.includes('VS Code'), headerA2.openLocation)
 
   // The `⋯` menu, opened and dismissed with **real mouse events**. The DOM tests
   // cover the wiring; only this covers delivery, and the difference is the whole

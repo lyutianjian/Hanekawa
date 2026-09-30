@@ -3,7 +3,7 @@ import path from 'node:path'
 import { TextDecoder } from 'node:util'
 import type { CommandDefinition, CommandShellResult } from './types.js'
 import type { CommandRegistry } from './registry.js'
-import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
+import { SkillsService, withSkillDir, type SkillDefinition } from '../services/skills/skillsService.js'
 
 const ARGUMENTS_PLACEHOLDER = '$ARGUMENTS'
 const RESERVED_SKILL_COMMAND_NAMES = new Set(['exit'])
@@ -71,7 +71,7 @@ export async function buildSkillCommandPrompt(
   } = {},
 ): Promise<string> {
   const expanded = await expandInlineShell(skill.content, options.runShellCommand)
-  const prompt = buildSkillPrompt(expanded, args)
+  const prompt = buildSkillPrompt(withSkillDir(skill.skillDir, expanded), args)
   return appendSkillAttachments(prompt, skill)
 }
 

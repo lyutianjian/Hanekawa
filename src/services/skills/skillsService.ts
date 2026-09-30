@@ -226,3 +226,12 @@ function parseHookCommand(value: unknown, field: string): HookCommand {
     ...(typeof source.timeoutMs === 'number' ? { timeoutMs: source.timeoutMs } : {}),
   }
 }
+
+/**
+ * The skill's text as handed to the model, headed by the folder it came from so
+ * relative references (`references/…`, `scripts/…`) resolve to real paths
+ * instead of a guess at some other tool's skills folder.
+ */
+export function withSkillDir(skillDir: string | undefined, content: string): string {
+  return skillDir ? `Base directory for this skill: ${skillDir}\n\n${content}` : content
+}

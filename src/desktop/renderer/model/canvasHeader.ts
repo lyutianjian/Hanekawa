@@ -111,7 +111,8 @@ export function canvasHeaderView(input: {
     menuOpen: input.menuOpen && !input.renaming,
     menuItems,
     renaming: input.renaming,
-    openLocationLabel: '打开位置',
+    // Names the editor it hands off to: 「打开位置」 read as "show in Finder".
+    openLocationLabel: 'VS Code',
     openLocationTitle: `在 VS Code 中打开 ${lane.projectName}`,
   }
 }

@@ -290,6 +290,7 @@ interface Rendered {
   readonly thumbs: Map<string, string>
   /** What each 复制 click handed the pane for the clipboard. */
   readonly copied: readonly string[]
+  readonly rewound: readonly string[]
   /** Every `Agent` row click, by id. */
   readonly openedSubagents: readonly string[]
   render(state: TranscriptState, disclosure?: DisclosureState, activity?: WaitingInput, selectedSubagent?: string): void
@@ -308,6 +309,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
   const toggled: Array<readonly [string, boolean]> = []
   const opened: Array<readonly [string, number | undefined]> = []
   const copied: string[] = []
+  const rewound: string[] = []
   const viewedImages: Array<readonly [string, string]> = []
   const thumbs = new Map<string, string>()
   const openedSubagents: string[] = []
@@ -319,6 +321,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     onViewImage: (image) => viewedImages.push([image.id, image.name]),
     imageThumbUrl: (imageId) => thumbs.get(imageId),
     onCopy: (text) => copied.push(text),
+    onRewind: (id) => rewound.push(id),
     onOpenSubagent: (id) => openedSubagents.push(id),
   })
   const jump = (): StubView => {
@@ -342,6 +345,7 @@ function mount(t: { after(fn: () => void): void }): Rendered {
     viewedImages,
     thumbs,
     copied,
+    rewound,
     openedSubagents,
     render: (state, disclosure = NO_DISCLOSURE, activity, selectedSubagent) => view.render(state, disclosure, activity, selectedSubagent),
     stopClock: () => view.stopClock(),
@@ -1603,7 +1607,7 @@ test('only the user bubble grows pills', (t) => {
 })
 
 test('a message carries a meta row: 复制, its model, its time — and a draft carries none', (t) => {
-  const { render, items, copied, stub } = mount(t)
+  const { render, items, copied, rewound, stub } = mount(t)
   const meta = (item: StubView): StubView | undefined =>
     item.children.find((child) => child.classes.includes('item-meta'))
   // Local time, so the expectation is derived the same way the view derives it.
@@ -1646,10 +1650,13 @@ test('a message carries a meta row: 复制, its model, its time — and a draft 
   )
   assert.deepEqual(
     userRow.children.map((child) => [child.classes.join(' '), child.text]),
-    [['item-copy', ''], ['item-time', '14:32']],
+    [['item-copy', ''], ['item-rewind', ''], ['item-time', '14:32']],
   )
   stub.click(userRow.children[0]!.node)
   assert.deepEqual(copied, ['part done', 'go'])
+  // 回退 addresses the checkpoint by the user record's id.
+  stub.click(userRow.children[1]!.node)
+  assert.deepEqual(rewound, ['u1'])
 })
 
 test('the stub carries every document member the dom helpers reach for', (t) => {
@@ -1714,7 +1721,7 @@ test('once the turn opens a group, the row stays at the tail and the head goes q
   assert.deepEqual(row.classes, ['waiting'])
   assert.deepEqual(
     row.children.map((child) => [child.classes.join(' '), child.text]),
-    [['waiting-bead', ''], ['waiting-label', 'Read'], ['waiting-elapsed', '6s'], ['waiting-hint', 'Esc 中断']],
+    [['waiting-bead', ''], ['waiting-label', '读取 a.ts'], ['waiting-elapsed', '6s'], ['waiting-hint', 'Esc 中断']],
     'the running tool’s own name, with the bead, counter and hint',
   )
   // It tracks the turn from tool to tool, so it is not what gets announced:
@@ -1755,6 +1762,7 @@ test('M18 keeps the breathing bead and clock mounted across tool handoffs and un
   const starts = trackAnimationStarts(view.column, '.waiting-bead', view.stub.observeMotion)
   t.after(starts.dispose)
   let pieces: readonly StubView[] | undefined
+  const labels: Record<string, string> = { Read: '读取 a.ts', Grep: '搜索 a.ts', Edit: '编辑 a.ts' }
   for (const toolName of ['Read', undefined, undefined, 'Grep', undefined, 'Edit']) {
     const item: TranscriptItem = { id: 'tool', kind: 'tool', turnId: 't1', text: '',
       toolName: toolName ?? 'Read', pending: toolName !== undefined,
@@ -1763,7 +1771,7 @@ test('M18 keeps the breathing bead and clock mounted across tool handoffs and un
     const row = view.items().at(-1)!
     pieces ??= row.children
     for (let i = 0; i < pieces.length; i += 1) assert.equal(row.children[i]!.node, pieces[i]!.node)
-    assert.equal(row.children[1]!.text, toolName ?? '正在思考')
+    assert.equal(row.children[1]!.text, toolName ? labels[toolName] : '正在思考')
     assert.equal(row.children[2]!.text, '6s')
   }
   assert.equal(starts.starts, 0, 'label updates never detach or reactivate the bead')

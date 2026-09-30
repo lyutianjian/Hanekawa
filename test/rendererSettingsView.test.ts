@@ -299,8 +299,12 @@ test('the header project picker and the single-choice form fields stay native se
   // The deliberate scope limit of stage 5f: a native `<select>` is keyboard- and
   // screen-reader-complete for free, and a form is a keyboard flow.
   const { view, apply } = mount(t)
+  // The provider page is all global, so it offers no project to choose.
+  assert.equal(findAll(findOne(child(view(), 'settings-body'), 'settings-header'), 'settings-project').length, 0)
+  apply({ kind: 'select-category', category: 'general' })
   const header = findOne(child(view(), 'settings-body'), 'settings-header')
   assert.equal(findOne(header, 'settings-project').tagName, 'SELECT')
+  apply({ kind: 'select-category', category: 'provider' })
 
   apply({ kind: 'new-model' })
   const form = findOne(child(view(), 'settings-body'), 'settings-form')

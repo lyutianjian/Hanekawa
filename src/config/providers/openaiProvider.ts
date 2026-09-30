@@ -143,6 +143,8 @@ export class OpenAIProvider implements ModelProvider {
         callerKind: request.retry?.callerKind ?? 'interactive',
         persistent: request.retry?.persistent,
         signal: request.retry?.signal,
+        onRetry: ({ attempt, category, delayMs }) =>
+          request.onStreamEvent?.({ type: 'retry', attempt, reason: category, delayMs }),
       },
     )
   }

@@ -29,6 +29,7 @@ export const BROWSER_OPERATIONS = [
   'page.hover',
   'page.scroll',
   'page.wait_for',
+  'batch',
 ] as const
 
 export type BrowserOperation = (typeof BROWSER_OPERATIONS)[number]
@@ -101,3 +102,7 @@ export const PRESS_KEYS_MAX = 8
 export const EMULATE_SIZE_MIN = 100
 export const EMULATE_SIZE_MAX = 4000
 export const EMULATE_SCALE_MAX = 4
+/** Steps in one `batch`: enough for a page tour, short of an unattended script. */
+export const BATCH_MAX_STEPS = 20
+/** The screenshot's own settle cap, restated for the description (`desktop/browser/limits.ts`). */
+export const SETTLE_SCREENSHOT_MS = 3000

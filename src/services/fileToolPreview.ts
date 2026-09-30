@@ -1,6 +1,6 @@
 import { readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
-import { assertInsideCwd } from '../utils/paths.js'
+import { resolveToolPath } from '../utils/paths.js'
 
 /**
  * Returned by a reader that located the file but refused to load it. Distinct
@@ -82,7 +82,7 @@ export function buildFileToolPreview(
   const cwd = options.cwd ?? process.cwd()
   let absolute: string
   try {
-    absolute = assertInsideCwd(cwd, filePath)
+    absolute = resolveToolPath({ cwd }, filePath)
   } catch (error) {
     return {
       kind: 'message',

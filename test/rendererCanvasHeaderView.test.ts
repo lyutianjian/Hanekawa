@@ -149,7 +149,7 @@ test('the header shows the title and the two right-hand controls', (t) => {
   r.paint({})
 
   assert.equal(r.titleNode()?.text, '原标题')
-  assert.equal(r.openLocation()?.text.includes('打开位置'), true)
+  assert.equal(r.openLocation()?.text.includes('VS Code'), true)
   // `button()` puts the same string on `title` and `aria-label`; the attribute is
   // the one a screen reader reads, so that is the one asserted.
   assert.equal(r.openLocation()?.attributes.get('aria-label')?.includes('alpha'), true)

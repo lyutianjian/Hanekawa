@@ -3,7 +3,6 @@ import { renameCommit } from '../model/canvasHeader.js'
 import { append, el, reconcile, show } from './dom.js'
 import { button } from './controls.js'
 import { onPressOutside } from './dismiss.js'
-import { icon } from './icons.js'
 import { createPresence } from './presence.js'
 
 /**
@@ -54,7 +53,6 @@ export function createCanvasHeaderView(
   const identity = el('div', 'canvas-identity')
   const rightControls = el('div', 'canvas-header-controls')
   append(container, [identity, rightControls])
-  const folder = icon('folder')
   const title = el('span', 'canvas-title')
   const trigger = button('canvas-menu-trigger', '⋯', '会话操作', actions.onToggleMenu)
   trigger.setAttribute('aria-haspopup', 'menu')
@@ -66,7 +64,7 @@ export function createCanvasHeaderView(
   const menuShell = el('div', 'canvas-menu-shell', trigger, menu)
   const menuItems = new Map<CanvasHeaderMenuItem['id'], { node: HTMLButtonElement; label: HTMLElement }>()
   const locationLabel = el('span', 'btn-label')
-  const openLocation = button('canvas-open-location', '', '', actions.onOpenLocation, { icon: 'code' })
+  const openLocation = button('canvas-open-location', '', '', actions.onOpenLocation, { icon: 'external' })
   openLocation.appendChild(locationLabel)
   let lastSignature: string | undefined
 
@@ -161,7 +159,7 @@ export function createCanvasHeaderView(
       const returnFocus = !view.menuOpen && menu.contains(document.activeElement)
       menuPresence.set(view.menuOpen)
       if (title.textContent !== view.title) title.textContent = view.title
-      reconcile(identity, [folder, view.renaming ? titleInput : title, menuShell])
+      reconcile(identity, [view.renaming ? titleInput : title, menuShell])
 
       const startingRename = view.renaming && seededTitle === undefined
       if (view.renaming) {

@@ -74,6 +74,7 @@ import {
   hkVisible,
   hkWalk,
 } from './semantics.js'
+import { hkSettleProbe, type SettleProbe } from './settle.js'
 import { hkBlockOf, hkCollectText, hkTextBlocks, type TextScanOptions, type TextScanResult } from './text.js'
 import { BrowserHostError } from '../errors.js'
 
@@ -150,6 +151,11 @@ export function viewportScript(): string {
 export function pointScript(options: PointOptions): string {
   const call = `${hkDescribePoint.name}(document, window, ${literal(options)})`
   return wrap([...SHARED, ...AIM, hkDescribePoint], call)
+}
+
+/** One look at whether the page is still moving; see `inject/settle.ts`. */
+export function settleScript(maxElements: number): string {
+  return wrap([hkSettleProbe], `${hkSettleProbe.name}(document, window, ${literal(maxElements)})`)
 }
 
 export function conditionScript(options: ConditionOptions): string {
@@ -229,6 +235,7 @@ export type {
   ScrollResult,
   SelectOptions,
   SelectResult,
+  SettleProbe,
   TargetOptions,
   TargetResult,
   TextScanOptions,

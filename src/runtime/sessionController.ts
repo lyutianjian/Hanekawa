@@ -13,6 +13,7 @@ import { getRecordsAfterLastCompact } from '../harness/requestPrep.js'
 import { promptTokens } from '../harness/usage.js'
 import { isSystemReminderBlock } from '../harness/systemReminder.js'
 import { countSessionRecordsTokens } from '../prompts/budget.js'
+import { generateSessionTitle } from '../harness/sessionTitle.js'
 import { deriveSessionTitle, type SessionMeta, type SessionStore } from '../sessions/service.js'
 import { FileHistoryService } from '../services/fileHistory/fileHistoryService.js'
 import type { ImageAttachmentRef, UserInput } from '../media/types.js'
@@ -733,6 +734,35 @@ export class SessionController {
     this.session = { ...this.session, title }
     this.publish()
     this.emit({ type: 'session-meta', session: this.session })
+    void this.generateTitle(record, title)
+  }
+
+  /**
+   * Replaces the first-message fallback with a model-written name, in the
+   * background. Only lands if the title is still the fallback — a rename the
+   * user made meanwhile, or a session switch, wins. Failure keeps the fallback.
+   */
+  private async generateTitle(record: SessionRecord, fallback: string): Promise<void> {
+    if (record.type !== 'message') return
+    const sessionId = this.session.id
+    try {
+      const text = (record.displayContent ?? record.content).trim()
+      if (!text) return
+      const generated = await generateSessionTitle({
+        runtime: this.getSession().loop.getSideModel(),
+        text,
+        cwd: this.cwd,
+      })
+      if (!generated || generated === fallback) return
+      if (this.disposed || this.session.id !== sessionId || this.session.title !== fallback) return
+      await this.store.rename(sessionId, generated)
+      if (this.disposed || this.session.id !== sessionId || this.session.title !== fallback) return
+      this.session = { ...this.session, title: generated }
+      this.publish()
+      this.emit({ type: 'session-meta', session: this.session })
+    } catch {
+      // Best-effort: the fallback title stays.
+    }
   }
 
   /**

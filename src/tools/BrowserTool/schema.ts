@@ -18,10 +18,12 @@ import { z, type ZodTypeAny } from 'zod/v3'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { JsonSchema } from '../../harness/toolValidation.js'
 import {
+  BATCH_MAX_STEPS,
   EMULATE_SCALE_MAX,
   EMULATE_SIZE_MAX,
   EMULATE_SIZE_MIN,
   PRESS_KEYS_MAX,
+  SETTLE_SCREENSHOT_MS,
   TYPE_TEXT_MAX,
   WAIT_FOR_DEFAULT_MS,
   WAIT_FOR_LOAD_DEFAULT_MS,
@@ -91,9 +93,9 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
         .optional()
         .describe(`How long to wait (default ${WAIT_FOR_LOAD_DEFAULT_MS}, max ${WAIT_FOR_LOAD_MAX_MS}).`),
       until: z
-        .enum(['domcontentloaded', 'load'])
+        .enum(['domcontentloaded', 'load', 'networkidle'])
         .optional()
-        .describe('load (default) waits for images and subresources too; domcontentloaded returns once the HTML is parsed.'),
+        .describe('load (default) waits for images and subresources too; domcontentloaded returns once the HTML is parsed; networkidle waits for load, then for the network to go quiet, animations to finish and the layout to hold still.'),
     })
     .strict(),
   z
@@ -114,7 +116,16 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
     .strict(),
   z.object({ operation: z.literal('page.elements.snapshot'), ...elementsFields }).strict(),
   z.object({ operation: z.literal('page.text.snapshot'), ...textFields }).strict(),
-  z.object({ operation: z.literal('page.screenshot'), tabId }).strict(),
+  z
+    .object({
+      operation: z.literal('page.screenshot'),
+      tabId,
+      settle: z
+        .boolean()
+        .optional()
+        .describe(`Default true: first wait up to ${SETTLE_SCREENSHOT_MS}ms for the page to stop moving. false captures at once, mid-animation if need be.`),
+    })
+    .strict(),
   z
     .object({
       operation: z.literal('page.click'),
@@ -216,6 +227,18 @@ export const browserInputSchema = z.discriminatedUnion('operation', [
         .max(WAIT_FOR_MAX_MS)
         .optional()
         .describe(`How long to wait (default ${WAIT_FOR_DEFAULT_MS}, max ${WAIT_FOR_MAX_MS}).`),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('batch'),
+      // Same description as everywhere else, or the flat schema would list every operation beside it.
+      tabId: tabId.optional(),
+      steps: z
+        .array(z.record(z.unknown()))
+        .min(1)
+        .max(BATCH_MAX_STEPS)
+        .describe(`1–${BATCH_MAX_STEPS} Browser calls to run in order, each an object with its own operation and fields (not batch).`),
     })
     .strict(),
 ])

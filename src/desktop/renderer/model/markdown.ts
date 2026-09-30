@@ -179,7 +179,30 @@ export function safeHref(href: string): string | undefined {
 // draft (whose text actually changed) is parsed.
 
 const TOKEN_CACHE_MAX = 500
-const blockCache = new Map<string, { blocks: MdBlock[]; segments: MdSegment[]; source: string }>()
+
+interface ParsedMarkdown {
+  blocks: MdBlock[]
+  segments: MdSegment[]
+  source: string
+  /** Where a longer copy of `source` may start lexing again, and how many segments precede that point. */
+  resume?: { at: number; segments: number }
+}
+
+const blockCache = new Map<string, ParsedMarkdown>()
+
+/**
+ * The last parse that missed the cache — while an answer streams, the draft.
+ * Its next chunk is lexed from `resume` on, so a frame costs the tail of the
+ * answer rather than all of it.
+ */
+let draft: ParsedMarkdown | undefined
+
+/**
+ * Blocks a blank line ends for good: nothing after it can reach back into them.
+ * Lists and indented code are missing because both continue across blank lines,
+ * and HTML because its end rules are its own.
+ */
+const SEALED_BY_BLANK = new Set(['paragraph', 'heading', 'hr', 'code', 'mathBlock', 'table', 'blockquote'])
 
 /** A source-position key survives append-only streaming, including block closure. */
 export interface MdSegment {
@@ -209,7 +232,7 @@ export function parseMarkdownSegments(content: string, settled = false): readonl
   return settled ? segments.map((segment) => segment.closed ? segment : { ...segment, closed: true }) : segments
 }
 
-function parsedMarkdown(content: string) {
+function parsedMarkdown(content: string): ParsedMarkdown {
   const key = hashContent(content)
   const cached = blockCache.get(key)
   if (cached && cached.source === content) {
@@ -218,24 +241,50 @@ function parsedMarkdown(content: string) {
     return cached
   }
 
-  const tokens = lexer.lexer(content)
-  const segments: MdSegment[] = []
+  const base = draft?.resume && content.startsWith(draft.source) ? draft : undefined
+  const parsed = (base && lexFrom(content, base)) ?? lexFrom(content)!
+  if (blockCache.size >= TOKEN_CACHE_MAX) blockCache.delete(blockCache.keys().next().value!)
+  blockCache.set(key, parsed)
+  draft = parsed
+  return parsed
+}
+
+/**
+ * Lexes `content`, or only what follows `base.resume` with `base`'s segments
+ * before it. A link definition in the new text refuses the shortcut: it may
+ * resolve a link in a block already kept.
+ */
+function lexFrom(content: string, base?: ParsedMarkdown): ParsedMarkdown | undefined {
+  const at = base?.resume?.at ?? 0
+  const tokens = lexer.lexer(at > 0 ? content.slice(at) : content)
+  const hasDef = tokens.some((token) => token.type === 'def')
+  if (base && hasDef) return undefined
+
+  const segments = base ? base.segments.slice(0, base.resume!.segments) : []
+  let resume = base?.resume
   let lastContent = -1
   for (const [index, token] of tokens.entries()) {
     if (token.type !== 'space' && token.type !== 'def') lastContent = index
   }
-  let offset = 0
+  let offset = at
   for (const [index, token] of tokens.entries()) {
+    const sealed = tokens[index - 2]
+    if (sealed && tokens[index - 1]!.type === 'space' && SEALED_BY_BLANK.has(sealed.type)
+      && (sealed.type !== 'code' || closesItself(sealed, undefined))) {
+      resume = { at: offset, segments: segments.length }
+    }
     const closed = index < lastContent || closesItself(token, tokens[index + 1])
     for (const [part, block] of blockFrom(token).entries()) {
       segments.push({ id: `${offset}:${part}`, block, closed, signature: JSON.stringify(block) })
     }
     offset += token.raw.length
   }
-  const parsed = { blocks: segments.map((segment) => segment.block), segments, source: content }
-  if (blockCache.size >= TOKEN_CACHE_MAX) blockCache.delete(blockCache.keys().next().value!)
-  blockCache.set(key, parsed)
-  return parsed
+  return {
+    blocks: segments.map((segment) => segment.block),
+    segments,
+    source: content,
+    ...(resume && !hasDef ? { resume } : {}),
+  }
 }
 
 function closesItself(token: Token, next: Token | undefined): boolean {
@@ -255,6 +304,7 @@ function closesItself(token: Token, next: Token | undefined): boolean {
 /** Test seam; also useful if a session ever grows past the LRU's usefulness. */
 export function resetMarkdownCache(): void {
   blockCache.clear()
+  draft = undefined
 }
 
 function blockFrom(token: Token): MdBlock[] {

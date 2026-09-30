@@ -1,7 +1,7 @@
 import { rm } from 'node:fs/promises'
 import { z } from 'zod/v3'
 import type { Tool } from '../../harness/types.js'
-import { assertInsideCwd } from '../../utils/paths.js'
+import { resolveToolPath } from '../../utils/paths.js'
 import { requireFreshRead } from '../fileState.js'
 import { assertParentNotSymlink } from '../pathSafety.js'
 import { trackFileEdit } from '../trackFileEdit.js'
@@ -25,7 +25,7 @@ export const deleteFileTool: Tool = {
   },
   async execute(input, context) {
     const { filePath } = input as { filePath: string }
-    const absolute = assertInsideCwd(context.cwd, filePath)
+    const absolute = resolveToolPath(context, filePath)
     const stale = await requireFreshRead(absolute, filePath, context)
     if (stale) {
       return stale

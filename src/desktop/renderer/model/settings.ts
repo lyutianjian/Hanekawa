@@ -418,6 +418,8 @@ export interface SettingsViewModel {
   readonly openMenu?: string
 }
 
+const PROJECT_SCOPED: ReadonlySet<SettingsCategory> = new Set(['extensions', 'permissions', 'agent', 'general'])
+
 const ALL_CATEGORIES: readonly SettingsCategory[] = [
   'provider',
   'extensions',
@@ -810,10 +812,12 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     ),
     busy: state.busy,
     query: state.query,
-    projectChoices: state.projects.map((project) => ({
-      value: project.projectRoot,
-      label: project.projectName,
-    })),
+    // Only on pages with something saved per project: over the all-global
+    // provider page or the renderer-local theme it offered a choice that changed
+    // nothing, and read as contradicting the page's own 「保存在全局」.
+    projectChoices: PROJECT_SCOPED.has(state.category)
+      ? state.projects.map((project) => ({ value: project.projectRoot, label: project.projectName }))
+      : [],
     projectValue: state.projectRoot ?? '',
     ...(state.openMenu !== undefined ? { openMenu: state.openMenu } : {}),
     ...(state.error !== undefined ? { error: state.error } : {}),
@@ -1378,7 +1382,7 @@ const CONTEXT_LABELS: Record<WireContextManagementField, string> = {
 }
 
 const CONTEXT_DETAILS: Record<WireContextManagementField, string> = {
-  contextWindow: '模型一次能看到的 token 总数。',
+  contextWindow: '模型没有单独配置上下文窗口时使用的默认值。',
   summaryOutputTokens: '压缩摘要自身允许占用的输出 token。',
   autoCompactBufferTokens: '自动压缩时预留出来的空间。',
   manualCompactBufferTokens: '手动压缩时预留出来的空间。',

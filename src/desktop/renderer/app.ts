@@ -97,6 +97,7 @@ import { createRewindView } from './dom/rewindView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
 import { createQueueView } from './dom/queueView.js'
 import { createTaskPanelView } from './dom/taskPanelView.js'
+import { createProcessStripView } from './dom/processStripView.js'
 import { createComposerView } from './dom/composerView.js'
 import { createImageViewerView } from './dom/imageViewerView.js'
 import { createStatusView } from './dom/statusView.js'
@@ -218,6 +219,7 @@ const queueStrip = createQueueView(required('queue'), () => {
 // Resident, and window-level like every other singleton the active pane drives:
 // it lives on the composer's own axis, so exactly one is on screen at a time.
 const taskPanel = createTaskPanelView(required('task-panel'))
+const processStrip = createProcessStripView(required('process-strip'), () => activePane()?.toggleBackgroundTasks())
 const status = createStatusView({
   usage: required('status-usage'),
   cost: required('status-cost'),
@@ -302,6 +304,7 @@ function attachPaneSession(lane: string): void {
     suggestions,
     queueStrip,
     taskPanel,
+    processStrip,
     status,
     composer,
     imageViewer,
@@ -1306,6 +1309,7 @@ const titleBar = createTitleBarView(
     titleBarMenu = id
     renderTitleBar()
   },
+  required('canvas-header'),
 )
 
 const sidebar = createSidebarView(

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { getSessionsDir } from '../src/utils/paths.js'
 import {
   PERMISSION_PREVIEW_LIMITS,
   PREVIEW_MAX_FILE_BYTES,
@@ -100,15 +101,15 @@ describe('buildFileToolPreview', () => {
     assert.equal(preview.newText, '')
   })
 
-  it('keeps unsafe paths in a non-crashing message preview', () => {
+  it('keeps unreachable paths in a non-crashing message preview', () => {
     const preview = buildFileToolPreview('Write', {
-      filePath: '../outside.txt',
+      filePath: path.join(getSessionsDir(cwd), 'x.jsonl'),
       content: 'nope',
     }, { cwd, readFile })
 
     assert.equal(preview?.kind, 'message')
     if (preview?.kind !== 'message') return
-    assert.match(preview.message, /outside the working directory/)
+    assert.match(preview.message, /runtime data/)
   })
 })
 

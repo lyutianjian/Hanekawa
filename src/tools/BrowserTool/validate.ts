@@ -13,7 +13,7 @@
  */
 
 import type { ToolValidationError, ToolValidationResult } from '../../harness/toolValidation.js'
-import { BROWSER_OPERATIONS, OPERATIONS_NEEDING_TARGET, WAIT_FOR_DEFAULT_MS } from './constants.js'
+import { BROWSER_OPERATIONS, OPERATIONS_NEEDING_TAB, OPERATIONS_NEEDING_TARGET, WAIT_FOR_DEFAULT_MS } from './constants.js'
 import { browserInputSchema } from './schema.js'
 
 /** Where a `tabId` comes from. Repeated on purpose: it is the common mistake. */
@@ -131,6 +131,67 @@ function crossFieldRules(operation: string, input: Record<string, unknown>): Too
   return { ok: true, errors: [] }
 }
 
+/** A stand-in for the tab a batch step will get from an earlier `browser.create_tab`. */
+const CREATED_TAB = 'created-tab'
+
+/** The URL a step starts a navigation to, or `undefined` when it navigates nowhere. */
+export function navigationUrl(step: Record<string, unknown>): string | undefined {
+  const { operation, url } = step
+  return (operation === 'tab.navigate' || operation === 'browser.create_tab') && typeof url === 'string' ? url : undefined
+}
+
+/**
+ * Every step is validated before any runs — a typo in step five must not
+ * surface after four steps already moved the page — and a step's message says
+ * which step it is.
+ *
+ * One navigation host per batch: permission is asked per host, and a single
+ * approval for a call that visits two hosts would be an approval for the
+ * second nobody looked at.
+ */
+function batchRules(batch: { tabId?: string | undefined; steps: Record<string, unknown>[] }): ToolValidationResult {
+  let tabKnown = batch.tabId !== undefined
+  const hosts = new Set<string>()
+  for (const [index, step] of batch.steps.entries()) {
+    const label = `steps[${index}]`
+    const operation = step['operation']
+    if (operation === 'batch') return fail(`${label}: a batch cannot contain another batch.`, label)
+    let checked = step
+    if (typeof operation === 'string' && OPERATIONS_NEEDING_TAB.has(operation) && step['tabId'] === undefined) {
+      if (!tabKnown) {
+        return fail(
+          `${label} (${operation}) needs a tabId: give the step one, set the batch's tabId, or open the tab with browser.create_tab in an earlier step.`,
+          `${label}.tabId`,
+        )
+      }
+      checked = { ...step, tabId: batch.tabId ?? CREATED_TAB }
+    }
+    const result = validateBrowserInput(checked)
+    if (!result.ok) {
+      return {
+        ok: false,
+        errors: result.errors.map((error) => ({ ...error, path: `${label}.${error.path}`, message: `${label}: ${error.message}` })),
+      }
+    }
+    if (operation === 'browser.create_tab') tabKnown = true
+    const url = navigationUrl(step)
+    if (url !== undefined) {
+      try {
+        hosts.add(new URL(url).hostname)
+      } catch {
+        hosts.add(url)
+      }
+    }
+  }
+  if (hosts.size > 1) {
+    return fail(
+      `A batch may navigate to one host only, and this one visits ${[...hosts].join(', ')}. Split it into one batch per host.`,
+      'steps',
+    )
+  }
+  return { ok: true, errors: [] }
+}
+
 export function validateBrowserInput(input: unknown): ToolValidationResult {
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     return fail(`Browser takes an object with an "operation" field. One of: ${OPERATION_LIST}.`)
@@ -145,6 +206,7 @@ export function validateBrowserInput(input: unknown): ToolValidationResult {
   }
 
   const parsed = browserInputSchema.safeParse(input)
+  if (parsed.success && parsed.data.operation === 'batch') return batchRules(parsed.data)
   if (parsed.success) return crossFieldRules(operation, input as Record<string, unknown>)
 
   const errors = parsed.error.issues.map((issue) => {

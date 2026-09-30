@@ -39,7 +39,14 @@
       still paints its window controls into a reserved strip (left on macOS,
       normally right elsewhere), measured through Window Controls Overlay.
     -->
-    <header id="titlebar"></header>
+    <header id="titlebar">
+      <!--
+        Session identity: the title, the `⋯` menu that renames and deletes, and
+        "open in editor". It rides in the title bar's blank strip, lined up with
+        the canvas's left edge, instead of costing the canvas a row of its own.
+      -->
+      <div id="canvas-header" hidden></div>
+    </header>
     <div id="shell">
       <aside id="sidebar" aria-label="会话与项目"></aside>
       <!--
@@ -55,12 +62,6 @@
         aria-label="调整侧边栏宽度"
       ></div>
       <main id="canvas">
-        <!--
-          The canvas header owns session identity: the title, the `⋯` menu that
-          renames and deletes, and "open in editor". Built entirely from the lane
-          list, so it belongs to the window rather than to any pane.
-        -->
-        <header id="canvas-header" hidden></header>
         <div id="transcript-area"></div>
         <!--
           The anchored composite input: one capsule holding the textarea and an
@@ -100,6 +101,8 @@
               which is how the panel stops existing rather than sitting blank.
             -->
             <div id="task-panel"></div>
+            <!-- Running background processes; empty (and not drawn) when there are none. -->
+            <div id="process-strip"></div>
             <div id="composer">
               <!--
                 The permission request, drawn inside the capsule instead of over

@@ -159,6 +159,11 @@ export interface TranscriptHandlers {
    * stub.
    */
   onCopy(text: string): void
+  /**
+   * A user message's 回退 button: `/rewind`, opened on that message's
+   * checkpoint. Absent (the sub-agent panel) draws no button.
+   */
+  onRewind?(messageId: string): void
 }
 
 export function createTranscriptView(
@@ -620,13 +625,25 @@ function liveParts(painter: Painter, key: string, label: string, hint: string, a
   const part = (name: string, text: string, hidden = true): HTMLElement => painter.node(
     `${key}:${name}`, `waiting-${name}`, [text, hidden], (node) => {
       if (hidden) node.setAttribute('aria-hidden', 'true')
-      return [text]
+      return name === 'label' ? [text, sheenNode(text)] : [text]
     }, () => el('span'),
   )
   const bead = part('bead', '')
   const elapsed = part('elapsed', '')
   painter.keepClock(elapsed)
   return [bead, part('label', label, !announce), elapsed, part('hint', hint)]
+}
+
+/**
+ * The label's sheen: a window sliding over the words that shows them again in
+ * the brighter colour. Its copy is generated content (`attr(data-label)`), so
+ * the label's text and accessible name stay the words once.
+ */
+function sheenNode(text: string): HTMLElement {
+  const node = el('span', 'waiting-sheen')
+  node.dataset.label = text
+  node.setAttribute('aria-hidden', 'true')
+  return node
 }
 
 // --- node reuse --------------------------------------------------------------
@@ -739,6 +756,7 @@ function createPainter(
     onViewImage: handlers.onViewImage,
     imageThumbUrl: handlers.imageThumbUrl,
     onCopy: handlers.onCopy,
+    onRewind: handlers.onRewind,
     node(key, className, signature, fill, create) {
       filling.at(-1)?.push(key)
       const cached = cache.get(key)
@@ -1619,10 +1637,15 @@ function metaRow(painter: Painter, item: TranscriptItem): HTMLElement | undefine
   // A draft has no stamp of its own; copying half a sentence is not the offer.
   if (time === undefined && model === undefined) return undefined
   const copy = button('item-copy', '', '复制', () => painter.onCopy(item.text), { icon: 'copy' })
+  const onRewind = painter.onRewind
+  const rewind = item.kind === 'user' && onRewind
+    ? button('item-rewind', '', '回退到此消息之前', () => onRewind(item.id), { icon: 'rewind' })
+    : undefined
   return el(
     'div',
     'item-meta',
     copy,
+    rewind,
     model === undefined ? undefined : quiet('item-model', model),
     time === undefined ? undefined : quiet('item-time', time),
   )

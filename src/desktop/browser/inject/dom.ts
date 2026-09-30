@@ -88,6 +88,24 @@ export interface InjDocument {
   elementFromPoint(x: number, y: number): InjElement | null
 }
 
+/** One running animation, as `settle.ts` weighs it: will it end, and on what. */
+export interface InjAnimation {
+  readonly playState: string
+  readonly effect: {
+    readonly target?: InjElement | null
+    /** `Infinity` for an animation that repeats forever. */
+    getComputedTiming(): { endTime?: number }
+  } | null
+}
+
+/** The document as the settle probe reads it: loading, fonts, motion and layout. */
+export interface InjSettleDocument {
+  readonly readyState: string
+  readonly fonts?: { readonly status: string }
+  getAnimations?(): ArrayLike<InjAnimation>
+  getElementsByTagName(name: string): ArrayLike<InjElement>
+}
+
 export interface InjScrollOptions {
   left?: number
   top?: number

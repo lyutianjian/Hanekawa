@@ -8,7 +8,12 @@ import { join } from 'node:path'
 import { writeFileSync } from 'node:fs'
 import { sleep } from './cdp.mjs'
 
-export async function startMotionFixture(project) {
+/**
+ * `pace` scales every delay and `chunk` every delta size; `paragraphs` sets the
+ * answer's length. The defaults are the motion acceptance's; the power benchmark
+ * turns them toward a real model's stream rate.
+ */
+export async function startMotionFixture(project, { pace = 1, chunk = 1, paragraphs = 24 } = {}) {
   writeFileSync(join(project.root, 'motion.txt'),
     Array.from({ length: 90 }, (_, i) => 'Line ' + (i + 1) + ': stable file content for the desktop motion check.').join('\n'))
   const events = []
@@ -44,6 +49,8 @@ export async function startMotionFixture(project) {
       let block = 0
       send('message_start', { message })
       const stream = async (type, text, delay = 55, size = 9) => {
+        delay *= pace
+        size = Math.max(1, Math.round(size * chunk))
         const current = block++
         send('content_block_start', { index: current, content_block: type === 'thinking'
           ? { type, thinking: '', signature: '' } : { type, text: '' } })
@@ -54,7 +61,7 @@ export async function startMotionFixture(project) {
           if (i > 0 && i % (size * 8) === 0) {
             // A live thought with no changed content, long enough for clock/snapshot paints.
             send('ping')
-            await sleep(220)
+            await sleep(220 * pace)
           }
           await sleep(delay)
         }
@@ -90,7 +97,7 @@ export async function startMotionFixture(project) {
         const text = '稳定首段：后续文字到达时，这一段应持续保留，选择范围与阅读位置不变。\n\n'
           + '~~~ts\nconst motion = { duration: 300, curve: "standard" }\nconsole.log(motion.duration)\n~~~\n\n'
           + '公式保持清晰：$E = mc^2$。\n\n$$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$\n\n'
-          + Array.from({ length: 24 }, (_, i) => '段落 ' + (i + 1) + '：流式输出继续追加。已经读过的段落、代码块和公式保持稳定；向上阅读时，视口应保留当前位置，结束整理也不抢走阅读位置。').join('\n\n')
+          + Array.from({ length: paragraphs }, (_, i) => '段落 ' + (i + 1) + '：流式输出继续追加。已经读过的段落、代码块和公式保持稳定；向上阅读时，视口应保留当前位置，结束整理也不抢走阅读位置。').join('\n\n')
           + '\n\n| 状态 | 行为 |\n| --- | --- |\n| 运行 | 保持详情 |\n| 完成 | 保护阅读 |\n\n'
           + '- 连续状态\n- 清晰焦点\n- 稳定正文\n\n'
         await stream('text', text, 45, 12)

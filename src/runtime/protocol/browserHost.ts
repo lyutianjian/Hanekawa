@@ -29,6 +29,8 @@ export interface BrowserTabState {
   takenOver?: boolean
   /** Downloads the page started, cancelled by the browser: their file names, oldest first. */
   blockedDownloads?: string[]
+  /** Only from `waitForLoad` until `networkidle`: whether the page then settled, in one line. */
+  settle?: string
 }
 
 /** One page of a projection, already rendered. The tool passes it through. */
@@ -53,6 +55,14 @@ export interface BrowserScreenshot {
    */
   cssWidth?: number
   cssHeight?: number
+  /** Whether the page had stopped moving when it was captured, in one line; absent when not waited for. */
+  settle?: string
+}
+
+export interface BrowserScreenshotRequest {
+  /** Wait for the page to stop moving first. Default true. */
+  settle?: boolean
+  signal?: AbortSignal
 }
 
 export interface BrowserElementsRequest {
@@ -151,8 +161,11 @@ export type BrowserWaitState =
   | 'checked'
   | 'unchecked'
 
-/** How far `tab.wait_for_load` waits: the parsed DOM, or the full load. */
-export type BrowserLoadState = 'domcontentloaded' | 'load'
+/**
+ * How far `tab.wait_for_load` waits: the parsed DOM, the full load, or the load
+ * and then the page settling — network quiet, animations done, layout still.
+ */
+export type BrowserLoadState = 'domcontentloaded' | 'load' | 'networkidle'
 
 export interface BrowserWaitRequest {
   selector?: string
@@ -234,7 +247,8 @@ export interface BrowserHost {
   text(caller: BrowserCaller, tabId: string, request: BrowserTextRequest): Promise<BrowserSnapshot>
   /** Reads the next page of a snapshot already taken. Never touches the page. */
   readSnapshot(caller: BrowserCaller, tabId: string, cursor: string, maxChars?: number): Promise<BrowserSnapshot>
-  screenshot(caller: BrowserCaller, tabId: string): Promise<BrowserScreenshot>
+  /** Waits for the page to settle first unless told not to, and says whether it did. */
+  screenshot(caller: BrowserCaller, tabId: string, request?: BrowserScreenshotRequest): Promise<BrowserScreenshot>
   click(caller: BrowserCaller, tabId: string, request: BrowserClickRequest): Promise<BrowserActionResult>
   /** A press at a viewport point; reports what it landed on rather than refusing a covered one. */
   clickAt(caller: BrowserCaller, tabId: string, request: BrowserClickAtRequest): Promise<BrowserActionResult>

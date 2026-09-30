@@ -17,12 +17,14 @@ import type {
   BrowserActionResult,
   BrowserCaller,
   BrowserHost,
+  BrowserLoadState,
   BrowserSnapshot,
   BrowserTabState,
 } from '../../runtime/protocol/browserHost.js'
 import { formatImageCaption } from '../imageFile.js'
 import {
   BROWSER_TOOL_NAME,
+  OPERATIONS_NEEDING_TAB,
   READ_ONLY_OPERATIONS,
   WAIT_FOR_DEFAULT_MS,
   WAIT_FOR_LOAD_DEFAULT_MS,
@@ -86,7 +88,32 @@ function snapshotResult(operation: string, snapshot: BrowserSnapshot): ToolResul
 }
 
 function tabResult(tab: BrowserTabState, summary: string): ToolResult {
-  return { ok: true, content: describeTab(tab), metadata: { display: { summary } } }
+  const content = tab.settle === undefined ? describeTab(tab) : `${describeTab(tab)}\n${tab.settle}`
+  return { ok: true, content, metadata: { display: { summary } } }
+}
+
+/** Read-only is decided per step for a batch: every step has to be. */
+function isReadOnlyInput(input: unknown): boolean {
+  const { operation, steps } = (input ?? {}) as { operation?: unknown; steps?: unknown }
+  if (operation === 'batch') return Array.isArray(steps) && steps.length > 0 && steps.every(isReadOnlyInput)
+  return typeof operation === 'string' && READ_ONLY_OPERATIONS.has(operation)
+}
+
+function failureResult(error: unknown): ToolResult {
+  const failure = hostFailure(error)
+  if (!failure) {
+    return {
+      ok: false,
+      content: `Browser operation failed: ${error instanceof Error ? error.message : String(error)}`,
+      errorCode: 'execution_failed',
+    }
+  }
+  return {
+    ok: false,
+    content: failure.retryable ? `${failure.message} (retryable)` : failure.message,
+    errorCode: errorCodeFor(failure),
+    errorDetails: { code: failure.code, retryable: failure.retryable },
+  }
 }
 
 /** An action's evidence line, verbatim. It never carries what was typed. */
@@ -107,14 +134,8 @@ export function createBrowserTool(host: BrowserHost): Tool {
     riskLevel: 'confirm',
     shouldDefer: true,
     maxResultSizeChars: 32_000,
-    isConcurrencySafeInput(input) {
-      const operation = (input as { operation?: unknown })?.operation
-      return typeof operation === 'string' && READ_ONLY_OPERATIONS.has(operation)
-    },
-    classifyRisk(input) {
-      const operation = (input as { operation?: unknown })?.operation
-      return typeof operation === 'string' && READ_ONLY_OPERATIONS.has(operation) ? 'readonly' : 'normal'
-    },
+    isConcurrencySafeInput: isReadOnlyInput,
+    classifyRisk: (input) => (isReadOnlyInput(input) ? 'readonly' : 'normal'),
     userFacingName: () => 'Browser',
     getToolUseSummary(input) {
       const parsed = asInput(input)
@@ -122,6 +143,7 @@ export function createBrowserTool(host: BrowserHost): Tool {
       if (parsed.operation === 'tab.navigate' || (parsed.operation === 'browser.create_tab' && parsed.url)) {
         return hostOf(parsed.url as string)
       }
+      if (parsed.operation === 'batch') return `${parsed.steps.length} steps`
       return parsed.operation
     },
     getActivityDescription(input) {
@@ -161,6 +183,8 @@ export function createBrowserTool(host: BrowserHost): Tool {
           return 'Scrolling the page'
         case 'page.wait_for':
           return 'Waiting for the page'
+        case 'batch':
+          return `Running ${parsed.steps.length} browser steps`
         default:
           return 'Reading the page'
       }
@@ -187,23 +211,12 @@ export function createBrowserTool(host: BrowserHost): Tool {
         }
       }
 
+      const input = parsed.data
+      if (input.operation === 'batch') return runBatch(host, input, context)
       try {
-        return await run(host, parsed.data, context)
+        return await run(host, input, context)
       } catch (error) {
-        const failure = hostFailure(error)
-        if (!failure) {
-          return {
-            ok: false,
-            content: `Browser operation failed: ${error instanceof Error ? error.message : String(error)}`,
-            errorCode: 'execution_failed',
-          }
-        }
-        return {
-          ok: false,
-          content: failure.retryable ? `${failure.message} (retryable)` : failure.message,
-          errorCode: errorCodeFor(failure),
-          errorDetails: { code: failure.code, retryable: failure.retryable },
-        }
+        return failureResult(error)
       }
     },
   }
@@ -214,13 +227,83 @@ function asInput(input: unknown): BrowserInput | undefined {
   return parsed.success ? parsed.data : undefined
 }
 
-async function run(host: BrowserHost, input: BrowserInput, context: ToolContext): Promise<ToolResult> {
-  // Session *and* turn: the host blocks a session that the user took the browser
-  // from, and only a new turn lifts that, so the turn has to travel with the call.
-  const session: BrowserCaller = {
+type BatchInput = Extract<BrowserInput, { operation: 'batch' }>
+type StepInput = Exclude<BrowserInput, BatchInput>
+
+/**
+ * The steps in order, stopping at the first that fails — the steps after it
+ * were written for a page that step was meant to produce.
+ *
+ * The answer is every step's own answer, numbered, so a batch reads the same
+ * as the calls it replaces; the failure and what was skipped close it. Images
+ * from the steps that ran are kept either way.
+ */
+async function runBatch(host: BrowserHost, batch: BatchInput, context: ToolContext): Promise<ToolResult> {
+  const total = batch.steps.length
+  const lines: string[] = []
+  const images: NonNullable<ToolResult['images']> = []
+  // A step with no tabId means the tab the batch names, or the latest it opened.
+  let current = batch.tabId
+  for (const [index, raw] of batch.steps.entries()) {
+    const label = `[${index + 1}/${total}]`
+    const operation = String(raw['operation'])
+    const skipped = total - index - 1
+    const stop = (result: ToolResult): ToolResult => {
+      lines.push(`${label} ${operation} failed: ${result.content}`)
+      if (skipped > 0) lines.push(`Stopped; the remaining ${skipped} step${skipped === 1 ? ' was' : 's were'} not run.`)
+      return {
+        ...result,
+        content: lines.join('\n'),
+        ...(images.length > 0 ? { images } : {}),
+        metadata: { display: { summary: `Failed at step ${index + 1} of ${total}` } },
+      }
+    }
+    if (context.abortSignal?.aborted === true) {
+      return stop({ ok: false, content: 'The batch was cancelled.', errorCode: 'aborted' })
+    }
+    const filled = raw['tabId'] === undefined && OPERATIONS_NEEDING_TAB.has(operation) ? { ...raw, tabId: current } : raw
+    const step = browserInputSchema.safeParse(filled)
+    if (!step.success || step.data.operation === 'batch') {
+      return stop({ ok: false, content: 'The step is not valid Browser input.', errorCode: 'invalid_input' })
+    }
+    let result: ToolResult
+    try {
+      if (step.data.operation === 'browser.create_tab') {
+        const tab = await host.createTab(callerOf(context), step.data.url)
+        current = tab.tabId
+        result = tabResult(tab, 'Opened a tab')
+      } else {
+        result = await run(host, step.data, context, images.length + 1)
+      }
+    } catch (error) {
+      result = failureResult(error)
+    }
+    if (!result.ok) return stop(result)
+    images.push(...(result.images ?? []))
+    lines.push(`${label} ${operation}: ${result.content}`)
+  }
+  return {
+    ok: true,
+    content: lines.join('\n'),
+    ...(images.length > 0 ? { images } : {}),
+    metadata: { display: { summary: `Ran ${total} steps` } },
+  }
+}
+
+/**
+ * Session *and* turn: the host blocks a session that the user took the browser
+ * from, and only a new turn lifts that, so the turn has to travel with the call.
+ */
+function callerOf(context: ToolContext): BrowserCaller {
+  return {
     sessionId: context.sessionId,
     ...(context.currentTurnId === undefined ? {} : { turnId: context.currentTurnId }),
   }
+}
+
+/** `imageIndex` numbers a screenshot's caption among the images of one result. */
+async function run(host: BrowserHost, input: StepInput, context: ToolContext, imageIndex = 1): Promise<ToolResult> {
+  const session = callerOf(context)
   switch (input.operation) {
     case 'browser.get_state': {
       const tabs = await host.listTabs(session)
@@ -246,7 +329,7 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       return tabResult(tab, action.summary)
     }
     case 'tab.wait_for_load': {
-      const options: { timeoutMs: number; until?: 'domcontentloaded' | 'load'; signal?: AbortSignal } = {
+      const options: { timeoutMs: number; until?: BrowserLoadState; signal?: AbortSignal } = {
         timeoutMs: input.timeoutMs ?? WAIT_FOR_LOAD_DEFAULT_MS,
       }
       if (input.until !== undefined) options.until = input.until
@@ -294,7 +377,7 @@ async function run(host: BrowserHost, input: BrowserInput, context: ToolContext)
       return snapshotResult(input.operation, snapshot)
     }
     case 'page.screenshot':
-      return screenshot(host, session, input.tabId, context)
+      return screenshot(host, session, input.tabId, context, input.settle !== false, imageIndex)
     case 'page.click': {
       const result = await host.click(session, input.tabId, action({
         ref: input.ref,
@@ -400,6 +483,8 @@ async function screenshot(
   caller: BrowserCaller,
   tabId: string,
   context: ToolContext,
+  settle: boolean,
+  imageIndex: number,
 ): Promise<ToolResult> {
   if (context.getSupportsImageInput?.() !== true) {
     return {
@@ -420,7 +505,7 @@ async function screenshot(
     }
   }
 
-  const shot = await host.screenshot(caller, tabId)
+  const shot = await host.screenshot(caller, tabId, action({ settle }, context))
   const imported = await store.importImage(context.sessionId, shot.bytes, shot.name)
   if (!imported.ok) {
     return {
@@ -443,13 +528,14 @@ async function screenshot(
       scaleX: metadata.originalWidth / ref.width,
       scaleY: metadata.originalHeight / ref.height,
     },
-    { index: 1, localPath: metadata.localPath },
+    { index: imageIndex, localPath: metadata.localPath },
   )
 
   return {
     ok: true,
     content: [
       `Screenshot of the visible area of tab ${tabId}.`,
+      ...(shot.settle === undefined ? [] : [shot.settle]),
       caption,
       ...coordinateLines(shot, ref.width),
       'The picture is attached as pixels; no text was extracted from it.',

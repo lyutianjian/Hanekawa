@@ -46,7 +46,7 @@ export type IconName =
   // the「本地」pill did. The branch pill draws this one, and so do its rows.
   | 'branch'
   // --- the canvas header (5e) ---
-  | 'code'
+  | 'external'
   // --- the sidebar footer and the title bar (5g) ---
   | 'help'
   | 'sidebar'
@@ -57,6 +57,7 @@ export type IconName =
   | 'shield'
   // --- a message's meta row ---
   | 'copy'
+  | 'rewind'
   // --- the status line's token readout ---
   | 'database'
   // --- the composer's model chip, once the row is too narrow for its name ---
@@ -145,11 +146,10 @@ const ICONS = {
       'M11.5 5.6v1.4a2.5 2.5 0 0 1-2.5 2.5H7a2.5 2.5 0 0 0-2.5 2.5',
     ],
   },
-  // Angle brackets and a slash — "open in an editor". Monochrome like every
-  // other icon here: the design document's coloured VS Code mark would be the
-  // one thing in the interface that ignores `currentColor`, and the header is
-  // the same neutral chrome the sidebar is.
-  code: { paths: ['M5.6 5 2.6 8l3 3', 'M10.4 5l3 3-3 3', 'M9.2 3.4 6.8 12.6'] },
+  // A box with an arrow leaving it: "open this in another app". It replaced
+  // `</>`, which beside 「打开位置」 read as "view the source" rather than as the
+  // hand-off to VS Code the button is. Monochrome like every other icon here.
+  external: { paths: ['M7 3.2H4.2a1 1 0 0 0-1 1v7.6a1 1 0 0 0 1 1h7.6a1 1 0 0 0 1-1V9', 'M9.4 3.2h3.4v3.4', 'M12.8 3.2 7.6 8.4'] },
   // A panel with its left column ruled off: the rail toggle. The same mark the
   // reference builds put in the same corner.
   sidebar: {
@@ -200,6 +200,8 @@ const ICONS = {
       'M10.4 4.6V4.2a1 1 0 0 0-1-1H4.2a1 1 0 0 0-1 1v5.2a1 1 0 0 0 1 1h.4',
     ],
   },
+  // A user message's 回退: a counter-clockwise arc, the way back to before it.
+  rewind: { paths: ['M3.4 6.2A5 5 0 1 1 3 8.8', 'M3.2 3.2v3.2h3.2'] },
   // The token readout's one mark. It replaced a set of three — two arrows and a
   // stack, one per direction — when the line stopped naming directions and
   // started naming a total. A cylinder is the mark for "accumulated store",

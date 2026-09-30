@@ -43,6 +43,7 @@ import type { OverlayView } from './dom/overlayView.js'
 import type { PermissionRequestView } from './dom/permissionRequestView.js'
 import type { RewindPanel } from './dom/rewindView.js'
 import type { SurfacePanel } from './dom/surfaceView.js'
+import type { ProcessStripView } from './dom/processStripView.js'
 import type { QueueDom } from './dom/queueView.js'
 import type { TaskPanelDom } from './dom/taskPanelView.js'
 import { append, el, show } from './dom/dom.js'
@@ -145,6 +146,7 @@ import {
   modelPickerView,
   moveSurfaceSelection as stepSurfaceSelection,
   resumePickerView,
+  runningProcessCount,
   type SupportedSurface,
   type SurfaceAction,
   type SurfaceView,
@@ -222,6 +224,7 @@ export interface PaneSessionDeps {
   queueStrip: QueueDom
   /** The resident strip above the composer; a singleton, like the composer itself. */
   taskPanel: TaskPanelDom
+  processStrip: ProcessStripView
   status: StatusView
   composer: ComposerView
   /**
@@ -382,6 +385,8 @@ export interface PaneSession {
    */
   openRuntimeMenu(): Promise<void>
   runSurfaceAction(action: SurfaceAction): Promise<void>
+  /** The process tag above the composer: opens `/tasks`, or closes it when open. */
+  toggleBackgroundTasks(): void
   clearQueue(): Promise<void>
   refreshPanes(): Promise<void>
 }
@@ -427,6 +432,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // hand-written DOM stub in tests. A rejected write is swallowed — the button
     // is a convenience beside text the user can still select.
     onCopy: (text) => { void navigator.clipboard?.writeText(text).catch(() => {}) },
+    onRewind: (messageId) => { void openRewindPanel(messageId) },
   })
   const welcome = createWelcomeView(welcomeEl, {
     onBranchIntent: (intent) => runBranchPickerIntent(intent),
@@ -513,6 +519,10 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let queued: readonly PersistedQueuedMessage[] = Object.freeze([])
   let surfaceView: SurfaceView | undefined
   let surfaceIndex = 0
+  /** The task whose stop button awaits its second press, while `/tasks` is open. */
+  let armedKillId: string | undefined
+  /** Ticks the elapsed times while `/tasks` is painted. */
+  let taskClock: ReturnType<typeof setInterval> | undefined
   /**
    * A slash command's information table, which shares the `#surface` node with
    * the pickers but is state of its own.
@@ -736,6 +746,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       isStreaming,
       startedAt: turnStartedAt,
       turnId: transcript.turnId,
+      ...(transcript.phase ? { phase: transcript.phase } : {}),
     }, selectedSubagent)
     subagentList = undefined
     // The one place that decides whether this pane has a conversation, so the
@@ -844,6 +855,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * table because opening either clears the other, so at most one is set.
    */
   function renderSurface(): void {
+    syncTaskClock()
     if (!active) return
     if (surfaceView) deps.surface.showSurface(surfaceView, surfaceIndex)
     else if (commandView) deps.surface.showCommandView(commandView.title, commandView.rows)
@@ -853,7 +865,39 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     surfaceView = undefined
     surfaceIndex = 0
     commandView = undefined
+    armedKillId = undefined
+    syncTaskClock()
     if (active) deps.surface.hide()
+  }
+
+  function syncTaskClock(): void {
+    const wanted = active && surfaceView?.surface === 'background-tasks'
+    if (wanted && !taskClock) taskClock = setInterval(refreshTasksSurface, 1000)
+    else if (!wanted && taskClock) {
+      clearInterval(taskClock)
+      taskClock = undefined
+    }
+  }
+
+  /**
+   * Rebuilds an open `/tasks` from the client's live list, keeping the selection
+   * on the same task. Skipped when nothing visible changed, so the per-chunk
+   * snapshot ticks and the clock do not rebuild rows under the pointer.
+   */
+  function refreshTasksSurface(): void {
+    if (surfaceView?.surface !== 'background-tasks') return
+    const next = backgroundTasksView(client.getBackgroundTasks(), Date.now(), armedKillId)
+    if (JSON.stringify(next.rows) === JSON.stringify(surfaceView.rows)) return
+    const selectedId = surfaceView.rows[surfaceIndex]?.id
+    const kept = next.rows.findIndex((row) => row.id === selectedId)
+    surfaceView = next
+    surfaceIndex = kept >= 0 ? kept : initialSurfaceSelection(next)
+    renderSurface()
+  }
+
+  function toggleBackgroundTasks(): void {
+    if (surfaceView?.surface === 'background-tasks') hideSurface()
+    else void openSurface('background-tasks')
   }
 
   function renderRewind(): void {
@@ -881,6 +925,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       runtime,
       contextGaugeView(client.getContextUsedTokens(), runtime),
     )
+    deps.processStrip.render(runningProcessCount(client.getBackgroundTasks()))
     // The strip's send-gate half follows the same snapshot: a model switch to
     // or away from image capability changes what the button should explain.
     renderAttachmentGate()
@@ -1122,9 +1167,22 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     renderTranscript()
     renderTaskPanel()
   })
-  /** `snapshot` arrives per chunk too, and the sidebar's badges hang off it. */
+  /**
+   * `snapshot` arrives per chunk too, and the sidebar's badges hang off it — but
+   * only off the few fields in `shellKey`, so a chunk that moves none of them is
+   * the status line's alone. (`hasOverlay` announces its own edges.)
+   */
+  let shellKey: string | undefined
   const statusRepaint = createRepaint(() => {
     renderStatus()
+    const key = [
+      client.getSnapshot().isStreaming,
+      client.getBackgroundTasks().some((task) => task.status === 'running'),
+      hasConversation(),
+      client.getSession()?.id,
+    ].join()
+    if (key === shellKey) return
+    shellKey = key
     deps.onShellChanged?.()
   })
 
@@ -1520,6 +1578,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // Per streamed chunk, like the event above — the usage numbers, the context
     // ring and every sidebar badge ride on this one snapshot.
     statusRepaint.request()
+    if (active) refreshTasksSurface()
     // A `/clear` or `/resume` rebinds the host to another session, and the
     // checkpoints on screen belong to the one it left: every option would
     // resolve to a message the new session has never heard of.
@@ -1545,6 +1604,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   async function openSurface(name: SupportedSurface): Promise<void> {
     try {
       const view = await buildSurfaceView(name)
+      armedKillId = undefined
       surfaceView = view
       surfaceIndex = initialSurfaceSelection(view)
       renderSurface()
@@ -1565,7 +1625,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
         })
       }
       case 'background-tasks':
-        return backgroundTasksView(await client.listBackgroundTasks())
+        return backgroundTasksView(await client.listBackgroundTasks(), Date.now())
       case 'resume-picker':
         return resumePickerView({
           sessions: await client.listSessions(),
@@ -1599,6 +1659,13 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * of these changes what the panel was describing.
    */
   async function runSurfaceAction(action: SurfaceAction): Promise<void> {
+    // Stopping stays in the list: the row turning 已结束 is the confirmation.
+    if (action.kind === 'arm-kill' || action.kind === 'kill-task') {
+      armedKillId = action.kind === 'arm-kill' ? action.taskId : undefined
+      refreshTasksSurface()
+      if (action.kind === 'kill-task') await client.killTask(action.taskId).catch((error: unknown) => note(describe(error), 'error'))
+      return
+    }
     hideSurface()
     try {
       switch (action.kind) {
@@ -1630,14 +1697,22 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * it, which would otherwise leave two panels stacked. A failed checkpoint
    * read still opens the panel, empty — showing "No checkpoints available"
    * explains itself; a command that appears to do nothing does not.
+   *
+   * `messageId` is a user bubble's 回退 button: the panel opens on that
+   * message's confirm screen, or on the list when it has no checkpoint.
    */
-  async function openRewindPanel(): Promise<void> {
+  async function openRewindPanel(messageId?: string): Promise<void> {
+    if (messageId !== undefined && client.getSnapshot().isStreaming) {
+      note('回合进行中，无法回退。', 'error')
+      return
+    }
     hideSurface()
     try {
       rewind = createRewindState(await client.getCheckpoints())
     } catch (error) {
       rewind = failRewindRun(createRewindState([]), describe(error))
     }
+    if (messageId !== undefined) rewind = applyRewindIntent(rewind, { kind: 'select-row', id: messageId }).state
     renderRewind()
   }
 
@@ -1889,6 +1964,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.permissionRequest.hide(true)
     deps.rewindPanel.hide()
     deps.surface.hide()
+    syncTaskClock()
     deps.queueStrip.hide()
     // Emptied, not remembered: the strip is a singleton on the composer's axis,
     // so a background pane's checklist would otherwise hang over the session the
@@ -1922,6 +1998,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   function dispose(): void {
     if (active) closeImageViewer()
+    if (taskClock) clearInterval(taskClock)
     transcriptView.dispose()
     streamRepaint.cancel()
     statusRepaint.cancel()
@@ -2159,6 +2236,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     openEffortPicker: () => openSurface('effort-picker'),
     openRuntimeMenu,
     runSurfaceAction,
+    toggleBackgroundTasks,
     clearQueue,
     refreshPanes,
   }

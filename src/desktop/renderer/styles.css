@@ -179,7 +179,10 @@
      rounded corners. It is padding on `.transcript` rather than a margin on the
      column, so the scrollbar still keeps to the panel's edge, and `#input-row`
      repeats the same value — the two are one axis. */
-  --reading-gutter: 40px;
+  /* 4% of the canvas (the `cqi` resolves against `#canvas`, the container),
+     between 16px and 40px: a canvas narrowed by the browser panel stops
+     spending 80px of its width on two empty margins. */
+  --reading-gutter: clamp(16px, 4cqi, 40px);
   /* How far the composer capsule overhangs the reading column on each side.
      It is not a decoration: `#composer` carries 16px of its own padding, so a
      capsule aligned edge-to-edge with the transcript puts its *text* 16px
@@ -434,8 +437,26 @@ body {
   -webkit-app-region: drag;
 }
 #titlebar button,
+#titlebar input,
 .titlebar-menu-shell,
-.titlebar-menu { -webkit-app-region: no-drag; }
+.titlebar-menu,
+.canvas-menu { -webkit-app-region: no-drag; }
+/* The rail and the menus, held as wide as the sidebar column so the canvas
+   header after them starts on the canvas's left edge. It follows the sidebar's
+   collapse on the same curves; collapsed, `min-width` leaves it at its natural
+   width. The subtraction pays back the bar's own left padding and its gap. */
+.titlebar-lead {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 calc(var(--sidebar-width) + var(--sidebar-gutter) - max(var(--space-3), var(--titlebar-inset-left)) - var(--space-1));
+  min-width: max-content;
+  transition: flex-basis var(--motion-layout) var(--ease-standard);
+}
+body:has(#sidebar.collapsed) .titlebar-lead {
+  flex-basis: 0;
+  transition: flex-basis var(--motion-layout) var(--ease-exit);
+}
 .titlebar-rail {
   display: inline-flex;
   align-items: center;
@@ -520,18 +541,21 @@ body {
 
 /* --- canvas header ---
    `design_guidance.md` 六.1: session identity on the left, tools on the right,
-   no bottom rule — the status bar underneath is separation enough. The two
-   items the document puts beside "open location" (split view, inspector) have
-   no backend and are omitted. */
+   no bottom rule. It lives in the title bar's blank strip (after
+   `.titlebar-lead`), so the canvas spends no row on it. The two items the
+   document puts beside "open location" (split view, inspector) have no backend
+   and are omitted. */
 #canvas-header {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  height: 36px;
-  padding: 0 var(--space-3) 0 var(--space-4);
+  height: 100%;
+  padding: 0 var(--space-2) 0 var(--space-4);
 }
+#canvas-header[hidden] { display: none; }
 .canvas-identity {
   display: flex;
   align-items: center;
@@ -604,15 +628,17 @@ body {
 .canvas-menu-item:hover { background: var(--surface-hover); }
 .canvas-menu-item.danger { color: var(--text-danger); }
 .canvas-header-controls { display: flex; align-items: center; gap: var(--space-2); }
+/* Quiet like the title bar's other controls: a filled, ruled pill here outweighed
+   the session title it sits beside. */
 .canvas-open-location {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  background: var(--surface-card);
+  background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-pill);
-  padding: var(--space-1) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-1) var(--space-2);
   font: inherit;
   font-size: var(--type-meta);
   cursor: pointer;
@@ -714,6 +740,7 @@ body {
 }
 #canvas {
   position: relative;
+  container-type: inline-size;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -1927,7 +1954,8 @@ body.settings-open #browser-resizer { display: none; }
    plain surface it was. Order is the same on both sides — the DOM order is the
    order. */
 .transcript .item.user .item-meta { align-self: flex-start; }
-.item-copy {
+.item-copy,
+.item-rewind {
   display: inline-flex;
   align-items: center;
   padding: 0;
@@ -1936,9 +1964,12 @@ body.settings-open #browser-resizer { display: none; }
   color: inherit;
   cursor: pointer;
 }
-.item-copy:hover { color: var(--text-secondary); }
-.item-copy:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.item-copy .icon { width: 13px; height: 13px; }
+.item-copy:hover,
+.item-rewind:hover { color: var(--text-secondary); }
+.item-copy:focus-visible,
+.item-rewind:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.item-copy .icon,
+.item-rewind .icon { width: 13px; height: 13px; }
 /* --- inline file pills ---
    A referenced file inside the user's bubble. `--surface-canvas` under a card-backed
    bubble is the inset label of design_guidance 六.3 —「--surface-canvas 底 +
@@ -2047,43 +2078,74 @@ body.settings-open #browser-resizer { display: none; }
   user-select: none;
 }
 /* Painted through `color` and filled with `currentColor`, like every other bead
-   in this sheet: the accent stays a paint role and the three named accent fills
-   stay three. The strong rung, because the weak one may not be spelled on
-   `color` at all (`rendererStyleTokens.test.ts`). */
+   in this sheet. Neutral grey rather than the brand, on the lighter tertiary
+   rung, and a deeper breath than the step beads' `breathe`: this dot is the
+   row's only motion besides the sheen, so its swing has to read at a glance. */
 .waiting-bead {
   position: relative;
   flex: 0 0 auto;
   width: 8px;
   height: 8px;
   border-radius: var(--radius-pill);
-  color: var(--accent-brand-strong);
+  color: var(--text-tertiary);
   background: currentColor;
-  animation: breathe var(--motion-running) var(--ease-standard) infinite;
+  animation: waiting-breathe var(--motion-running) var(--ease-standard) infinite;
 }
+@keyframes waiting-breathe { 50% { opacity: 0.3; } }
 /* The words carry the thinking row's old sheen, now that the tail row is where
    「正在思考」 is read: a band of `--text-primary` travelling through
-   `--text-secondary` letters, drawn like `sheen`. The band
-   is a text highlight, not an accent, so it holds in both themes — brighter on
-   dark, deeper on light. Reduced motion stops it on its last frame, which is
-   plain secondary text.
+   `--text-tertiary` letters. The band is a text highlight, not an accent, so it
+   holds in both themes — brighter on dark, deeper on light. Tertiary rather than
+   secondary: on the light canvas secondary sat too close to primary for the
+   band to show.
 
-   Its own keyframes rather than `sheen`, because it rests between passes. The
-   band enters at 120% and leaves at -20% — the positions where it first and
-   last touches the letters — so the whole sweep is visible: about 1.4s, a fifth
-   quicker than `sheen`'s pace, then 1.8s of plain text, in one
+   Drawn with transforms only, so the compositor runs it without a repaint per
+   frame: `.waiting-sheen` is a soft-edged window 60% of the label wide sliding
+   left to right, and its `::after` — the same words in the brighter colour, as
+   wide as the label — slides back by the same distance, so the letters never
+   move. The resting transforms park the window past the right edge, which is
+   also where reduced motion leaves it: plain tertiary text.
+
+   The sweep is about 1.4s, then 1.8s of plain text, in one
    `--motion-label-sheen` loop. */
 .waiting-label {
-  color: var(--text-secondary);
-  background: linear-gradient(90deg, var(--text-secondary) 35%, var(--text-primary) 50%, var(--text-secondary) 65%);
-  background-size: 220% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-tertiary);
+}
+.waiting-sheen {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 60%;
+  overflow: hidden;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent, black 50%, transparent);
+  mask-image: linear-gradient(90deg, transparent, black 50%, transparent);
+  transform: translateX(166.667%);
   animation: label-sheen var(--motion-label-sheen) linear infinite;
 }
+.waiting-sheen::after {
+  content: attr(data-label);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 166.667%;
+  color: var(--text-primary);
+  transform: translateX(-100%);
+  animation: label-sheen-words var(--motion-label-sheen) linear infinite;
+}
 @keyframes label-sheen {
-  from { background-position: 120% 0; }
-  44%, to { background-position: -20% 0; }
+  0% { transform: translateX(-100%); }
+  44%, to { transform: translateX(166.667%); }
+}
+@keyframes label-sheen-words {
+  0% { transform: translateX(60%); }
+  44%, to { transform: translateX(-100%); }
 }
 /* The counter, in the digits that do not jitter as they climb. Monospaced for
    the same reason the meta row's time is: it changes ten times a second. */
@@ -2095,7 +2157,8 @@ body.settings-open #browser-resizer { display: none; }
 }
 /* Below the model's threshold the counter has no text, and a flex gap on either
    side of an empty span is a hole in the row. */
-.waiting-elapsed:empty { display: none; }
+.waiting-elapsed:empty,
+.waiting-hint:empty { display: none; }
 .waiting-hint { font-size: var(--type-micro); color: var(--text-tertiary); }
 /* --- activity groups ---
    Two layers of disclosure (§2): the group head carries the turn's boundary and
@@ -2281,12 +2344,21 @@ body.settings-open #browser-resizer { display: none; }
    `currentColor` — so the three named accent fills stay three. It is watchable
    only because the head that holds it is a kept node: see `thinkingStep`. */
 .step.thinking.live .step-rule {
+  position: relative;
+  overflow: hidden;
   color: var(--accent-tool);
+  background: transparent;
+}
+/* A transform, not `background-position`, so the compositor runs it. */
+.step.thinking.live .step-rule::after {
+  content: '';
+  position: absolute;
+  inset: 0;
   background: linear-gradient(90deg, transparent, currentColor, transparent);
-  background-size: 220% 100%;
+  transform: translateX(100%);
   animation: sheen var(--motion-running) var(--ease-standard) infinite;
 }
-@keyframes sheen { from { background-position: 200% 0; } to { background-position: -20% 0; } }
+@keyframes sheen { 0% { transform: translateX(-100%); } to { transform: translateX(100%); } }
 /* --- the thinking row's head ---
    Not the turn's head and not a tool's: nothing ran, so the row is set apart by
    size rather than by dimming — the micro rung, read at `--text-secondary`. The
@@ -2920,10 +2992,10 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-float);
-  padding: 8px 12px;
+  padding: var(--space-2) var(--space-3);
 }
-#surface h2 { font-size: 12px; margin: 0 0 6px; color: var(--text-primary); font-weight: 600; }
-#surface .row { display: flex; gap: 10px; padding: 2px 0; font-size: 13px; }
+#surface h2 { font-size: var(--type-meta); margin: 0 0 var(--space-1); color: var(--text-primary); font-weight: 600; }
+#surface .row { display: flex; gap: var(--space-2); padding: 2px 0; font-size: var(--type-ui); }
 #surface .row[role="option"] { cursor: pointer; padding: 2px 6px; margin: 0 -6px; border-radius: var(--radius-sm); }
 #surface .row[role="option"]:hover { background: var(--surface-hover); }
 #surface .row.selected { background: var(--surface-active); }
@@ -2933,15 +3005,34 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    replaces was the TUI keeping that column with spaces (todo V5). */
 #surface .row-mark { flex: 0 0 12px; display: flex; align-items: center; color: var(--text-primary); }
 #surface .row-mark .icon { width: 6px; height: 6px; }
-#surface .row .label { min-width: 11rem; }
-#surface .row .value { color: var(--text-secondary); flex: 1 1 auto; }
+/* Both sides may wrap: a label wider than its 11rem column (a long command, a
+   deep path) used to overflow its box and print over the value beside it. */
+#surface .row .label { flex: 0 1 auto; min-width: min(11rem, 50%); overflow-wrap: anywhere; }
+#surface .row .value { color: var(--text-secondary); flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+/* Background tasks invert the usual shape: the label is the long part (the
+   command), the value a short status that should stay on one line. */
+#surface[data-surface="background-tasks"] .row .label { flex: 1 1 auto; font-family: var(--font-mono); font-size: var(--type-code); }
+#surface[data-surface="background-tasks"] .row .value { flex: 0 0 auto; white-space: nowrap; }
 #surface .row.current .label { color: var(--text-primary); }
 #surface .row.disabled { opacity: 0.55; }
 #surface .row.heading .label { color: var(--text-primary); }
 #surface .row.tone-success .value { color: var(--text-success); }
 #surface .row.tone-warning .value { color: var(--text-warn); }
 #surface .row.tone-error .value { color: var(--text-danger); }
-#surface .hint { color: var(--text-secondary); font-size: 11px; margin-top: 6px; }
+#surface .row-action {
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+#surface .row-action:hover { background: var(--surface-hover); color: var(--text-danger); }
+#surface .row-action.danger { color: var(--text-danger); }
+#surface .hint { color: var(--text-secondary); font-size: var(--type-micro); margin-top: var(--space-1); }
 
 /*
   --- the queued-message strip ---
@@ -2957,14 +3048,14 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-float);
-  padding: 8px 12px;
-  font-size: 12px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--type-meta);
 }
 #queue .queue-header {
   display: flex;
   align-items: baseline;
-  gap: 10px;
-  margin-bottom: 4px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 #queue .queue-title { color: var(--text-warn); flex: 1 1 auto; }
 #queue .queue-clear {
@@ -2974,11 +3065,11 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border-radius: var(--radius-pill);
   padding: 1px 10px;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--type-micro);
   cursor: pointer;
 }
 #queue .queue-clear:hover { color: var(--text-danger); border-color: var(--text-danger); }
-#queue .queue-row { display: flex; gap: 8px; padding: 1px 0; color: var(--text-secondary); }
+#queue .queue-row { display: flex; gap: var(--space-2); padding: 1px 0; color: var(--text-secondary); }
 #queue .queue-position { flex: 0 0 auto; opacity: 0.7; }
 #queue .queue-label {
   flex: 1 1 auto;
@@ -2996,14 +3087,14 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-float);
-  padding: 4px 0;
+  padding: var(--space-1) 0;
 }
-#suggestions .suggestion { display: flex; gap: 10px; padding: 3px 12px; font-size: 13px; cursor: pointer; }
+#suggestions .suggestion { display: flex; gap: var(--space-2); padding: 3px var(--space-3); font-size: var(--type-ui); cursor: pointer; }
 /* Hover is only an affordance: it says the row is clickable, it does not move the
    selection. The keyboard's own row stays `.selected` under the pointer. */
 #suggestions .suggestion:hover { background: var(--surface-hover); }
-#suggestions .suggestion .name { color: var(--text-primary); min-width: 9rem; }
-#suggestions .suggestion .description { color: var(--text-secondary); }
+#suggestions .suggestion .name { color: var(--text-primary); flex: 0 1 auto; min-width: min(9rem, 50%); overflow-wrap: anywhere; }
+#suggestions .suggestion .description { color: var(--text-secondary); flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #suggestions .suggestion.selected { background: var(--surface-active); }
 #suggestions .suggestion.selected .name { color: var(--text-primary); }
 
@@ -3076,6 +3167,24 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    `dom/taskPanelView.ts` reuses the panel node across repaints, so the entrance
    plays when the checklist appears and not once per streamed token. */
 #task-panel:empty { display: none; }
+/* The running-process tag: a quiet pill above the composer that opens `/tasks`. */
+#process-strip:empty { display: none; }
+#process-strip { display: flex; margin-bottom: var(--space-2); }
+.process-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.process-chip:hover { color: var(--text-primary); background: var(--surface-hover); }
+.process-chip .icon { width: 8px; height: 8px; color: var(--text-success); }
 .task-panel {
   position: relative;
   background: var(--surface-card);
@@ -3717,7 +3826,12 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   right: 100%;
   bottom: 0;
   z-index: 6;
+  /* `max-content`: positioned off `right: 100%` of a ~15rem shell, the flyout's
+     shrink-to-fit width had nothing to fit into and collapsed to its min-width,
+     wrapping a long model name and stacking 「视觉」 one glyph per line. */
+  width: max-content;
   min-width: 13rem;
+  max-width: 24rem;
   max-height: 50vh;
   overflow-y: auto;
   display: flex;
@@ -3748,8 +3862,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   font-size: var(--type-ui);
   cursor: pointer;
 }
-.chip-flyout-item .btn-label { flex: 1 1 auto; }
-.chip-flyout-note { color: var(--text-secondary); font-size: var(--type-micro); }
+.chip-flyout-item .btn-label { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chip-flyout-note { flex: 0 0 auto; white-space: nowrap; color: var(--text-secondary); font-size: var(--type-micro); }
 .chip-flyout-item .icon { color: var(--text-primary); width: 14px; height: 14px; }
 .chip-flyout-item:hover:enabled { background: var(--surface-hover); }
 .chip-flyout-item.disabled { opacity: 0.55; cursor: default; }
@@ -4370,7 +4484,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    the same reason since S9 — they hang off `.composer-column`. Which is also
    what keeps `probes.surface()` honest: it reports "open" from
    `getClientRects()`, not from the `hidden` attribute. */
-#canvas.settings-open > #canvas-header,
+body.settings-open #canvas-header,
 #canvas.settings-open > #transcript-area,
 #canvas.settings-open > #input-row {
   display: none;

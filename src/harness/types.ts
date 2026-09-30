@@ -5,6 +5,7 @@ import type { JsonSchema, ToolValidationResult } from './toolValidation.js'
 import type { PermissionMode } from './permissions.js'
 import type { RiskContext, RiskTier } from './risk/types.js'
 import type { SessionMetricInput } from './metrics.js'
+import type { RetryErrorCategory } from '../config/retry.js'
 import type { ImageAttachmentMetadata, ImageAttachmentRef, ImageInputErrorReason, ImageMimeType } from '../media/types.js'
 
 export type RiskLevel = 'safe' | 'confirm' | 'dangerous'
@@ -29,6 +30,10 @@ export type ModelStreamEvent =
   | { type: 'tool_input_delta'; index?: number; partialJson: string }
   | { type: 'message_stop' }
   | { type: 'idle_warning'; idleMs: number }
+  /** Attempt `attempt` failed for `reason`; the provider sleeps `delayMs` and sends again. */
+  | { type: 'retry'; attempt: number; reason: RetryErrorCategory; delayMs: number }
+  /** An automatic compaction began summarizing (`start`) or settled either way (`end`). */
+  | { type: 'compact'; phase: 'start' | 'end' }
   /**
    * The loop degraded a request's historical images to text placeholders
    * because the serving model cannot accept images (design §9.1). Emitted

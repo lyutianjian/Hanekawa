@@ -952,6 +952,11 @@ test('Browser domain rules scope the navigating operations and nothing else', as
   // prompts, rather than inheriting the allow or the deny.
   assert.equal(await gate.approve(browserTestTool, { operation: 'page.text.snapshot', tabId: 't1' }), true)
   assert.equal(prompted, 1)
+  // A batch is asked about by the host of its first navigating step.
+  const batch = (url: string) => ({ operation: 'batch', tabId: 't1', steps: [{ operation: 'page.scroll' }, { operation: 'tab.navigate', url }] })
+  assert.equal(await gate.approve(browserTestTool, batch('https://blocked.test/x')), false)
+  assert.equal(await gate.approve(browserTestTool, batch('https://allowed.test/x')), true)
+  assert.equal(prompted, 1)
 })
 
 test('a Browser always-allow rule is scoped to the host it navigated to', async () => {

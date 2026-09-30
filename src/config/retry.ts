@@ -80,6 +80,8 @@ export interface RetryOptions {
    * narrow the policy further but never widen it.
    */
   shouldRetry?: (error: unknown, attempt: number) => boolean
+  /** Told before each backoff sleep: which attempt failed, why, and how long until the next. */
+  onRetry?: (retry: { attempt: number; category: RetryErrorCategory; delayMs: number }) => void
 }
 
 export class FallbackTriggeredError extends Error {
@@ -147,6 +149,7 @@ export async function withRetry<T>(
 
       used[category]++
       const delay = calculateRetryDelay(category, used[category], attempt, baseDelayMs, maxDelayMs, jitterFactor)
+      options.onRetry?.({ attempt, category, delayMs: delay })
       await sleep(delay, options.signal)
     }
   }

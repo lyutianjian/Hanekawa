@@ -66,7 +66,8 @@ export interface ComposerView {
   clear(): void
   focus(): void
   /**
-   * Retargets the submit button between sending and queueing.
+   * Retargets the round button: send (into the running turn, mid-turn) or,
+   * with nothing typed mid-turn, stop.
    *
    * It used to *disable* the button, because a second `SessionController.submit`
    * would overwrite the live `AbortController` and leave the first turn
@@ -403,12 +404,14 @@ export function createComposerView(els: {
     // Enabled in every state: `requestSubmit()` ignores a disabled button, so a
     // grey-but-meaningful button would swallow the click with no error anywhere.
     els.submit.disabled = false
-    els.submit.classList.remove('idle', 'ready', 'streaming')
+    els.submit.classList.remove('idle', 'ready')
     els.submit.classList.add(view.state)
+    show(els.submit, !view.showStop)
+    show(els.stop, view.showStop)
     // The note rides the button's own tooltip: the click still reaches the
     // pane (which explains itself in the transcript); this is the *why* shown
     // before the click, not a gate the renderer enforces on its own.
-    const label = view.state === 'streaming' ? view.label : (sendBlockNote ?? view.label)
+    const label = sendBlockNote ?? view.label
     els.submit.setAttribute('aria-label', label)
     els.submit.title = label
   }
@@ -797,13 +800,10 @@ export function createComposerView(els: {
       els.input.focus()
     },
     setStreaming(streaming) {
-      // Stop appears alongside the send button rather than instead of it:
-      // interrupting the turn and queueing the next message are both things a
-      // user may want mid-turn, and the round button keeps meaning "send or
-      // queue" so it agrees with `model/keymap.ts`. See `submitButtonView`.
+      // Stop takes the send button's place only while nothing is typed; see
+      // `submitButtonView`.
       streamingNow = streaming
       applySubmitState()
-      show(els.stop, streaming)
     },
     renderRuntime(runtime, gauge) {
       runtimeSnapshot = runtime

@@ -124,20 +124,12 @@ test('the send button relabels rather than disabling mid-turn', () => {
   assert.notEqual(submitLabel(true), submitLabel(false))
 })
 
-test('the send button has three visual states, and streaming outranks emptiness', () => {
-  assert.equal(submitButtonView({ streaming: false, empty: true }).state, 'idle')
-  assert.equal(submitButtonView({ streaming: false, empty: false }).state, 'ready')
-  // An empty composer mid-turn is still "a turn is running", not "nothing to do".
-  assert.equal(submitButtonView({ streaming: true, empty: true }).state, 'streaming')
-  assert.equal(submitButtonView({ streaming: true, empty: false }).state, 'streaming')
-})
-
-test('mid-turn the label still queues', () => {
-  // The three states are visual only: mid-turn the button still means "queue",
-  // which is what `model/keymap.ts` decides for Enter. If this ever says
-  // "interrupt", the two paths have drifted.
-  assert.equal(submitButtonView({ streaming: true, empty: false }).label, submitLabel(true))
-  assert.equal(submitButtonView({ streaming: false, empty: true }).label, submitLabel(false))
+test('one button: lit send with text, stop when a turn runs with nothing typed', () => {
+  assert.deepEqual(submitButtonView({ streaming: false, empty: true }), { state: 'idle', label: submitLabel(false), showStop: false })
+  assert.deepEqual(submitButtonView({ streaming: false, empty: false }), { state: 'ready', label: submitLabel(false), showStop: false })
+  assert.equal(submitButtonView({ streaming: true, empty: true }).showStop, true)
+  // Typing mid-turn brings the lit send back: the message steers the turn.
+  assert.deepEqual(submitButtonView({ streaming: true, empty: false }), { state: 'ready', label: submitLabel(true), showStop: false })
 })
 
 // --- the permission pill ----------------------------------------------------

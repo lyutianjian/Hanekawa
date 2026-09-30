@@ -154,6 +154,7 @@ function snapshotOf(overrides: Partial<WireSettingsSnapshot> = {}): WireSettings
       autoCompactThresholdRatio: 0.93,
     },
     general: { localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json' },
+    userInstructions: '',
     ...overrides,
   }
 }
@@ -707,9 +708,9 @@ test('a duplicate endpoint name is rejected only when creating', () => {
 // --- the view model ----------------------------------------------------------
 
 test('every category draws its own cards, and none draws a placeholder', () => {
-  for (const category of ['provider', 'extensions', 'permissions', 'agent', 'general', 'appearance'] as const) {
+  for (const category of ['provider', 'extensions', 'permissions', 'agent', 'general', 'personalization', 'appearance'] as const) {
     const view = settingsView(openState({ category }))
-    assert.ok(view.cards.length > 0, `${category} has no cards`)
+    assert.ok(view.cards.length > 0 || view.editor, `${category} has no cards`)
     assert.ok(
       view.cards.every((card) => card.id !== 'pending'),
       `${category} still draws the placeholder card`,
@@ -717,7 +718,7 @@ test('every category draws its own cards, and none draws a placeholder', () => {
   }
   assert.deepEqual(
     settingsView(openState()).navGroups.flatMap((group) => group.items.map((item) => item.category)),
-    ['general', 'appearance', 'provider', 'extensions', 'permissions', 'agent'],
+    ['general', 'personalization', 'appearance', 'provider', 'extensions', 'permissions', 'agent'],
   )
 })
 
@@ -733,7 +734,7 @@ test('the nav is three named sections, and every page lands in exactly one', () 
   )
   assert.deepEqual(
     groups.map((group) => group.items.map((item) => item.category)),
-    [['general', 'appearance'], ['provider', 'extensions'], ['permissions', 'agent']],
+    [['general', 'personalization', 'appearance'], ['provider', 'extensions'], ['permissions', 'agent']],
   )
   // Each item carries the section it was filed under, so the DOM never has to
   // re-derive the grouping (two views of one list is how they come to disagree).
@@ -2021,3 +2022,16 @@ test('deleting an mcp server emits remove-mcp-server change', () => {
   ])
 })
 
+
+test('the instructions editor is dirty only when the draft differs, and save sends the draft', () => {
+  let state = openState({ category: 'personalization', snapshot: snapshotOf({ userInstructions: 'old' }) })
+  assert.equal(settingsView(state).editor?.dirty, false)
+  state = applySettingsIntent(state, { kind: 'edit-instructions', value: 'new' }).state
+  assert.equal(settingsView(state).editor?.dirty, true)
+  assert.equal(settingsView(state).editor?.value, 'new')
+  const saved = applySettingsIntent(state, { kind: 'save-instructions' })
+  assert.deepEqual(saved.changes, [{ scope: 'personalization', kind: 'set-user-instructions', content: 'new' }])
+  assert.equal(settingsView(saved.state).editor?.saving, true)
+  state = applySettingsIntent(state, { kind: 'cancel-instructions' }).state
+  assert.equal(settingsView(state).editor?.value, 'old')
+})

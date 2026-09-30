@@ -339,6 +339,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       onStreamEvent: (event) => bridges.record.onStreamEvent(event),
       onRequestUsage: (usage, anchorRecordId) => bridges.record.onRequestUsage(usage, anchorRecordId),
       consumePendingUserMessages: () => backgroundTasks.consumeParentNotifications(runtimeSession.id),
+      steer: bridges.steer,
       ...(imageAttachments ? { imageAttachments } : {}),
       ...(attachmentFacts ? { attachmentFacts } : {}),
       ...(attachmentBytes ? { attachmentBytes } : {}),

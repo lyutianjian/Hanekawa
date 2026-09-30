@@ -120,6 +120,7 @@ async function main() {
       exitPlanProxy={host.bridges.exitPlan}
       enterPlanProxy={host.bridges.enterPlan}
       askUserQuestionProxy={host.bridges.askUserQuestion}
+      steerProxy={host.bridges.steer}
       existingRecords={host.existingRecords}
       initialSystemMessages={initialSystemMessages}
       initialQueuedPrompt={initialQueuedPrompt}

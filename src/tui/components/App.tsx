@@ -54,6 +54,7 @@ import { useEnterPlanPermission, type EnterPlanPromptProxy } from '../hooks/useE
 import { useAskUserQuestionPermission, type AskUserQuestionProxy } from '../hooks/useAskUserQuestionPermission.js'
 import type { AgentSession } from '../../runtime/index.js'
 import type { RuntimeSlot } from '../../runtime/runtimeSlot.js'
+import type { SteerProxy } from '../../runtime/bridges.js'
 import type { QueuedSubmissionHandoff, SessionController } from '../../runtime/sessionController.js'
 import { canPumpQueue, canWakeForNotifications, handOffQueuedMessage, notificationInput } from '../../runtime/queuePump.js'
 import { buildModelPickerOptions } from '../../runtime/modelPicker.js'
@@ -121,6 +122,7 @@ interface AppProps {
   exitPlanProxy: ExitPlanPromptProxy
   enterPlanProxy: EnterPlanPromptProxy
   askUserQuestionProxy: AskUserQuestionProxy
+  steerProxy: SteerProxy
   existingRecords: SessionRecord[]
   initialSystemMessages?: TUIDisplayItem[]
   initialQueuedPrompt?: string
@@ -151,6 +153,7 @@ export function App({
   exitPlanProxy,
   enterPlanProxy,
   askUserQuestionProxy,
+  steerProxy,
   existingRecords,
   initialSystemMessages,
   initialQueuedPrompt,
@@ -225,6 +228,10 @@ export function App({
     messageQueue.getSnapshot,
     messageQueue.getSnapshot,
   )
+  useEffect(() => {
+    steerProxy.setSource(messageQueue)
+    return () => steerProxy.setSource(undefined)
+  }, [steerProxy, messageQueue])
   const [screen, setScreen] = useState<'prompt' | 'transcript'>('prompt')
   const [transcriptScrollOffsetRows, setTranscriptScrollOffsetRows] = useState(0)
   // Draft image attachments (S14): imported files waiting for the next real

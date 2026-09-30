@@ -53,7 +53,7 @@ import type { AgentSession } from './types.js'
  */
 export type SessionEvent =
   /** A turn is beginning. Emitted synchronously before any I/O. */
-  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[] }
+  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[]; queuedMessageId?: string }
   /** A record reached the UI. `approvalToolUseId`/`subagentProgress` are the correlations the controller tracks. */
   | { type: 'record'; record: SessionRecord; approvalToolUseId?: string; subagentProgress?: string }
   /**
@@ -310,6 +310,7 @@ export class SessionController {
       displayInput: options?.displayInput ?? input.text,
       createdAt: new Date().toISOString(),
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
+      ...(handoff ? { queuedMessageId: handoff.queuedMessageId } : {}),
     })
 
     this.streaming = true

@@ -520,6 +520,7 @@ export class SessionHost {
 
   private attachBridges(): void {
     const { bridges } = this.scope
+    bridges.steer.setSource(this.messages)
 
     bridges.prompt.setPrompt(async (request) => {
       const requestId = randomUUID()
@@ -571,6 +572,7 @@ export class SessionHost {
 
   private detachBridges(): void {
     const { bridges } = this.scope
+    bridges.steer.setSource(undefined)
     bridges.prompt.clearPrompt()
     bridges.askUserQuestion.setOpen(async () => ({
       kind: 'rejected',

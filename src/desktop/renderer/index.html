@@ -79,18 +79,16 @@
           -->
           <div class="composer-column">
             <!--
-              The three panels the composer can raise (S9): the picker / command
-              view, the completion list, and the queued-message strip. They used
+              The panels the composer can raise (S9): the picker / command
+              view and the completion list. They used
               to be full-bleed blocks between the transcript and the composer,
               one screen away from the chip that opens them; now they are one
               stack floating on the composer's upper edge, on the same 760px
-              axis as the text. Last in the stack is `#queue`, which is the one
-              that is about the message being typed.
+              axis as the text.
             -->
             <div id="composer-popovers">
               <div id="surface" hidden></div>
               <div id="suggestions" hidden role="listbox" aria-label="斜杠命令"></div>
-              <div id="queue" hidden aria-live="polite" aria-label="排队消息"></div>
             </div>
             <!--
               The task panel's host (§7.2). In the flow, above the composer and

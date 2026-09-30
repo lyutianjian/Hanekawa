@@ -159,6 +159,11 @@ export function getGlobalConfigPath(): string {
   return path.join(getGlobalMyAgentDir(), 'config.json')
 }
 
+/** The user-wide instructions, read ahead of every project's own. */
+export function getUserInstructionsPath(): string {
+  return path.join(getGlobalMyAgentDir(), 'AGENTS.md')
+}
+
 export function getMcpConfigPath(cwd: string): string {
   return path.join(getMyAgentDir(cwd), 'mcp.json')
 }

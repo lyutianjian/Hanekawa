@@ -350,6 +350,16 @@ export interface PersistedQueuedMessage {
   images?: ImageAttachmentRef[]
 }
 
+/**
+ * Messages the user sent while a turn is running, offered to that turn at each
+ * step boundary (steering). The loop removes a message only once its user
+ * record is on disk; whatever it leaves behind waits for the next turn.
+ */
+export interface SteerSource {
+  pending(): readonly PersistedQueuedMessage[]
+  consume(messageId: string): Promise<void>
+}
+
 export type MessageQueueRecord =
   | {
       id: string

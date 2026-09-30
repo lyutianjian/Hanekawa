@@ -263,6 +263,9 @@ export interface WireBrowserTabInfo {
 
 // --- settings ----------------------------------------------------------------
 
+/** The cap on `~/.myagent/AGENTS.md`, shared by the host's schema and the editor's `maxLength`. */
+export const USER_INSTRUCTIONS_MAX_CHARS = 64_000
+
 /**
  * The settings screen's left-hand categories.
  *
@@ -275,6 +278,7 @@ export type SettingsCategory =
   | 'permissions'
   | 'agent'
   | 'general'
+  | 'personalization'
   | 'appearance'
 
 /**
@@ -500,6 +504,8 @@ export interface WireSettingsSnapshot {
   /** From `config.json`, not the settings layers — see `setContextManagement`. */
   contextManagement: WireContextManagementInfo
   general: WireGeneralInfo
+  /** `~/.myagent/AGENTS.md`; empty when the file does not exist. Global, not per project. */
+  userInstructions: string
 }
 
 /**
@@ -555,6 +561,7 @@ export type SettingsChange =
   | { scope: 'agent'; kind: 'reload-agent-definitions' }
   | { scope: 'general'; kind: 'set-cache-ttl'; enabled: boolean }
   | { scope: 'general'; kind: 'set-thinking'; enabled: boolean }
+  | { scope: 'personalization'; kind: 'set-user-instructions'; content: string }
   | { scope: 'general'; kind: 'set-context-management'; field: WireContextManagementField; value: number }
   /**
    * A skill's on/off switch, written to the local layer.

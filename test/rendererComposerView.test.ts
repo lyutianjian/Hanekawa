@@ -565,19 +565,21 @@ test('a programmatic edit updates the button too', (t) => {
   assert.deepEqual(r.view('submit').classes, ['idle'])
 })
 
-test('streaming keeps the button enabled and queueing', (t) => {
+test('mid-turn one button: stop while empty, lit send once something is typed', (t) => {
   const r = render(t)
+  r.composer.setStreaming(true)
+  assert.equal(r.view('stop').hidden, false)
+  assert.equal(r.view('submit').hidden, true, 'stop takes the send button’s place')
+
   input(r).value = 'next message'
   r.stub.dispatch(r.els.input, 'input')
-
-  r.composer.setStreaming(true)
-
-  assert.deepEqual(r.view('submit').classes, ['streaming'])
-  assert.equal(r.view('stop').hidden, false, 'stop appears beside it, not instead of it')
+  assert.equal(r.view('stop').hidden, true)
+  assert.equal(r.view('submit').hidden, false)
+  assert.deepEqual(r.view('submit').classes, ['ready'])
   // Enabled in every state: `requestSubmit()` ignores a disabled button, so the
   // click would vanish with no error anywhere.
   assert.equal(r.view('submit').disabled, false)
-  assert.equal(r.view('submit').attributes.get('aria-label'), '加入队列')
+  assert.equal(r.view('submit').attributes.get('aria-label'), '发送到当前轮次')
 
   r.composer.setStreaming(false)
   assert.deepEqual(r.view('submit').classes, ['ready'])

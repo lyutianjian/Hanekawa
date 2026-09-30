@@ -53,14 +53,19 @@ export function MessageList({
   )
 }
 
-/** The queued line: text (or the pure-image fallback title) plus the image count. */
+/**
+ * The queued line: text (or the pure-image fallback title) plus the image count.
+ * A message joins the running turn at its next step; a slash command waits for
+ * the turn to end.
+ */
 function formatQueuedMessagePreview(message: QueuedMessage): string {
   const imageCount = message.images?.length ?? 0
   const text = message.content.trim() === '' && imageCount > 0
     ? `图片：${message.images![0]!.name}`
     : message.content
   const imageSuffix = imageCount > 0 ? ` (+${imageCount} ${imageCount === 1 ? 'image' : 'images'})` : ''
-  return `❯ ${text}${imageSuffix} (queued)`
+  const when = message.content.trimStart().startsWith('/') ? 'queued' : 'next step'
+  return `❯ ${text}${imageSuffix} (${when})`
 }
 
 export function DisplayItem({

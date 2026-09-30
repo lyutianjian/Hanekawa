@@ -44,7 +44,6 @@ import type { PermissionRequestView } from './dom/permissionRequestView.js'
 import type { RewindPanel } from './dom/rewindView.js'
 import type { SurfacePanel } from './dom/surfaceView.js'
 import type { ProcessStripView } from './dom/processStripView.js'
-import type { QueueDom } from './dom/queueView.js'
 import type { TaskPanelDom } from './dom/taskPanelView.js'
 import { append, el, show } from './dom/dom.js'
 import { finishPresenceWithin } from './dom/presence.js'
@@ -94,6 +93,7 @@ import {
   createTranscriptState,
   groupTranscript,
   presentationTranscript,
+  withQueuedMessages,
   type ToolDisplayLookup,
   type TranscriptState,
 } from './model/transcript.js'
@@ -163,7 +163,6 @@ import {
   type RewindIntent,
   type RewindState,
 } from './model/rewindPanel.js'
-import { queuedMessagesView } from './model/queuedMessages.js'
 import {
   attachmentDraftsFull,
   attachmentStripView,
@@ -221,7 +220,6 @@ export interface PaneSessionDeps {
   rewindPanel: RewindPanel
   surface: SurfacePanel
   suggestions: SuggestionsView
-  queueStrip: QueueDom
   /** The resident strip above the composer; a singleton, like the composer itself. */
   taskPanel: TaskPanelDom
   processStrip: ProcessStripView
@@ -387,7 +385,6 @@ export interface PaneSession {
   runSurfaceAction(action: SurfaceAction): Promise<void>
   /** The process tag above the composer: opens `/tasks`, or closes it when open. */
   toggleBackgroundTasks(): void
-  clearQueue(): Promise<void>
   refreshPanes(): Promise<void>
 }
 
@@ -513,8 +510,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   let projectPickerOpen = false
   let projectSelectedIndex = -1
   /**
-   * Messages the host is holding until the running turn ends — a mirror of
-   * `client.getQueuedMessages()`, drawn from the last `queued-messages` event.
+   * Messages the host holds for the running turn's next step — a mirror of
+   * `client.getQueuedMessages()`, drawn from the last `queued-messages` event
+   * as user bubbles at the transcript's tail.
    */
   let queued: readonly PersistedQueuedMessage[] = Object.freeze([])
   let surfaceView: SurfaceView | undefined
@@ -734,7 +732,8 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // counter, so `thinking-0` can be minted again and would inherit the answer a
     // different block left behind — and an absolute answer would not even be
     // corrected by the default.
-    const presented = presentationTranscript(transcript)
+    const shown = withQueuedMessages(transcript, queued)
+    const presented = presentationTranscript(shown)
     disclosure = pruneDisclosure(groupTranscript(presented.items), disclosure)
     const isStreaming = client.getSnapshot().isStreaming
     // A pane can find itself mid-turn without having seen `turn-start` — it was
@@ -752,7 +751,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // The one place that decides whether this pane has a conversation, so the
     // transcript and the welcome screen cannot disagree about it.
     welcome.render(welcomeView({
-      transcript,
+      transcript: shown,
       projectName,
       global: projectGlobal,
       branch: gitBranch,
@@ -763,11 +762,11 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
       branchPicker,
       projectPicker: projectPickerState(),
     }))
-    paneEl.classList.toggle('empty', isTranscriptEmpty(transcript))
+    paneEl.classList.toggle('empty', isTranscriptEmpty(shown))
     // Thumbnails arrive on demand, exactly as the composer's tiles do: the
     // paint draws the boxes, then each uncached id asks once. Streaming makes
     // this run per chunk; `beginPreviewLoad` is what keeps that one request.
-    void loadTranscriptThumbnails()
+    void loadTranscriptThumbnails(shown)
     deps.onSubagentsChanged?.()
   }
 
@@ -778,9 +777,9 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
    * pane keeps the thumbnail it already had — the submit moves it from the
    * draft list to a message, not from one cache to another.
    */
-  async function loadTranscriptThumbnails(): Promise<void> {
+  async function loadTranscriptThumbnails(shown: TranscriptState): Promise<void> {
     const ids: string[] = []
-    for (const item of transcript.items) {
+    for (const item of shown.items) {
       if (item.kind !== 'user') continue
       for (const image of item.images ?? []) ids.push(image.id)
     }
@@ -843,11 +842,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   function renderTaskPanel(): void {
     if (!active) return
     deps.taskPanel.render(taskPanel)
-  }
-
-  function renderQueue(): void {
-    if (!active) return
-    deps.queueStrip.render(queuedMessagesView(queued))
   }
 
   /**
@@ -1571,7 +1565,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
 
   client.onQueueChanged((next) => {
     queued = next
-    renderQueue()
+    renderTranscript()
   })
 
   client.subscribe(() => {
@@ -1938,7 +1932,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     if (surfaceView || commandView) renderSurface()
     else deps.surface.hide()
     renderSuggestions()
-    renderQueue()
     renderTaskPanel()
     renderStatus()
     // Everything above is the whole surface, so a frame still owed from before
@@ -1965,7 +1958,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.rewindPanel.hide()
     deps.surface.hide()
     syncTaskClock()
-    deps.queueStrip.hide()
     // Emptied, not remembered: the strip is a singleton on the composer's axis,
     // so a background pane's checklist would otherwise hang over the session the
     // user just switched to. `activate()` repaints it from `taskPanel`.
@@ -2045,7 +2037,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     // Whatever the last window left waiting. The queue is replayed from the
     // session log, so this is not always empty even on a cold start.
     queued = hello.queuedMessages
-    renderQueue()
+    renderTranscript()
 
     await refreshCommands()
 
@@ -2153,14 +2145,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     }
   }
 
-  async function clearQueue(): Promise<void> {
-    try {
-      await client.clearQueue()
-    } catch (error) {
-      note(describe(error), 'error')
-    }
-  }
-
   async function submitFromForm(): Promise<void> {
     // The button path must reach the same verdict as the key map. The button
     // is not disabled mid-turn, so this branch is load-bearing.
@@ -2237,7 +2221,6 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     openRuntimeMenu,
     runSurfaceAction,
     toggleBackgroundTasks,
-    clearQueue,
     refreshPanes,
   }
 }

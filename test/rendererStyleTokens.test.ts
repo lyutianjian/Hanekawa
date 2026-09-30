@@ -1513,7 +1513,7 @@ test('presence fallbacks outlast their CSS motion tokens', () => {
   }
 })
 
-test('the composer raises its three panels, and they no longer span the canvas', () => {
+test('the composer raises its panels, and they no longer span the canvas', () => {
   // todo V3: `#surface`, `#suggestions` and `#queue` were full-bleed blocks in
   // the canvas's flex column — `margin: 0 8px 8px`, square-ish corners, no edge —
   // opened by a chip in the composer's bottom right and drawn a screen away from
@@ -1540,7 +1540,7 @@ test('the composer raises its three panels, and they no longer span the canvas',
     '.composer-column is on the stack’s ancestor chain and must not clip it — same rule as .settings-column',
   )
 
-  for (const selector of ['#surface', '#suggestions', '#queue']) {
+  for (const selector of ['#surface', '#suggestions']) {
     const panel = blockFor(selector)
     assert.ok(
       declares(panel, 'border-radius', 'var(--radius-lg)'),

@@ -33,6 +33,7 @@ import type { McpServerConfig } from '../services/mcp/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
 import { importSkill } from '../services/skills/importSkill.js'
+import { readUserInstructions, writeUserInstructions } from '../services/context/projectContext.js'
 import { peekSessions } from './recentProjects.js'
 import { getProjectDataDir, getSkillsDir, isGlobalWorkspaceRoot } from '../utils/paths.js'
 import type {
@@ -50,6 +51,7 @@ import type { McpConnectionStatus, RuntimeHost } from '../runtime/types.js'
 import {
   CONTEXT_MANAGEMENT_FIELDS,
   SHELL_LANE,
+  USER_INSTRUCTIONS_MAX_CHARS,
   type ShellCommand,
   type ShellEvent,
   type WireLaneInfo,
@@ -490,6 +492,13 @@ const SETTINGS_CHANGE_SCHEMAS = {
     .strict(),
   'set-cache-ttl': z
     .object({ scope: z.literal('general'), kind: z.literal('set-cache-ttl'), enabled: z.boolean() })
+    .strict(),
+  'set-user-instructions': z
+    .object({
+      scope: z.literal('personalization'),
+      kind: z.literal('set-user-instructions'),
+      content: z.string().max(USER_INSTRUCTIONS_MAX_CHARS),
+    })
     .strict(),
   'set-thinking': z
     .object({ scope: z.literal('general'), kind: z.literal('set-thinking'), enabled: z.boolean() })
@@ -1455,7 +1464,11 @@ export class ShellHost<
     if (effect.saveConfig) await entry.project.config.save()
     // Provider configuration is global. A project opened before first-time
     // setup must see the same saved models as the project editing settings.
-    const affected = change.scope === 'provider' ? this.deps.directory.entries() : [entry]
+    // The user-wide instructions are global too: every open project re-reads them.
+    const affected =
+      change.scope === 'provider' || change.scope === 'personalization'
+        ? this.deps.directory.entries()
+        : [entry]
     for (const target of affected) await target.project.reloadSettings()
     if (effect.afterReload) await effect.afterReload()
 
@@ -1700,6 +1713,7 @@ export class ShellHost<
       skillsDir: getSkillsDir(entry.cwd),
       mcpServers,
       contextManagement,
+      userInstructions: await readUserInstructions(),
       general: {
         localPath: localSettingsPath(entry.cwd),
         ...(merged.cache?.ttl1h !== undefined ? { cacheTtl1h: merged.cache.ttl1h } : {}),
@@ -1975,6 +1989,11 @@ async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLa
       await setLocalCacheTtl1h(entry.cwd, change.enabled)
       // `cacheRuntime` is captured at runtime construction, so this one does
       // need the rebuild.
+      return { saveConfig: false, rebuild: true, scope: 'models' }
+    case 'set-user-instructions':
+      await writeUserInstructions(change.content)
+      // The reload re-reads the file; the rebuild is what puts it in an open
+      // session's system prompt.
       return { saveConfig: false, rebuild: true, scope: 'models' }
     case 'set-thinking':
       await setLocalThinking(entry.cwd, change.enabled)

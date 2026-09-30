@@ -1,5 +1,6 @@
 import {
   CONTEXT_MANAGEMENT_FIELDS,
+  USER_INSTRUCTIONS_MAX_CHARS,
   type SettingsCategory,
   type SettingsChange,
   type WireAgentDefinitionInfo,
@@ -166,6 +167,8 @@ export interface SettingsState {
    * menus can overlap, and the screen has a dozen selects on it at once.
    */
   readonly openMenu?: string
+  /** The 自定义指令 editor's unsaved text; absent means it shows what is on disk. */
+  readonly instructionsDraft?: string
 }
 
 export function createSettingsState(): SettingsState {
@@ -187,6 +190,7 @@ export const CATEGORY_LABELS: Record<SettingsCategory, string> = {
   permissions: '权限',
   agent: 'Agent',
   general: '通用',
+  personalization: '个性化',
   appearance: '外观',
 }
 
@@ -212,6 +216,7 @@ export const SETTINGS_GROUP_LABELS: Record<SettingsGroup, string> = {
 function groupOf(category: SettingsCategory): SettingsGroup {
   switch (category) {
     case 'general':
+    case 'personalization':
     case 'appearance':
       return 'personal'
     case 'provider':
@@ -416,6 +421,19 @@ export interface SettingsViewModel {
   readonly searchEmpty?: string
   /** The expanded pill dropdown's key, as the DOM spells it. */
   readonly openMenu?: string
+  /** A full-page text editor in place of cards: the 自定义指令 page. */
+  readonly editor?: SettingsEditor
+}
+
+export interface SettingsEditor {
+  readonly value: string
+  readonly placeholder: string
+  readonly dirty: boolean
+  readonly saving: boolean
+  readonly maxLength: number
+  readonly intentOnInput: (value: string) => SettingsIntent
+  readonly intentOnSave: SettingsIntent
+  readonly intentOnCancel: SettingsIntent
 }
 
 const PROJECT_SCOPED: ReadonlySet<SettingsCategory> = new Set(['extensions', 'permissions', 'agent', 'general'])
@@ -426,6 +444,7 @@ const ALL_CATEGORIES: readonly SettingsCategory[] = [
   'permissions',
   'agent',
   'general',
+  'personalization',
   'appearance',
 ]
 
@@ -697,6 +716,8 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
       return { ...snapshot, general: { ...snapshot.general, cacheTtl1h: change.enabled } }
     case 'set-thinking':
       return { ...snapshot, general: { ...snapshot.general, thinking: change.enabled } }
+    case 'set-user-instructions':
+      return { ...snapshot, userInstructions: change.content }
     // Actions and the key clear: nothing on screen can be predicted from them.
     case 'clear-endpoint-key':
     case 'reload-agent-definitions':
@@ -857,6 +878,28 @@ export function settingsView(state: SettingsState): SettingsViewModel {
     pendingKinds(state.pending),
   )
 
+  if (state.category === 'personalization') {
+    const saved = projected.userInstructions
+    const value = state.instructionsDraft ?? saved
+    return {
+      ...base,
+      title: '自定义指令',
+      subtitle: '为 Hanekawa 提供适用于所有聊天的额外指令和背景信息。代码仓库指令也可能适用。',
+      subtitleHint: '~/.myagent/AGENTS.md',
+      cards: [],
+      editor: {
+        value,
+        placeholder: '例如:回答保持简短;代码注释用英文。',
+        dirty: state.instructionsDraft !== undefined && state.instructionsDraft !== state.snapshot.userInstructions,
+        saving: state.pending.some((entry) => entry.change.kind === 'set-user-instructions'),
+        maxLength: USER_INSTRUCTIONS_MAX_CHARS,
+        intentOnInput: (text) => ({ kind: 'edit-instructions', value: text }),
+        intentOnSave: { kind: 'save-instructions' },
+        intentOnCancel: { kind: 'cancel-instructions' },
+      },
+    }
+  }
+
   return {
     ...base,
     title: CATEGORY_LABELS[state.category],
@@ -914,6 +957,8 @@ function cardsFor(category: HostCategory, snapshot: WireSettingsSnapshot): Setti
       return agentCards(snapshot)
     case 'general':
       return generalCards(snapshot)
+    case 'personalization':
+      return []
   }
 }
 
@@ -2142,6 +2187,9 @@ export type SettingsIntent =
   | { kind: 'set-mcp-trust'; name: string; trusted: boolean }
   | { kind: 'reconnect-mcp' }
   | { kind: 'set-theme'; preference: ThemePreference }
+  | { kind: 'edit-instructions'; value: string }
+  | { kind: 'cancel-instructions' }
+  | { kind: 'save-instructions' }
   | { kind: 'search'; query: string }
   | { kind: 'clear-search' }
   | { kind: 'toggle-menu'; menu: string }
@@ -2246,6 +2294,20 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
       // Renderer-local: no wire change, no reload. `app.ts` performs the two side
       // effects (localStorage + document) off `themePreference`.
       return { state: { ...cleared, themePref: intent.preference }, themePreference: intent.preference }
+    // Typing must not dismiss an error the user has not read, so no `cleared`.
+    case 'edit-instructions':
+      return { state: { ...state, instructionsDraft: intent.value } }
+    case 'cancel-instructions':
+      return { state: { ...state, instructionsDraft: undefined } }
+    case 'save-instructions': {
+      if (state.instructionsDraft === undefined) return { state }
+      // The draft stays: a failed write must not eat the text. Once the host
+      // answers, the snapshot catches up and the draft stops being dirty.
+      return {
+        state: cleared,
+        changes: [{ scope: 'personalization', kind: 'set-user-instructions', content: state.instructionsDraft }],
+      }
+    }
     case 'select-project':
       if (intent.projectRoot === state.projectRoot) return { state }
       return {

@@ -4,6 +4,7 @@ import type {
   MessageQueueRecord,
   PersistedQueuedMessage,
   SessionRecord,
+  SteerSource,
 } from '../harness/types.js'
 import type { ImageAttachmentRef, UserInput } from '../media/types.js'
 
@@ -88,7 +89,7 @@ const EMPTY_SNAPSHOT: readonly QueuedMessage[] = Object.freeze([])
  * `getSnapshot`/`subscribe` are shaped for `useSyncExternalStore` — the
  * snapshot is a frozen array whose identity only changes when the contents do.
  */
-export class MessageQueue {
+export class MessageQueue implements SteerSource {
   private sessionId: string
   private readonly persist: PersistQueueRecord
   private snapshot: readonly QueuedMessage[] = EMPTY_SNAPSHOT
@@ -109,6 +110,9 @@ export class MessageQueue {
   }
 
   getSnapshot = (): readonly QueuedMessage[] => this.snapshot
+
+  /** The running turn's view of the queue: it takes messages as steering. */
+  pending = this.getSnapshot
 
   subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener)

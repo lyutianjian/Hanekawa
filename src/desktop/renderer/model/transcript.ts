@@ -1,4 +1,4 @@
-import type { ModelStreamEvent, SessionRecord, SubagentTaskStatus, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
+import type { ModelStreamEvent, PersistedQueuedMessage, SessionRecord, SubagentTaskStatus, ToolErrorCode, ToolResultDisplay } from '../../../harness/types.js'
 import type { SessionEvent, SubagentActivity } from '../../../runtime/sessionController.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
@@ -209,6 +209,11 @@ export interface TranscriptItem {
    * fault.
    */
   readonly model?: string
+  /**
+   * On a user message sent through the host's queue: that queued message's id,
+   * so {@link withQueuedMessages} stops drawing it once it is in the transcript.
+   */
+  readonly queuedMessageId?: string
 }
 
 /** One step inside an activity group. `text` is the body; heads are the view's job. */
@@ -361,6 +366,31 @@ export function presentationTranscript(state: TranscriptState): TranscriptState 
   }
 }
 
+/**
+ * The transcript with the host's queued messages drawn as user bubbles at its
+ * tail: a message sent mid-turn shows the moment it is sent, and joins the turn
+ * at its next step. One the transcript already carries is not drawn twice.
+ */
+export function withQueuedMessages(
+  state: TranscriptState,
+  queued: readonly PersistedQueuedMessage[],
+): TranscriptState {
+  if (queued.length === 0) return state
+  const shown = new Set(state.items.flatMap((item) => item.queuedMessageId ? [item.queuedMessageId] : []))
+  const waiting = queued.filter((message) => !shown.has(message.id))
+  if (waiting.length === 0) return state
+  return {
+    ...state,
+    items: [...state.items, ...waiting.map((message): TranscriptItem => ({
+      id: `queued:${message.id}`,
+      kind: 'user',
+      text: message.content,
+      ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
+      queuedMessageId: message.id,
+    }))],
+  }
+}
+
 export function applySessionEvent(
   state: TranscriptState,
   event: SessionEvent,
@@ -382,6 +412,7 @@ export function applySessionEvent(
             kind: 'user',
             text: event.displayInput,
             ...(event.images && event.images.length > 0 ? { images: event.images } : {}),
+            ...(event.queuedMessageId ? { queuedMessageId: event.queuedMessageId } : {}),
           }],
           isThinking: false,
         },
@@ -835,6 +866,7 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         ...(record.role !== 'user' && typeof record.model === 'string' && record.model.length > 0
           ? { model: record.model }
           : {}),
+        ...(record.role === 'user' && record.sourceQueuedMessageId ? { queuedMessageId: record.sourceQueuedMessageId } : {}),
         ...stamp,
       }
       // One model request = one thinking segment ahead of its text (§4.2). Old

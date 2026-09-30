@@ -119,9 +119,9 @@ test('queued messages show the image count and a pure-image fallback title', () 
   ]
   const frame = render(h(MessageList, { items: [], queuedMessages: queued })).lastFrame() ?? ''
 
-  assert.match(frame, /❯ and this one \(\+2 images\) \(queued\)/)
-  assert.match(frame, /❯ 图片：screenshot\.png \(\+1 image\) \(queued\)/)
-  assert.match(frame, /❯ text only \(queued\)/)
+  assert.match(frame, /❯ and this one \(\+2 images\) \(next step\)/)
+  assert.match(frame, /❯ 图片：screenshot\.png \(\+1 image\) \(next step\)/)
+  assert.match(frame, /❯ text only \(next step\)/)
 })
 
 /**

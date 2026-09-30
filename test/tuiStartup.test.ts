@@ -58,6 +58,7 @@ test('TUI starts in setup, preserves an unsent draft, and sends after configurin
     exitPlanProxy: host.bridges.exitPlan,
     enterPlanProxy: host.bridges.enterPlan,
     askUserQuestionProxy: host.bridges.askUserQuestion,
+    steerProxy: host.bridges.steer,
     existingRecords: [],
     backgroundTasks: host.backgroundTasks,
     attachments: host.attachments,

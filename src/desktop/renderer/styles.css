@@ -2981,8 +2981,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 /* --- surfaces (pickers, command views) ---
    A card floating in the canvas rather than a strip ruled off from it: the
    group container *is* the separator, which is `design_guidance.md` 一.3's
-   grouping rule. `#queue` and `#suggestions` below are the same shape, and
-   since S9 all three live in `#composer-popovers` — see that rule for why they
+   grouping rule. `#suggestions` below is the same shape, and
+   since S9 both live in `#composer-popovers` — see that rule for why they
    carry no margin of their own. */
 #surface {
   max-height: 40vh;
@@ -3034,50 +3034,6 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 #surface .row-action.danger { color: var(--text-danger); }
 #surface .hint { color: var(--text-secondary); font-size: var(--type-micro); margin-top: var(--space-1); }
 
-/*
-  --- the queued-message strip ---
-  Sits directly above the composer, because it is about what will be sent
-  next rather than about what has happened. Read-only apart from Clear: the
-  wire has no per-message dequeue (the host pumps its own queue).
-*/
-#queue {
-  max-height: 22vh;
-  overflow-y: auto;
-  pointer-events: auto;
-  background: var(--surface-card);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-float);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--type-meta);
-}
-#queue .queue-header {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin-bottom: var(--space-1);
-}
-#queue .queue-title { color: var(--text-warn); flex: 1 1 auto; }
-#queue .queue-clear {
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  padding: 1px 10px;
-  font: inherit;
-  font-size: var(--type-micro);
-  cursor: pointer;
-}
-#queue .queue-clear:hover { color: var(--text-danger); border-color: var(--text-danger); }
-#queue .queue-row { display: flex; gap: var(--space-2); padding: 1px 0; color: var(--text-secondary); }
-#queue .queue-position { flex: 0 0 auto; opacity: 0.7; }
-#queue .queue-label {
-  flex: 1 1 auto;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* --- completions --- */
 #suggestions {
   max-height: 30vh;
@@ -3124,8 +3080,8 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   margin: 0 auto;
 }
 /*
-  The panels the composer raises: the picker, the completion list, the queued
-  strip (todo V3). They were full-bleed blocks in the canvas's flex column, a
+  The panels the composer raises: the picker and the completion list
+  (todo V3). They were full-bleed blocks in the canvas's flex column, a
   screen away from the chip that opens them and pushing the transcript around
   every time one appeared. Now they are one stack anchored to the composer's
   upper edge, on the reading column's own axis — a popover, but positioned by
@@ -3134,8 +3090,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
 
   `bottom: 100%` is against the whole column (composer *and* status line), so
   the stack sits on top of the capsule. DOM order is visual order, top to
-  bottom, which puts `#queue` nearest the composer: it is the one that is about
-  the message being typed.
+  bottom.
 
   `z-index: 4` — over the transcript and `.scroll-bottom` (neither declares
   one), under every real menu in the sheet (5–6) and therefore under the two
@@ -3883,13 +3838,16 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    keeps a named exception for exactly this rule. The *strong* rung, not
    `--accent-brand`: a fill owes its text full contrast, and the clay at 3.9:1
    on paper does not have it. `--on-brand` is the colour cleared to sit on it.
-   Three states, and *visual only* — the button still means "send or queue" in
-   all of them, because `model/keymap.ts` says so and the two must agree.
+   Two states, and *visual only* — the button always means "send", because
+   `model/keymap.ts` says so and the two must agree; `#stop` takes its place
+   while a turn runs with nothing typed.
    `.idle` is "nothing typed yet", not "disabled": a disabled button would make
    `requestSubmit()` swallow the click. */
 #submit { background: var(--accent-brand-strong); color: var(--on-brand); }
 #submit.idle { background: var(--surface-hover); color: var(--text-secondary); }
-#stop { background: var(--surface-hover); color: var(--text-warn); }
+#stop { background: transparent; color: var(--text-primary); }
+#stop:hover { background: var(--surface-hover); }
+#stop .icon { width: 22px; height: 22px; }
 #submit[disabled] { opacity: 0.5; cursor: not-allowed; }
 
 /* --- the fullscreen image viewer ---
@@ -4480,7 +4438,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
    value is a token, which is what `test/rendererStyleTokens.test.ts` checks. */
 
 /* `#status` is not listed: it moved inside `#input-row` in 5g, so hiding the
-   composer hides it too. Nor are `#surface` / `#suggestions` / `#queue`, for
+   composer hides it too. Nor are `#surface` / `#suggestions`, for
    the same reason since S9 — they hang off `.composer-column`. Which is also
    what keeps `probes.surface()` honest: it reports "open" from
    `getClientRects()`, not from the `hidden` attribute. */
@@ -4796,6 +4754,37 @@ body.settings-open #canvas-header,
 .settings-input.mono {
   min-width: 34ch;
   font-family: var(--font-mono);
+}
+
+.settings-editor-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settings-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 420px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font: inherit;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.settings-textarea:focus {
+  outline: 1px solid var(--focus-ring);
+  outline-offset: -1px;
+}
+
+.settings-editor-actions {
+  display: flex;
+  margin-left: auto;
+  gap: var(--space-2);
 }
 
 .settings-project {

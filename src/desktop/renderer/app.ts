@@ -95,7 +95,6 @@ import { createOverlayView } from './dom/overlayView.js'
 import { createPermissionRequestView } from './dom/permissionRequestView.js'
 import { createRewindView } from './dom/rewindView.js'
 import { createSurfacePanel } from './dom/surfaceView.js'
-import { createQueueView } from './dom/queueView.js'
 import { createTaskPanelView } from './dom/taskPanelView.js'
 import { createProcessStripView } from './dom/processStripView.js'
 import { createComposerView } from './dom/composerView.js'
@@ -213,9 +212,6 @@ const surface = createSurfacePanel(required('surface'), (action) => {
 const suggestions = createSuggestionsView(required('suggestions'), (index) => {
   void activePane()?.acceptCompletionAt(index)
 })
-const queueStrip = createQueueView(required('queue'), () => {
-  void activePane()?.clearQueue()
-})
 // Resident, and window-level like every other singleton the active pane drives:
 // it lives on the composer's own axis, so exactly one is on screen at a time.
 const taskPanel = createTaskPanelView(required('task-panel'))
@@ -302,7 +298,6 @@ function attachPaneSession(lane: string): void {
     rewindPanel,
     surface,
     suggestions,
-    queueStrip,
     taskPanel,
     processStrip,
     status,

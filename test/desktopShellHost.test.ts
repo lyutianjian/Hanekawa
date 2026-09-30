@@ -746,6 +746,7 @@ const SETTINGS_CHANGE_SAMPLES = {
   },
   'remove-mcp-server': { scope: 'extensions', kind: 'remove-mcp-server', name: 'sqlite' },
   'reconnect-mcp': { scope: 'extensions', kind: 'reconnect-mcp' },
+  'set-user-instructions': { scope: 'personalization', kind: 'set-user-instructions', content: 'Reply in Chinese.' },
 } as const satisfies Record<SettingsChange['kind'], SettingsChange>
 
 test('every settings change variant round-trips through its schema', () => {

@@ -566,7 +566,7 @@ test('the three composer panels hang off the composer, not off the canvas', () =
   const composer = form.indexOf('id="composer"')
   assert.ok(shell !== -1, 'the positioning shell left the composer column')
   assert.ok(composer !== -1 && shell < composer, 'the stack is drawn before the capsule it floats over')
-  for (const id of ['surface', 'suggestions', 'queue']) {
+  for (const id of ['surface', 'suggestions']) {
     const at = form.indexOf(`id="${id}"`)
     assert.ok(at !== -1, `#${id} is not in the composer form`)
     assert.ok(shell < at && at < composer, `#${id} is outside #composer-popovers`)

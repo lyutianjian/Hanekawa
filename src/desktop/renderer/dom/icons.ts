@@ -120,7 +120,12 @@ const ICONS = {
   // (not filled) so it inherits `currentColor` like every other outline.
   spinner: { paths: ['M8 3.5a4.5 4.5 0 1 1-4.5 4.5'] },
   send: { paths: ['M8 13V3.6', 'M3.8 7.8 8 3.5l4.2 4.3'] },
-  stop: { paths: ['M5.2 5.2h5.6v5.6H5.2z'], filled: true },
+  // A ring around a small square, one path so the nonzero rule punches the
+  // ring's hole: the outer circle runs clockwise, the inner one counter.
+  stop: {
+    paths: ['M8 1.25a6.75 6.75 0 1 1 0 13.5a6.75 6.75 0 1 1 0-13.5zM8 2.5a5.5 5.5 0 1 0 0 11a5.5 5.5 0 1 0 0-11zM5.9 5.9h4.2v4.2H5.9z'],
+    filled: true,
+  },
   // The settings gear, as a computed polygon rather than a traced one. The path
   // it replaced was a 24-grid Feather gear squeezed onto this 16-grid: its arc
   // radii were wider than the space left between teeth, so the shape folded in

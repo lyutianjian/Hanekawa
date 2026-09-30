@@ -46,6 +46,12 @@ const COVERAGE: Array<{ prop: string; via: 'client' | 'shell'; members: string[]
   { prop: 'exitPlanProxy', via: 'client', members: ['setHandlers'] },
   { prop: 'enterPlanProxy', via: 'client', members: ['setHandlers'] },
   { prop: 'askUserQuestionProxy', via: 'client', members: ['setHandlers'] },
+  {
+    prop: 'steerProxy',
+    via: 'client',
+    members: ['enqueueMessage'],
+    note: 'the host attaches its own queue; a client steers by enqueueing mid-turn',
+  },
   { prop: 'existingRecords', via: 'client', members: ['hello', 'reload'] },
   { prop: 'initialSystemMessages', via: 'client', members: ['hello'] },
   { prop: 'initialQueuedPrompt', via: 'client', members: ['hello'] },

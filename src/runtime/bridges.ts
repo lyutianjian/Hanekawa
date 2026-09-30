@@ -4,6 +4,7 @@ import type {
   AskUserQuestionResult,
   ModelStreamEvent,
   SessionRecord,
+  SteerSource,
   TokenUsage,
   ToolProgressEvent,
 } from '../harness/types.js'
@@ -196,12 +197,32 @@ export function createAskUserQuestionProxy(): AskUserQuestionProxy {
   }
 }
 
+/**
+ * Bridges the loop's steering step with the shell's message queue.
+ *
+ * With no queue attached the loop sees nothing pending, so a headless run
+ * simply never steers.
+ */
+export interface SteerProxy extends SteerSource {
+  setSource(source: SteerSource | undefined): void
+}
+
+export function createSteerProxy(): SteerProxy {
+  let current: SteerSource | undefined
+  return {
+    pending: () => current?.pending() ?? [],
+    consume: async (messageId) => current?.consume(messageId),
+    setSource: (source) => { current = source },
+  }
+}
+
 export interface UiBridges {
   prompt: PermissionPromptProxy
   record: RecordProxy
   exitPlan: ExitPlanPromptProxy
   enterPlan: EnterPlanPromptProxy
   askUserQuestion: AskUserQuestionProxy
+  steer: SteerProxy
 }
 
 export function createUiBridges(): UiBridges {
@@ -211,5 +232,6 @@ export function createUiBridges(): UiBridges {
     exitPlan: createExitPlanProxy(),
     enterPlan: createEnterPlanProxy(),
     askUserQuestion: createAskUserQuestionProxy(),
+    steer: createSteerProxy(),
   }
 }

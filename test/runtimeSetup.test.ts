@@ -12,7 +12,7 @@ import { SessionClient } from '../src/runtime/protocol/client.js'
 import { createMemoryChannelPair } from '../src/runtime/protocol/memoryChannel.js'
 import { AnthropicProvider } from '../src/config/providers/anthropicProvider.js'
 import type { CommandEffect } from '../src/runtime/protocol/wire.js'
-import type { ModelResponse } from '../src/harness/types.js'
+import type { ModelRequest, ModelResponse } from '../src/harness/types.js'
 
 const response: ModelResponse = {
   content: 'Configured and ready.',
@@ -108,6 +108,38 @@ test('an unconfigured protocol session can use commands, switch sessions and lat
   const records = await h.store.loadRecords(h.pane.getSession().id)
   assert.ok(records.some((record) => record.type === 'message' && record.role === 'assistant' && record.content === response.content))
   assert.equal(h.client.getRuntimeSnapshot()?.status, 'ready')
+})
+
+test('a message enqueued mid-turn is steered into that turn at its next step', async (t) => {
+  let release!: () => void
+  const released = new Promise<void>((resolve) => { release = resolve })
+  let started!: () => void
+  const entered = new Promise<void>((resolve) => { started = resolve })
+  const turnRequests: ModelRequest[] = []
+  t.mock.method(AnthropicProvider.prototype, 'createMessage', async (request: ModelRequest) => {
+    // Side requests (session title, tool-use summary) are not the turn's own.
+    if (!request.cacheSource?.startsWith('agent:')) return { content: 'Side', toolCalls: [] }
+    turnRequests.push(request)
+    if (turnRequests.length > 1) return response
+    started()
+    await released
+    return { content: '', toolCalls: [{ id: 'glob-1', name: 'Glob', input: { pattern: '*.none' } }] }
+  })
+  const h = await setup(t)
+  await h.configure()
+  const turn = h.client.submit('look for files')
+  await entered
+  await h.client.enqueueMessage('only in src')
+  release()
+  await turn
+
+  assert.equal(turnRequests.length, 2)
+  assert.ok(JSON.stringify(turnRequests[1]!.messages).includes('only in src'))
+  assert.equal(h.client.getQueuedMessages().length, 0)
+  const records = await h.store.loadRecords(h.pane.getSession().id)
+  const users = records.filter((record) => record.type === 'message' && record.role === 'user')
+  assert.deepEqual(users.map((record) => record.type === 'message' && record.content), ['look for files', 'only in src'])
+  assert.equal(new Set(users.map((record) => record.type === 'message' && record.turnId)).size, 1)
 })
 
 test('configuration refresh waits for the running turn and then installs the updated model', async (t) => {

@@ -63,6 +63,7 @@ function snapshotOf(): WireSettingsSnapshot {
       autoCompactThresholdRatio: 0.93,
     },
     general: { localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json' },
+    userInstructions: '',
   }
 }
 
@@ -158,7 +159,7 @@ test('the nav draws one section per group, labelled, in order', (t) => {
   )
   assert.deepEqual(
     groups.map((group) => findAll(group, 'settings-nav-item').map((item) => item.text)),
-    [['通用', '外观'], ['模型与服务商', '技能和 MCP'], ['权限', 'Agent']],
+    [['通用', '个性化', '外观'], ['模型与服务商', '技能和 MCP'], ['权限', 'Agent']],
   )
 })
 

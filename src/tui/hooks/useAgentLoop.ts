@@ -233,6 +233,13 @@ export function useAgentLoop({
           thinkingDurationMs: thinkingDurationRef.current ?? undefined,
         })
       })
+    } else if (record.type === 'message' && record.role === 'user' && record.sourceQueuedMessageId) {
+      // A message steered into the running turn. The one a turn starts from is
+      // already on screen from `turn-start`, under the same id.
+      setTranscript((prev) => {
+        if ([...prev.liveItems, ...prev.staticItems].some((item) => item.id === record.id)) return prev
+        return applyTuiRecordToTranscriptState(prev, record)
+      })
     } else if (record.type === 'compact_boundary' || record.type === 'compact_attempt_failed') {
       setTranscript((prev) => applyTuiRecordToTranscriptState(prev, record))
     } else if (record.type === 'subagent_task') {

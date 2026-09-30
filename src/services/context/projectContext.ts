@@ -1,6 +1,7 @@
-import { readFile, access } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { readFile, access, mkdir, rm, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import fg from 'fast-glob'
+import { getUserInstructionsPath } from '../../utils/paths.js'
 
 /**
  * The instruction file names, in preference order. Both lists are **first match
@@ -75,29 +76,56 @@ export async function discoverContextFiles(cwd: string): Promise<string[]> {
   return found
 }
 
+export async function readUserInstructions(): Promise<string> {
+  try {
+    return await readFile(getUserInstructionsPath(), 'utf-8')
+  } catch {
+    return ''
+  }
+}
+
+/** Blank content removes the file rather than leaving an empty one behind. */
+export async function writeUserInstructions(content: string): Promise<void> {
+  const path = getUserInstructionsPath()
+  if (content.trim() === '') {
+    await rm(path, { force: true })
+    return
+  }
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, content, 'utf-8')
+}
+
 export async function loadProjectContext(cwd: string): Promise<string> {
   const files = await discoverContextFiles(cwd)
 
-  if (files.length === 0) return ''
+  const entries: string[] = []
+  const user = (await readUserInstructions()).trim()
+  if (user !== '') {
+    entries.push(labelled(getUserInstructionsPath(), "user's private global instructions for all projects", user))
+  }
+  for (const file of files) {
+    let content = ''
+    try {
+      content = (await readFile(file, 'utf-8')).trim()
+    } catch {}
+    if (content === '') continue
+    const description = /\.local\.md$/.test(file)
+      ? "user's private project instructions, not checked in"
+      : 'project instructions, checked into the codebase'
+    entries.push(labelled(file, description, content))
+  }
+  if (entries.length === 0) return ''
 
-  const contents = await Promise.all(
-    files.map(async (f) => {
-      try {
-        return await readFile(f, 'utf-8')
-      } catch {
-        return ''
-      }
-    }),
-  )
-
-  const validContents = contents.filter((c) => c.trim().length > 0)
-  if (validContents.length === 0) return ''
-
+  // The user's file and the project's are independent, not layers: each entry
+  // says what it is and none is described as overriding another.
   return [
     'Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.',
-    '',
-    ...validContents,
-  ].join('\n')
+    ...entries,
+  ].join('\n\n')
+}
+
+function labelled(path: string, description: string, content: string): string {
+  return `Contents of ${path} (${description}):\n\n${content}`
 }
 
 // Project context per cwd. A single-slot cache thrashed once two projects were

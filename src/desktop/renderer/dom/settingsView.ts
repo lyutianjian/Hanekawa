@@ -7,6 +7,7 @@ import type {
   SettingsButton,
   SettingsCard,
   SettingsChord,
+  SettingsEditor,
   SettingsForm,
   SettingsIntent,
   SettingsNavItem,
@@ -226,6 +227,30 @@ export function createSettingsView(
     return control
   }
 
+  /**
+   * The 自定义指令 page. The page, the textarea and the button row are kept
+   * nodes: a rebuilt ancestor would take the focused textarea out of the
+   * document and drop the caret on every keystroke.
+   */
+  function editorNode(editor: SettingsEditor): HTMLElement {
+    commits.set('editor', editor.intentOnInput)
+    const page = node('editor:page', 'div', 'settings-editor-page')
+    const area = node('editor:area', 'textarea', 'settings-textarea', (made) => {
+      made.setAttribute('aria-label', '自定义指令')
+      made.spellcheck = false
+      made.addEventListener('input', () => {
+        const commit = commits.get('editor')
+        if (commit) onIntent(commit(made.value))
+      })
+    })
+    area.placeholder = editor.placeholder
+    area.maxLength = editor.maxLength
+    // Never type over the user: a focused box is theirs.
+    if (document.activeElement !== area && area.value !== editor.value) area.value = editor.value
+    reconcile(page, [area])
+    return page
+  }
+
   return {
     render(view: SettingsViewModel): void {
       presence.set(view.open)
@@ -290,6 +315,7 @@ export function createSettingsView(
                 }))
           : null,
         view.searchEmpty ? el('div', 'settings-empty', view.searchEmpty) : null,
+        view.editor ? editorNode(view.editor) : null,
         ...view.cards.map((card) =>
           cardNode(card, {
             openMenu: view.openMenu,
@@ -377,6 +403,18 @@ function headerNode(
   onIntent: (intent: SettingsIntent) => void,
 ): HTMLElement {
   const header = el('div', 'settings-header', el('div', 'settings-title', view.title))
+  if (view.editor) {
+    const { editor } = view
+    const enabled = editor.dirty && !editor.saving
+    header.appendChild(
+      el(
+        'div',
+        'settings-editor-actions',
+        button('settings-btn', '取消', '放弃未保存的修改', () => onIntent(editor.intentOnCancel), { enabled }),
+        button('settings-btn primary', '保存', '保存自定义指令', () => onIntent(editor.intentOnSave), { enabled }),
+      ),
+    )
+  }
   // Only worth a selector when there is a choice to make.
   if (view.projectChoices.length > 1) {
     header.appendChild(

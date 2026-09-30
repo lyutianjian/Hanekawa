@@ -38,7 +38,7 @@ import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
-import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, SteerSource, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
@@ -238,6 +238,8 @@ export interface AgentLoopOptions {
   onRequestUsage?(usage: TokenUsage, anchorRecordId?: string): void
   /** User-role messages appended verbatim at the start of each step. */
   consumePendingUserMessages?(): string[]
+  /** The user's mid-turn messages, recorded into the running turn at each step. */
+  steer?: SteerSource
 }
 
 const MAX_RECOVERY_COUNT = 3
@@ -521,13 +523,16 @@ export class AgentLoop {
     return Object.keys(normalized).length > 0 ? normalized : undefined
   }
 
-  private async runInternal(userInput: UserInput, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
-    let usage = { ...EMPTY_TOKEN_USAGE }
-    let lastForegroundResponseUsage: TokenUsage | undefined
-    let pendingAssistantStreamContent = ''
-    this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
-    this.currentRequestNewImages = []
-    const turnId = randomUUID()
+  /**
+   * Records one user input: its @-mentioned images, the new-image gates, the
+   * user record, and its at-mention context. A refused input throws before
+   * anything is recorded.
+   */
+  private async recordUserInput(
+    userInput: UserInput,
+    turnId: string,
+    fields: Pick<ChatMessage, 'id' | 'displayContent' | 'sourceQueuedMessageId'>,
+  ): Promise<ChatMessage & { type: 'message' }> {
     // Input preparation for @-mentioned images (design §7.1): import and bind
     // them to the user message *before* it is recorded. A failed explicit
     // image reference throws here — no user record, no at-mention record, the
@@ -548,11 +553,9 @@ export class AgentLoop {
       : userInput.images
     // New-image gate (design §9.2): runs before the user record exists, so a
     // blocked submission leaves the session untouched and the draft survives
-    // in the shell. Queued inputs reach this gate only when their dequeued run
-    // actually starts — waiting never turns new images into degradable
-    // history. Reads the live active model (overrides included), which the
-    // single in-flight slot keeps stable across this synchronous stretch.
-    // Read off the model that will serve the first request — plan routing and
+    // in the shell. Queued inputs reach this gate only when they are actually
+    // recorded — waiting never turns new images into degradable history.
+    // Read off the model that will serve the next request — plan routing and
     // a temporary override included — so a text-only plan model blocks here
     // rather than after the user record exists (design §9.1, last row).
     const submissionModel = this.requestModel
@@ -566,14 +569,10 @@ export class AgentLoop {
     )
     const userMessage: ChatMessage & { type: 'message' } = {
       type: 'message',
-      id: messageId ?? randomUUID(),
+      ...fields,
       role: 'user',
       content: userInput.text,
       ...(turnImages && turnImages.length > 0 ? { images: turnImages } : {}),
-      ...(this.activeRunOverrides?.displayInput ? { displayContent: this.activeRunOverrides.displayInput } : {}),
-      ...(this.activeRunOverrides?.sourceQueuedMessageId
-        ? { sourceQueuedMessageId: this.activeRunOverrides.sourceQueuedMessageId }
-        : {}),
       turnId,
       createdAt: new Date().toISOString(),
     }
@@ -590,12 +589,53 @@ export class AgentLoop {
         await this.appendRecord(atMentionRecord)
       }
     }
+    return userMessage
+  }
+
+  /**
+   * Steering: messages the user sent mid-turn join the turn at the next step,
+   * in order. A slash command stops the walk — it runs as a turn of its own —
+   * and so does a message the gates refuse; both, and everything behind them,
+   * stay queued for the queue pump once the turn is over.
+   */
+  private async takeSteerMessages(turnId: string, signal?: AbortSignal): Promise<void> {
+    const steer = this.options.steer
+    if (!steer) return
+    for (const message of steer.pending()) {
+      // The message this turn started from; its removal may still be in flight.
+      if (message.id === this.activeRunOverrides?.sourceQueuedMessageId) continue
+      if (message.content.trimStart().startsWith('/')) return
+      let userMessage: ChatMessage & { type: 'message' }
+      try {
+        userMessage = await this.recordUserInput(
+          { text: message.content, ...(message.images && message.images.length > 0 ? { images: message.images } : {}) },
+          turnId,
+          { id: randomUUID(), sourceQueuedMessageId: message.id },
+        )
+      } catch {
+        return
+      }
+      await steer.consume(message.id)
+      await this.runUserPromptSubmitHooks(userMessageInput(userMessage), turnId, signal)
+    }
+  }
+
+  private async runInternal(userInput: UserInput, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
+    let usage = { ...EMPTY_TOKEN_USAGE }
+    let lastForegroundResponseUsage: TokenUsage | undefined
+    let pendingAssistantStreamContent = ''
+    this.pendingSubagentTranscriptUsage = { ...EMPTY_TOKEN_USAGE }
+    this.currentRequestNewImages = []
+    const turnId = randomUUID()
+    const userMessage = await this.recordUserInput(userInput, turnId, {
+      id: messageId ?? randomUUID(),
+      ...(this.activeRunOverrides?.displayInput ? { displayContent: this.activeRunOverrides.displayInput } : {}),
+      ...(this.activeRunOverrides?.sourceQueuedMessageId
+        ? { sourceQueuedMessageId: this.activeRunOverrides.sourceQueuedMessageId }
+        : {}),
+    })
     try {
-      await this.runUserPromptSubmitHooks(
-        { text: userInput.text, ...(turnImages && turnImages.length > 0 ? { images: turnImages } : {}) },
-        turnId,
-        signal,
-      )
+      await this.runUserPromptSubmitHooks(userMessageInput(userMessage), turnId, signal)
       let lastResponseTokenCount: number | undefined
       let lastResponseRecordCount: number | undefined
       let lastResponseRecordId: string | undefined
@@ -640,6 +680,7 @@ export class AgentLoop {
             createdAt: new Date().toISOString(),
           })
         }
+        await this.takeSteerMessages(turnId, signal)
         await this.options.planModeManager?.beforeTurn()
         if (this.syncRoleModel(cacheSource)) {
           resetModelRequestState()
@@ -2299,5 +2340,12 @@ function withInheritedPrefix(inherited: ModelRequest, own: ModelRequest): ModelR
     messages: [...inherited.messages, ...own.messages],
     contextItems: [...(inherited.contextItems ?? []), ...(own.contextItems ?? [])],
     ...(imageBytes.size > 0 ? { imageBytes } : {}),
+  }
+}
+
+function userMessageInput(message: ChatMessage): UserInput {
+  return {
+    text: message.content,
+    ...(message.images && message.images.length > 0 ? { images: message.images } : {}),
   }
 }

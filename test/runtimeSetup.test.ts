@@ -20,6 +20,11 @@ const response: ModelResponse = {
   usage: { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 0 },
 }
 
+/** The session's own turn requests, not the side ones (session title, tool-use summary). */
+function turnRequests(provider: { mock: { calls: ReadonlyArray<{ arguments: readonly unknown[] }> } }): number {
+  return provider.mock.calls.filter((call) => (call.arguments[0] as ModelRequest).cacheSource?.startsWith('agent:')).length
+}
+
 async function until(check: () => boolean): Promise<void> {
   for (let i = 0; i < 100; i++) {
     if (check()) return
@@ -103,7 +108,7 @@ test('an unconfigured protocol session can use commands, switch sessions and lat
   assert.equal(h.client.getQueuedMessages().length, 1, 'switching preserves the queued prompt')
 
   await h.configure()
-  await until(() => provider.mock.callCount() === 1 && !h.client.getSnapshot().isStreaming)
+  await until(() => turnRequests(provider) === 1 && !h.client.getSnapshot().isStreaming)
   assert.equal(h.client.getQueuedMessages().length, 0)
   const records = await h.store.loadRecords(h.pane.getSession().id)
   assert.ok(records.some((record) => record.type === 'message' && record.role === 'assistant' && record.content === response.content))

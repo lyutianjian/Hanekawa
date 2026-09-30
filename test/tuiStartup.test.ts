@@ -111,5 +111,6 @@ test('TUI starts in setup, preserves an unsent draft, and sends after configurin
   await key('hello after setup')
   await key('\r')
   await frame((text) => text.includes('TUI setup succeeded.'))
-  assert.equal(provider.mock.callCount(), 1)
+  // The session's own turn only; the session title is a side request of its own.
+  assert.equal(provider.mock.calls.filter((call) => call.arguments[0]?.cacheSource?.startsWith('agent:')).length, 1)
 })

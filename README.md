@@ -90,6 +90,26 @@ hooks are. Editing one of these files mid-session takes effect on the next setti
 anything on the desktop settings screen does one, and it rebuilds the runtime when the instructions
 changed. In the TUI, restart to pick up an edit.
 
+### Auto memory
+
+The model can keep notes that outlive a session: your corrections and preferences, project background the
+code does not show, and where external material lives. They are plain Markdown files in
+`~/.myagent/projects/<key>/memory/` (one directory per working directory; the home directory gets its own),
+each with a small frontmatter, plus an index `MEMORY.md` with one line per note. Open or edit them with any
+editor, or ask the model to forget one.
+
+- **Loading**: the index is read when a session's runtime is first built and goes into the system prompt;
+  `/clear` and `/resume` read it again, a model switch or settings reload does not. A note written mid-session
+  shows up in the next session. The index is cut at 200 lines or 25,000 bytes.
+- **Approval**: in the main conversation, reading, writing and deleting a `*.md` file directly inside the memory
+  directory never prompts, in any permission mode (plan mode included). Deny rules still apply, and ask rules
+  still ask (except in `bypass`). The directory also counts as workspace, so a read-only shell command on it
+  (`ls`, `cat`, `grep`) runs without asking; a shell command that writes or deletes there asks as usual.
+- **Switch**: `"autoMemory": false` in settings turns it off for sessions opened afterwards: no prompt section,
+  no approval exemption, no directory created. Existing notes are kept.
+- **Not covered**: subagents neither see nor use memory, and memory files are not part of `/rewind`. Removing a
+  project on the desktop deletes its memory with the rest of its data.
+
 ### Routing
 
 `routing` sends a particular role to a particular model. Every value is a key from `models`, or

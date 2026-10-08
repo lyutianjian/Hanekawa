@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs'
+import path from 'node:path'
 import type { EffortValue } from '../config/effort.js'
 import type { ConfigService } from '../config/service.js'
 import type { MyAgentSettings } from '../config/settings.js'
@@ -17,6 +19,7 @@ import { createRuntimeFactory } from './createRuntime.js'
 import { reconcileOrphanedAgents } from './sessionSwitch.js'
 import type { ToolRegistry } from './toolRegistry.js'
 import type { SessionScope } from './types.js'
+import { getProjectMemoryDir } from '../utils/paths.js'
 
 /**
  * The project-level collaborators a scope builds on. Every one of these is
@@ -63,12 +66,22 @@ export async function createSessionScope(
   const settings = deps.getSettings()
   const bridges = createUiBridges()
 
+  const memoryDir = settings.autoMemory === false ? undefined : getProjectMemoryDir(deps.cwd)
+  if (memoryDir) {
+    try {
+      mkdirSync(memoryDir, { recursive: true })
+    } catch {
+      // A write into it reports the failure itself.
+    }
+  }
+
   const permissionGate = new PermissionGate(
     bridges.prompt.prompt,
     permissionRulesFromSettings(settings.permissions),
     {
       cwd: deps.cwd,
       sessionId: session.id,
+      ...(memoryDir ? { memoryDir } : {}),
       ...(settings.permissions?.additionalDirectories
         ? { additionalDirectories: settings.permissions.additionalDirectories }
         : {}),
@@ -92,6 +105,7 @@ export async function createSessionScope(
     getSkills: deps.getSkills,
     getAgentDefinitions: deps.getAgentDefinitions,
     getProjectContext: deps.getProjectContext,
+    ...(memoryDir ? { memoryDir } : {}),
     toolRegistry: deps.toolRegistry,
     promptSections,
     permissionGate,
@@ -103,7 +117,7 @@ export async function createSessionScope(
     createActiveModelRuntime: deps.createActiveModelRuntime,
     // Read at call time, so a tracker installed after the first runtime was
     // built still reaches it.
-    trackFileEdit: (filePath) => trackFileEdit?.(filePath) ?? Promise.resolve(),
+    trackFileEdit: (filePath) => memoryDir && isInsideDir(memoryDir, filePath) ? Promise.resolve() : trackFileEdit?.(filePath) ?? Promise.resolve(),
     ...(deps.imageAttachments ? { imageAttachments: deps.imageAttachments } : {}),
     ...(deps.attachmentFacts ? { attachmentFacts: deps.attachmentFacts } : {}),
     ...(deps.attachmentBytes ? { attachmentBytes: deps.attachmentBytes } : {}),
@@ -170,4 +184,9 @@ export function hasRecoverableInterruption(records: readonly SessionRecord[]): b
   return [...records]
     .reverse()
     .some((record) => record.type === 'turn_interruption' && record.recoverable && !record.consumedAt)
+}
+
+function isInsideDir(dir: string, filePath: string): boolean {
+  const relative = path.relative(dir, path.resolve(dir, filePath))
+  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative)
 }

@@ -80,6 +80,8 @@ const WRITE_FAMILY = new Set(['Edit', 'Write', 'MultiEdit', 'Delete', 'NotebookE
 const READ_FAMILY = new Set(['Read', 'Grep', 'Glob'])
 const FILE_TOOLS = new Set([...WRITE_FAMILY, ...READ_FAMILY, 'NotebookRead'])
 const PLAN_FILE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit'])
+const MEMORY_FILE_TOOLS = new Set(['Read', 'Write', 'Edit', 'MultiEdit', 'Delete'])
+const MEMORY_DIR_TOOLS = new Set(['Grep', 'Glob'])
 /** `WebFetch(domain:...)` rule content, aligned with Claude Code's syntax. */
 const DOMAIN_RULE_PREFIX = 'domain:'
 
@@ -287,6 +289,7 @@ export class PermissionGate {
   /** Extra workspace roots, from `permissions.additionalDirectories`. */
   private readonly additionalDirectories: string[]
   private sessionId?: string
+  private readonly memoryDir?: string
   private riskContext?: RiskContext
   /** Highest tier each allow rule may cover, keyed by rule; computed on demand. */
   private readonly ruleCeilings = new Map<string, RiskTier>()
@@ -303,6 +306,8 @@ export class PermissionGate {
       additionalDirectories?: string[]
       /** The session whose tool-result spill directory counts as workspace. */
       sessionId?: string
+      /** The project's memory directory, when auto memory is on; its `*.md` files need no approval. */
+      memoryDir?: string
       persistRule?: (rule: PermissionRule) => Promise<void>
       sessionRuleStore?: SessionRuleStore
     },
@@ -316,6 +321,7 @@ export class PermissionGate {
       .filter((dir) => dir !== '')
       .map((dir) => path.resolve(this.cwd, dir))
     this.sessionId = options?.sessionId
+    this.memoryDir = options?.memoryDir
     this.persistRule = options?.persistRule
   }
 
@@ -338,6 +344,16 @@ export class PermissionGate {
     // 1. A deny rule is absolute.
     const deniedBy = this.matchingRule('deny', tool.name, input, risk)
     if (deniedBy) return this.denyByRule(deniedBy)
+
+    // Memory files are the model's own notes: no prompt, in every mode. An ask rule still applies (step 4).
+    if (this.isMemoryAccess(tool, input)) {
+      const askedByRule = mode === 'bypass' ? undefined : this.matchingRule('ask', tool.name, input, risk)
+      if (!askedByRule || this.coveredBy(this.sessionRuleStore.rules, tool.name, input, risk)) return allow('mode')
+      if (mode === 'readonly') {
+        return deny('ask rule', `The user asked to confirm ${permissionRuleToEntry(askedByRule)} before it runs, and read-only mode cannot ask. Ask the user to run it themselves or to switch permission mode.`)
+      }
+      return this.ask(tool, input, risk, 'ask rule', askedByRule)
+    }
 
     // 2. Plan mode writes nothing but this session's plan file.
     if (mode === 'plan' && risk.isFileWrite) {
@@ -780,8 +796,24 @@ export class PermissionGate {
       cwd: this.cwd,
       additionalDirectories: this.additionalDirectories,
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+      ...(this.memoryDir ? { memoryDir: this.memoryDir } : {}),
     })
     return this.riskContext
+  }
+
+  /** A `*.md` directly in the memory directory, or (Grep/Glob) the directory itself. */
+  private isMemoryAccess(tool: Tool, input: unknown): boolean {
+    if (!this.memoryDir) return false
+    const forFile = MEMORY_FILE_TOOLS.has(tool.name) || MEMORY_DIR_TOOLS.has(tool.name)
+    if (!forFile) return false
+    const filePath = extractFilePath(input)
+    if (!filePath) return false
+    const absolute = realPath(path.resolve(this.cwd, filePath))
+    const memoryDir = realPath(this.memoryDir)
+    if (MEMORY_DIR_TOOLS.has(tool.name) && samePath(absolute, memoryDir)) return true
+    return MEMORY_FILE_TOOLS.has(tool.name)
+      && absolute.toLowerCase().endsWith('.md')
+      && samePath(path.dirname(absolute), memoryDir)
   }
 
   /** `<plansDir>/<slug>.md` or a sub-agent's `<plansDir>/<slug>-agent-<id>.md`. */

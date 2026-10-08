@@ -160,6 +160,8 @@ export interface AgentLoopOptions {
   toolContext: ToolContext
   system?: string
   projectContext?: string
+  /** The auto-memory section; kept apart from `projectContext`, which subagents inherit. */
+  memoryPrompt?: string
   criticalSystemReminder?: string
   skills?: SkillDefinition[]
   promptCacheRetention?: 'in_memory' | '24h'
@@ -1662,6 +1664,7 @@ export class AgentLoop {
       tools: toolsForContext,
       system: this.options.system,
       projectContext: this.options.projectContext,
+      memoryPrompt: this.options.memoryPrompt,
       criticalSystemReminder: this.options.criticalSystemReminder,
       skills: this.options.skills,
       contextManagement: this.activeContextManagement,

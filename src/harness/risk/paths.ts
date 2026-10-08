@@ -17,6 +17,8 @@ export interface RiskContextOptions {
   cwd: string
   additionalDirectories?: readonly string[]
   sessionId?: string
+  /** The project's memory directory, when auto memory is on: workspace, so reading it is plain reading. */
+  memoryDir?: string
 }
 
 export function createRiskContext(options: RiskContextOptions): RiskContext {
@@ -24,6 +26,7 @@ export function createRiskContext(options: RiskContextOptions): RiskContext {
   const cwd = realPath(path.resolve(options.cwd))
   const extraRoots = [getProjectPlansDir(options.cwd)]
   if (options.sessionId) extraRoots.push(getToolResultSpillDir(options.cwd, options.sessionId))
+  if (options.memoryDir) extraRoots.push(options.memoryDir)
   // Scratch space is part of the workspace: writing a temp file is ordinary work.
   const tempRoots = [tmpdir(), ...(process.platform !== 'win32' ? ['/tmp'] : [])].map(realPath)
   const additional = (options.additionalDirectories ?? [])

@@ -1,4 +1,5 @@
 import { createProvider, resolveImageCapability } from '../config/providers.js'
+import { buildMemoryPrompt } from '../services/memory/memoryPrompt.js'
 import type { ConfigService, ModelConfig, ThinkingConfig } from '../config/service.js'
 import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
@@ -99,6 +100,8 @@ export interface CreateRuntimeDeps {
    * on the next rebuild — see `reloadSettings`'s `needsRuntimeRebuild`.
    */
   getProjectContext: () => string
+  /** Set when auto memory is on for this scope; the index is read once per session id. */
+  memoryDir?: string
   toolRegistry: ToolRegistry
   promptSections: SystemPromptSectionCache
   permissionGate: PermissionGate
@@ -159,6 +162,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     getSkills,
     getAgentDefinitions,
     getProjectContext,
+    memoryDir,
     toolRegistry,
     promptSections,
     permissionGate,
@@ -174,6 +178,13 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
     attachmentBytes,
     onActiveSessionChange,
   } = deps
+
+  let memorySnapshot: { sessionId: string; text: string } | undefined
+  const memoryPromptFor = (sessionId: string): string | undefined => {
+    if (!memoryDir) return undefined
+    if (memorySnapshot?.sessionId !== sessionId) memorySnapshot = { sessionId, text: buildMemoryPrompt(memoryDir) }
+    return memorySnapshot.text
+  }
 
   const createRoutedRuntime = (
     role: RoutingRole,
@@ -318,6 +329,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       },
       system: config.get().agent.system,
       projectContext: getProjectContext(),
+      memoryPrompt: memoryPromptFor(runtimeSession.id),
       skills: getSkills(),
       promptCacheRetention: targetModelConfig.promptCacheRetention,
       supportsImageInput: resolveImageCapability(targetModelConfig),

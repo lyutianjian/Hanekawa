@@ -58,6 +58,8 @@ export interface MyAgentSettings {
   compactModel?: string
   agent?: AgentConfig
   autoCompact?: boolean
+  /** Let the model keep cross-session notes in the project's memory directory. On unless false. */
+  autoMemory?: boolean
   autoCompactThreshold?: number
   effortLevel?: EffortLevel
   /**
@@ -274,6 +276,10 @@ function mergeSettings(...sources: MyAgentSettings[]): MyAgentSettings {
 
     if (source.autoCompact !== undefined) {
       result.autoCompact = source.autoCompact
+    }
+
+    if (source.autoMemory !== undefined) {
+      result.autoMemory = source.autoMemory
     }
 
     if (source.autoCompactThreshold !== undefined) {
@@ -704,6 +710,10 @@ export function validateSettings(settings: MyAgentSettings): { valid: boolean; e
 
   if (settings.cache?.ttl1h !== undefined && typeof settings.cache.ttl1h !== 'boolean') {
     errors.push('cache.ttl1h must be a boolean')
+  }
+
+  if (settings.autoMemory !== undefined && typeof settings.autoMemory !== 'boolean') {
+    errors.push('autoMemory must be a boolean')
   }
 
   if (settings.thinking !== undefined && typeof settings.thinking !== 'boolean') {

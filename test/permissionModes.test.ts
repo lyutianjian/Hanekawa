@@ -17,7 +17,7 @@ import { bashTool } from '../src/tools/BashTool/BashTool.js'
 import { configTool } from '../src/tools/ConfigTool/ConfigTool.js'
 import { resolveSubagentPermissionMode } from '../src/tools/AgentTool/AgentTool.js'
 import type { Tool, ToolContext } from '../src/harness/types.js'
-import { getProjectPlansDir } from '../src/utils/paths.js'
+import { getProjectMemoryDir, getProjectPlansDir } from '../src/utils/paths.js'
 
 function fileTool(name: string, readOnly: boolean): Tool {
   return {
@@ -416,4 +416,55 @@ test('a compound command is covered segment by segment: each allowed by the mode
   const byDefault = harness(cwd, 'default', ['Bash(npm test:*)'])
   assert.equal(await byDefault.outcome(bashTool, bash('git status && npm test')), 'allow')
   assert.equal(await byDefault.outcome(bashTool, bash('npm test && npm install')), 'ask')
+})
+
+test('memory files: no prompt in any mode, but only direct *.md and only with memoryDir', async (t) => {
+  const cwd = await scratch(t)
+  const memoryDir = getProjectMemoryDir(cwd)
+  await mkdir(path.join(memoryDir, 'sub'), { recursive: true })
+  const note = path.join(memoryDir, 'note.md')
+  const gateFor = (mode: PermissionMode, rules: { deny?: string[]; ask?: string[] } = {}, withDir = true) => {
+    const requests: PermissionRequest[] = []
+    const gate = new PermissionGate(async (request) => { requests.push(request); return false }, permissionRulesFromSettings(rules), {
+      mode, cwd, ...(withDir ? { memoryDir } : {}),
+    })
+    return async (tool: Tool, input: unknown): Promise<Outcome> => {
+      const decision = await gate.approveDetailed(tool, input)
+      return requests.length > 0 ? 'ask' : decision.approved ? 'allow' : 'deny'
+    }
+  }
+  const deleteTool = fileTool('Delete', false)
+  const grepTool = fileTool('Grep', true)
+
+  for (const mode of ['default', 'plan', 'auto', 'bypass'] as PermissionMode[]) {
+    const outcome = gateFor(mode)
+    for (const tool of [readTool, writeTool, editTool, deleteTool]) {
+      assert.equal(await outcome(tool, { filePath: note }), 'allow', `${mode} ${tool.name}`)
+    }
+    assert.equal(await outcome(grepTool, { filePath: memoryDir }), 'allow', `${mode} Grep dir`)
+    assert.equal(await gateFor(mode)(writeTool, { filePath: path.join(memoryDir, 'id_rsa.md') }), 'allow', `${mode} credential-like name`)
+  }
+
+  const outcome = gateFor('default')
+  assert.notEqual(await outcome(writeTool, { filePath: path.join(memoryDir, 'sub', 'x.md') }), 'allow')
+  assert.notEqual(await outcome(writeTool, { filePath: path.join(memoryDir, 'x.txt') }), 'allow')
+  assert.notEqual(await outcome(writeTool, { filePath: path.join(memoryDir, '..', 'x.md') }), 'allow')
+  assert.notEqual(await outcome(writeTool, { filePath: `${memoryDir}-evil/x.md` }), 'allow')
+  assert.notEqual(await outcome(grepTool, { filePath: path.join(memoryDir, 'sub') }), 'allow')
+  assert.notEqual(await outcome(deleteTool, { filePath: memoryDir }), 'allow')
+
+  // A gate without memoryDir (a sub-agent's) treats it as any other path; readonly still refuses writes.
+  assert.notEqual(await gateFor('default', {}, false)(writeTool, { filePath: note }), 'allow')
+  assert.equal(await gateFor('readonly', {}, false)(writeTool, { filePath: note }), 'deny')
+
+  assert.equal(await gateFor('bypass', { deny: ['Write'] })(writeTool, { filePath: note }), 'deny')
+  assert.equal(await gateFor('default', { ask: ['Write'] })(writeTool, { filePath: note }), 'ask')
+  assert.equal(await gateFor('bypass', { ask: ['Write'] })(writeTool, { filePath: note }), 'allow')
+
+  // The memory directory is workspace: read-only Bash on it is plain reading, Bash writes still ask.
+  assert.equal(await gateFor('default')(bashTool, bash(`ls ${memoryDir} && grep -ril vim ${memoryDir}`)), 'allow')
+  assert.equal(await gateFor('default')(bashTool, bash(`cat ${note}`)), 'allow')
+  assert.equal(await gateFor('default')(bashTool, bash(`rm ${note}`)), 'ask')
+  assert.equal(await gateFor('default', {}, false)(bashTool, bash(`ls ${memoryDir}`)), 'ask')
+  assert.equal(await gateFor('default', { deny: [`Read(${memoryDir}/**)`] })(bashTool, bash(`cat ${note}`)), 'deny')
 })

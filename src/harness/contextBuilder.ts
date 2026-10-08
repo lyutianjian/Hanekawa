@@ -23,6 +23,7 @@ export interface BuildContextInput {
   tools: Tool[]
   system?: string
   projectContext?: string
+  memoryPrompt?: string
   criticalSystemReminder?: string
   skills?: SkillDefinition[]
   contextManagement?: Partial<ContextManagementConfig>
@@ -191,6 +192,7 @@ export class ContextBuilder {
     const systemBlocks = this.buildSystemBlocks(
       input.system,
       input.projectContext,
+      input.memoryPrompt,
       input.criticalSystemReminder,
       input.enabledSections,
       input.tools,
@@ -347,6 +349,7 @@ export class ContextBuilder {
   private buildSystemBlocks(
     system: string | undefined,
     projectContext?: string,
+    memoryPrompt?: string,
     criticalSystemReminder?: string,
     enabledSections?: readonly SectionKey[],
     tools: readonly Tool[] = [],
@@ -357,6 +360,7 @@ export class ContextBuilder {
     const staticSections = [
       ...this.buildDefaultSystemSections(enabledSections ?? this.defaultEnabledSections),
       projectContext?.trim(),
+      memoryPrompt?.trim(),
       this.buildEnvironmentSystemSection(env),
       this.buildSkillsSystemSection(skills),
       // Deferred tools are announced via injected user message in the payload builder,

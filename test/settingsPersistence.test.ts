@@ -290,6 +290,16 @@ test('the home directory does not merge its user layer twice', async () => {
   assert.deepEqual((await loadMergedSettings(home)).permissions?.allow, ['Read'])
 })
 
+test('autoMemory: a later layer overrides an earlier one', async () => {
+  await withLocalLayer({ autoMemory: true }, async (cwd) => {
+    assert.equal((await loadMergedSettings(cwd)).autoMemory, true)
+    const local = localSettingsPath(cwd)
+    await mkdir(path.dirname(local), { recursive: true })
+    await writeFile(local, JSON.stringify({ autoMemory: false }), 'utf8')
+    assert.equal((await loadMergedSettings(cwd)).autoMemory, false)
+  })
+})
+
 test('a local rule can be removed, which appending one at a time never could', async () => {
   await withLocalLayer({ permissions: { allow: ['Read'] } }, async (cwd) => {
     await setLocalPermissionEntries(cwd, 'allow', ['Bash(ls:*)', 'Bash(git status:*)'])

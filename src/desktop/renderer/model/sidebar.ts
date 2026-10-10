@@ -93,7 +93,7 @@ export interface SidebarRow {
 }
 
 /**
- * One project's 「项目调度」 entry: its coordinator session and the active
+ * One project's coordination entry: its coordinator session and the active
  * threads hanging under it.
  */
 export interface SidebarCoordinationGroup {
@@ -234,14 +234,14 @@ export interface SidebarGroup {
   readonly collapsed: boolean
   /** The group's sessions, newest first. Populated even while collapsed. */
   readonly rows: readonly SidebarRow[]
+  /**
+   * The project's coordinator, its active threads and the folded count. Drawn
+   * first inside the group, above {@link rows}; absent while recent-only is on.
+   */
+  readonly coordination?: SidebarCoordinationGroup
 }
 
 export interface SidebarView {
-  /**
-   * The 「项目调度」 section, drawn above {@link groups}. Empty while
-   * {@link recentOnly} is on. Its rows come first in {@link rows}.
-   */
-  readonly coordination: readonly SidebarCoordinationGroup[]
   readonly groups: readonly SidebarGroup[]
   /**
    * Every *visible* row, flattened in **visual** order — collapsed groups
@@ -551,8 +551,12 @@ export function sidebarView(state: SidebarState): SidebarView {
   const coordination = state.recentOnly
     ? []
     : coordinationGroupsOf(state, summaryById, laneBySession, active?.paneId, needle)
+  const coordinationByRoot = new Map<string, SidebarCoordinationGroup>()
   for (const group of coordination) {
     if (group.coordinator?.active || group.threads.some((row) => row.active)) activeHasRow = true
+    coordinationByRoot.set(group.projectRoot, group)
+    // A project known only from its coordination table still gets its group.
+    bucketFor(group.projectRoot, group.projectName)
   }
 
   // Drop only what the *search* emptied. Without a query an empty bucket keeps
@@ -576,7 +580,8 @@ export function sidebarView(state: SidebarState): SidebarView {
     // empty project — it is not being listed at all.
     .filter(([projectRoot]) => !state.removingProjects.has(projectRoot))
     .filter(([, bucket]) => !state.recentOnly || bucket.isGlobal)
-    .filter(([, bucket]) => !searching || bucket.rows.length > 0)
+    .filter(([projectRoot, bucket]) =>
+      !searching || bucket.rows.length > 0 || coordinationByRoot.has(projectRoot))
     .map(([projectRoot, bucket]) =>
       groupOf(projectRoot, bucket.projectName, bucket.rows, {
         // A search un-folds everything: the whole point of the query is to find a
@@ -589,6 +594,7 @@ export function sidebarView(state: SidebarState): SidebarView {
         // be unanswerable, so both read on the same filtered set the view draws.
         menuOpen: state.projectMenu === projectRoot,
         confirmingRemove: state.pendingRemoveProject === projectRoot,
+        coordination: coordinationByRoot.get(projectRoot),
       }),
     )
 
@@ -602,18 +608,15 @@ export function sidebarView(state: SidebarState): SidebarView {
   // Collapsed groups are drawn as a heading and nothing else, so they are absent
   // here: this list is the cursor's and the digit chords' index space, and both
   // have to mean what is on screen.
-  // The coordination section is on screen above the groups, so its rows lead.
-  const rows = [
-    ...coordination.flatMap((group) => (group.coordinator ? [group.coordinator, ...group.threads] : group.threads)),
-    ...ordered.filter((group) => !group.collapsed).flatMap((group) => group.rows),
-  ]
+  // Inside a group the coordinator and its threads are drawn above the ordinary
+  // rows, so they lead there too.
+  const rows = ordered.filter((group) => !group.collapsed).flatMap(groupRows)
 
   // `groups` is empty only when there is genuinely nothing; a collapsed group is
   // still something to show, so the empty state reads on the groups rather than
   // on the visible rows.
-  const nothing = ordered.length === 0 && coordination.length === 0
+  const nothing = ordered.length === 0
   return {
-    coordination,
     groups: ordered,
     rows,
     liveRows: rows.filter((row) => row.lane !== undefined),
@@ -778,6 +781,7 @@ function groupOf(
     active: boolean
     menuOpen: boolean
     confirmingRemove: boolean
+    coordination?: SidebarCoordinationGroup
   },
 ): SidebarGroup {
   return {
@@ -788,8 +792,15 @@ function groupOf(
     menuOpen: options.menuOpen,
     confirmingRemove: options.confirmingRemove,
     collapsed: options.collapsed,
+    ...(options.coordination ? { coordination: options.coordination } : {}),
     rows: [...rows].sort((left, right) => touchedAt(right.updatedAt) - touchedAt(left.updatedAt)),
   }
+}
+
+/** A group's rows in screen order: coordinator, its threads, then ordinary sessions. */
+export function groupRows(group: SidebarGroup): SidebarRow[] {
+  const co = group.coordination
+  return [...(co?.coordinator ? [co.coordinator] : []), ...(co?.threads ?? []), ...group.rows]
 }
 
 function clampIndex(index: number, length: number): number {
@@ -1042,17 +1053,6 @@ export function sidebarRenderSignature(view: SidebarView): string {
     String(view.selectedIndex),
     `q:${view.searchQuery}`,
   ]
-  for (const group of view.coordination) {
-    parts.push(
-      `k:${group.projectRoot}${group.projectName}${group.running}/${group.needsYou}/${group.hiddenCount}`,
-    )
-    for (const row of group.coordinator ? [group.coordinator, ...group.threads] : group.threads) {
-      parts.push(
-        `t:${row.sessionId}${row.lane ?? ''}${row.badge}${row.active ? '1' : '0'}`
-          + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.statusLabel ?? ''}${row.statusTone ?? ''}`,
-      )
-    }
-  }
   for (const group of view.groups) {
     // The menu and the confirmation are drawn on the heading, a collapsed
     // group's included, so they are signed even where the rows below are not —
@@ -1061,13 +1061,16 @@ export function sidebarRenderSignature(view: SidebarView): string {
     // brand-new session gets, and it arrives without any row changing.
     parts.push(
       `g:${group.projectRoot}${group.projectName}${group.collapsed ? '1' : '0'}${group.isGlobal ? 'g' : '-'}`
-        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}${group.active ? 'a' : '-'}`,
+        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}${group.coordination ? 'c' : '-'}${group.active ? 'a' : '-'}`,
     )
+    const co = group.coordination
+    if (co) parts.push(`k:${co.running}/${co.needsYou}/${co.hiddenCount}`)
     if (group.collapsed) continue
-    for (const row of group.rows) {
+    for (const row of groupRows(group)) {
       parts.push(
         `r:${row.sessionId}${row.lane ?? ''}${row.badge}${row.active ? '1' : '0'}`
-          + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`,
+          + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`
+          + `${row.nested ? 'n' : ''}${row.statusLabel ?? ''}${row.statusTone ?? ''}${row.roleMarker ?? ''}`,
       )
     }
   }

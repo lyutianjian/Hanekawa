@@ -771,7 +771,7 @@ test('a session waiting for approval says so in words; a running one does not', 
   assert.equal(waiting.attributes.get('aria-label'), '等待授权')
 })
 
-test('the 项目调度 section draws counts, indented thread rows with a chip, and the folded count', (t) => {
+test('a project group draws the coordinator first, then counts, indented thread rows with a chip, the folded count, then ordinary rows', (t) => {
   const { render, root, stub, intents } = mount(t)
   const at = '2026-01-01T00:00:00.000Z'
   render(viewOf({
@@ -790,19 +790,18 @@ test('the 项目调度 section draws counts, indented thread rows with a chip, a
       ],
     }]]),
   }))
-  const section = find(root(), 'coord-section')
-  assert.ok(section)
-  assert.equal(find(section, 'coord-title')?.text, '项目调度')
+  const section = root()
+  assert.equal(find(section, 'coord-section'), undefined, 'no separate section')
+  assert.equal(find(section, 'project-empty'), undefined)
   assert.equal(find(section, 'coord-counts')?.text, '1 运行中 · 1 需要你')
   assert.equal(find(section, 'coord-hidden')?.text, '+1 已安静/结案')
   const rows = sessionRows(section)
-  assert.equal(rows.length, 3)
-  assert.deepEqual(rows.map((row) => row.classes.includes('nested')), [false, true, true])
+  assert.equal(rows.length, 4, 'coordination rows plus the ordinary one')
+  assert.deepEqual(rows.map((row) => row.classes.includes('nested')), [false, true, true, false])
   assert.deepEqual(
     descendants(section).filter((node) => node.classes.includes('session-status')).map((node) => node.text),
     ['运行中', '需要你'],
   )
-  assert.equal(sessionRows(root()).length, 4, 'coordination rows plus the ordinary one')
   const open = find(rows[1]!, 'session-open')
   assert.ok(open)
   stub.click(open.node)

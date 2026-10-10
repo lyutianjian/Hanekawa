@@ -205,6 +205,8 @@ import {
 } from './model/tasks.js'
 
 export interface PaneSessionDeps {
+  /** Whether this lane is a project coordinator (its permission pill is hidden). */
+  isCoordinator?: () => boolean
   /** The lane key. Stable across `/clear` and `/resume`; identifies this pane. */
   lane: string
   channel: RuntimeChannel
@@ -921,6 +923,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.composer.renderRuntime(
       runtime,
       contextGaugeView(client.getContextUsedTokens(), runtime),
+      deps.isCoordinator?.() ?? false,
     )
     deps.processStrip.render(runningProcessCount(client.getBackgroundTasks()))
     // The strip's send-gate half follows the same snapshot: a model switch to

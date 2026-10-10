@@ -1031,11 +1031,12 @@ const sampleThreads = [
   threadInfo('t4', 'resolved'),
 ]
 
-test('coordination rows lead rows, and leave the project group', () => {
+test('coordination rows lead inside the project group', () => {
   const view = sidebarView(coordState({}, sampleThreads))
   assert.deepEqual(view.rows.map((row) => row.sessionId), ['coord', 't1', 't2', 'plain'])
+  assert.equal(view.groups.length, 1)
   assert.deepEqual(view.groups[0]!.rows.map((row) => row.sessionId), ['plain'])
-  const group = view.coordination[0]!
+  const group = view.groups[0]!.coordination!
   assert.equal(group.projectName, 'alpha')
   assert.equal(group.running, 1)
   assert.equal(group.needsYou, 1)
@@ -1049,16 +1050,16 @@ test('coordination rows lead rows, and leave the project group', () => {
 
 test('search filters thread rows and drops groups with no match', () => {
   const hit = sidebarView(coordState({ searchQuery: 'REVIEW' }, sampleThreads))
-  assert.deepEqual(hit.coordination[0]!.threads.map((row) => row.sessionId), ['t2'])
-  assert.equal(hit.coordination[0]!.coordinator?.sessionId, 'coord')
+  assert.deepEqual(hit.groups[0]!.coordination!.threads.map((row) => row.sessionId), ['t2'])
+  assert.equal(hit.groups[0]!.coordination!.coordinator?.sessionId, 'coord')
   const miss = sidebarView(coordState({ searchQuery: 'zzz' }, sampleThreads))
-  assert.equal(miss.coordination.length, 0)
+  assert.equal(miss.groups.length, 0)
   assert.equal(miss.noMatches, true)
 })
 
 test('recentOnly hides the section', () => {
   const view = sidebarView(coordState({ recentOnly: true }, sampleThreads))
-  assert.equal(view.coordination.length, 0)
+  assert.equal(view.groups.length, 0)
   assert.ok(!view.rows.some((row) => row.sessionId === 't1'))
 })
 
@@ -1067,16 +1068,16 @@ test('a project with threads but no coordinator still gets a group; the signatur
     coordination: new Map([['/a', { projectRoot: '/a', threads: sampleThreads }]]),
   })
   const view = sidebarView(state)
-  assert.equal(view.coordination[0]!.coordinator, undefined)
+  assert.equal(view.groups[0]!.coordination!.coordinator, undefined)
   const changed = sidebarView(coordState({}, [threadInfo('t1', 'failed', 'build')]))
   assert.notEqual(sidebarRenderSignature(view), sidebarRenderSignature(changed))
 })
 
 test('thread rows reuse activateRow', () => {
   const view = sidebarView(coordState({ lanes: [lane('l1', 't1', '/a')] }, sampleThreads))
-  const open = view.coordination[0]!.threads.find((row) => row.sessionId === 't2')!
+  const open = view.groups[0]!.coordination!.threads.find((row) => row.sessionId === 't2')!
   assert.deepEqual(activateRow(open), { kind: 'open', projectRoot: '/a', sessionId: 't2' })
-  const live = view.coordination[0]!.threads.find((row) => row.sessionId === 't1')!
+  const live = view.groups[0]!.coordination!.threads.find((row) => row.sessionId === 't1')!
   assert.deepEqual(activateRow(live), { kind: 'switch', lane: 'l1' })
   assert.deepEqual(view.liveRows.map((row) => row.sessionId), ['t1'])
 })

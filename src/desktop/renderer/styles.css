@@ -5451,32 +5451,8 @@ body.settings-open #canvas-header,
 .thread-status.tone-muted,
 .thread-note-status.tone-muted { color: var(--text-tertiary); }
 
-/* Sidebar: the coordination section sits above the workspaces, and its rows
-   reuse `.session-row`'s box so the indent lines up with session titles. */
-.coord-section { margin-top: var(--space-2); }
-.coord-title {
-  padding: var(--space-1) var(--space-3);
-  color: var(--text-secondary);
-  font-size: var(--type-meta);
-}
-.coord-group { margin-bottom: var(--space-1); }
-.coord-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 34px;
-  margin: var(--space-2) var(--space-2) 2px;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--type-ui);
-}
-.coord-project {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* Sidebar: coordination rows sit inside their project group and reuse
+   `.session-row`'s box; counts and the folded line follow the rows. */
 .coord-counts {
   flex: 0 0 auto;
   color: var(--text-tertiary);

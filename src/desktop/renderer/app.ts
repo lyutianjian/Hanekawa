@@ -340,6 +340,7 @@ function attachPaneSession(lane: string): void {
       if (thread) openSessionById(root, thread.sessionId)
     },
     onSubagentsChanged: () => renderSubagents(),
+    isCoordinator: () => shellClient.getLanes().find((info) => info.lane === lane)?.coordinationRole === 'coordinator',
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.

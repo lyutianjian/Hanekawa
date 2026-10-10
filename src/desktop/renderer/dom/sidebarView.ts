@@ -10,10 +10,8 @@ import {
   coordinationCountsText,
   coordinationHiddenText,
   newSessionIntent,
-  SIDEBAR_COORDINATION_TITLE,
   sidebarContentMounted,
   sidebarRenderSignature,
-  type SidebarCoordinationGroup,
   type SidebarGroup,
   type SidebarIntent,
   type SidebarRow,
@@ -640,50 +638,29 @@ export function createSidebarView(
     // have a height to travel to. A collapsing group's rows are already out of
     // `view.rows`, so `indexOf` answers -1 for them — which must not read as the
     // "no cursor" index and paint every one of them selected.
-    const children: HTMLElement[] = group.rows.map((row) => {
+    const children: HTMLElement[] = []
+    const co = group.coordination
+    if (co) {
+      const counts = coordinationCountsText(co.running, co.needsYou)
+      const draw = (row: SidebarRow, trailing?: HTMLElement): void => {
+        const index = indexOf(row)
+        children.push(rowNode(row, index, index >= 0 && index === selectedIndex, trailing))
+      }
+      if (co.coordinator) draw(co.coordinator, counts ? el('span', 'coord-counts', counts) : undefined)
+      else if (counts) children.push(el('div', 'coord-counts', counts))
+      for (const row of co.threads) draw(row)
+      if (co.hiddenCount > 0) children.push(el('div', 'coord-hidden', coordinationHiddenText(co.hiddenCount)))
+    }
+    for (const row of group.rows) {
       const index = indexOf(row)
-      return rowNode(row, index, index >= 0 && index === selectedIndex)
-    })
+      children.push(rowNode(row, index, index >= 0 && index === selectedIndex))
+    }
     // A project kept for its own sake rather than for its sessions has to say
     // so; an empty group with nothing under the heading reads as a load that
     // has not finished.
-    if (group.rows.length === 0) children.push(el('div', 'project-empty', '还没有会话'))
+    if (children.length === 0) children.push(el('div', 'project-empty', '还没有会话'))
     replace(entry.rows, ...children)
     return entry.wrapper
-  }
-
-  /**
-   * The 「项目调度」 section: per project, the coordinator row (with its counts),
-   * the active threads indented under it, and a muted count of the folded rest.
-   * Rows go through `rowNode`, so open/switch and delete behave as everywhere.
-   */
-  const coordinationSection = (
-    groups: readonly SidebarCoordinationGroup[],
-    indexOf: (row: SidebarRow) => number,
-    selectedIndex: number,
-  ): HTMLElement => {
-    const section = el('div', 'coord-section')
-    section.appendChild(el('div', 'coord-title', SIDEBAR_COORDINATION_TITLE))
-    for (const group of groups) {
-      const node = el('div', 'coord-group')
-      const counts = coordinationCountsText(group.running, group.needsYou)
-      const head = el('div', 'coord-head')
-      head.title = group.projectRoot
-      head.appendChild(el('span', 'coord-project', group.projectName))
-      // The counts ride on the coordinator row; a project with no coordinator
-      // row has nowhere else to put them.
-      if (!group.coordinator && counts) head.appendChild(el('span', 'coord-counts', counts))
-      node.appendChild(head)
-      const draw = (row: SidebarRow, trailing?: HTMLElement): void => {
-        const index = indexOf(row)
-        node.appendChild(rowNode(row, index, index >= 0 && index === selectedIndex, trailing))
-      }
-      if (group.coordinator) draw(group.coordinator, counts ? el('span', 'coord-counts', counts) : undefined)
-      for (const row of group.threads) draw(row)
-      if (group.hiddenCount > 0) node.appendChild(el('div', 'coord-hidden', coordinationHiddenText(group.hiddenCount)))
-      section.appendChild(node)
-    }
-    return section
   }
 
   /**
@@ -805,9 +782,6 @@ export function createSidebarView(
           : view.noMatches
             ? [el('div', 'sidebar-empty', SIDEBAR_NO_MATCHES_TEXT)]
             : [
-                ...(view.coordination.length > 0
-                  ? [coordinationSection(view.coordination, indexOf, view.selectedIndex)]
-                  : []),
                 ...view.groups.map((group) =>
                   groupNode(group, indexOf, view.selectedIndex, view.canCreate),
                 ),

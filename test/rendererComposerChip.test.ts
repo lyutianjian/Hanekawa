@@ -166,6 +166,15 @@ test('a mode outside the menu is still named rather than mislabelled', () => {
   assert.equal(PERMISSION_PILL_MODES.includes('readonly'), false)
 })
 
+test('a coordinator lane hides the permission pill; a thread lane keeps it', () => {
+  const rt = runtime({ permissionMode: 'readonly' })
+  const coordinator = permissionPillView({ runtime: rt, open: true, coordinator: true })
+  assert.equal(coordinator.hidden, true)
+  assert.equal(coordinator.open, false)
+  assert.equal(permissionPillView({ runtime: rt, open: false, coordinator: false }).hidden, false)
+  assert.equal(permissionPillView({ runtime: rt, open: false }).hidden, false)
+})
+
 test('every permission mode has a label, including the unoffered one', () => {
   for (const mode of ['default', 'plan', 'auto', 'bypass', 'readonly'] as const) {
     assert.ok(PERMISSION_MODE_LABELS[mode].length > 0, `${mode} has no label`)

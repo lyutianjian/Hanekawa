@@ -83,7 +83,7 @@ export interface ComposerView {
    * missing one, so a pane that has not finished starting shows placeholders
    * rather than the previous pane's model.
    */
-  renderRuntime(runtime: WireRuntimeSnapshot | undefined, gauge?: ContextGaugeView): void
+  renderRuntime(runtime: WireRuntimeSnapshot | undefined, gauge?: ContextGaugeView, coordinator?: boolean): void
   /**
    * Opens the chip's popover with the rows the pane just built.
    *
@@ -184,6 +184,8 @@ export function createComposerView(els: {
   // The last snapshot this view painted, so opening the menu can redraw the pill
   // without waiting for the host to post another one.
   let runtimeSnapshot: WireRuntimeSnapshot | undefined
+  /** The active lane is a coordinator: its permission pill is not drawn. */
+  let coordinatorLane = false
   /** The context-occupancy indicator's state, painted independently of the chip. */
   let contextGauge: ContextGaugeView = hiddenContextGauge()
   let permissionMenuOpen = false
@@ -475,7 +477,7 @@ export function createComposerView(els: {
   }
 
   function renderPermission(): void {
-    const view = permissionPillView({ runtime: runtimeSnapshot, open: permissionMenuOpen })
+    const view = permissionPillView({ runtime: runtimeSnapshot, open: permissionMenuOpen, coordinator: coordinatorLane })
     // `renderRuntime` runs on every snapshot, which during a turn is once per
     // streamed chunk, and the two `replace()` calls below rebuild this pill and
     // its menu whole. Nothing under the pointer may be rebuilt for a repaint
@@ -483,6 +485,7 @@ export function createComposerView(els: {
     // The open flags are part of the signature, or the guard would swallow the
     // click that opens the menu (`sidebarRenderSignature`'s `menuOpen`).
     const signature = [
+      view.hidden ? 'x' : '-',
       view.label,
       view.title,
       view.enabled ? '1' : '0',
@@ -492,6 +495,13 @@ export function createComposerView(els: {
     ].join(' ')
     if (signature === permissionSignature) return
     permissionSignature = signature
+
+    show(els.chipPermission, !view.hidden)
+    if (view.hidden) {
+      permissionMenuOpen = false
+      permissionPresence?.set(false)
+      return
+    }
 
     // The pill's own label lives in a span, so the chevron survives a repaint.
     replace(els.chipPermission, el('span', 'btn-label', view.label), icon('chevron-down'))
@@ -805,8 +815,9 @@ export function createComposerView(els: {
       streamingNow = streaming
       applySubmitState()
     },
-    renderRuntime(runtime, gauge) {
+    renderRuntime(runtime, gauge, coordinator) {
       runtimeSnapshot = runtime
+      coordinatorLane = coordinator === true
       contextGauge = gauge ?? hiddenContextGauge()
       renderChip()
       renderContextGauge()

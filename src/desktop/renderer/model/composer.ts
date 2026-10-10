@@ -187,6 +187,8 @@ export interface PermissionPillView {
   readonly enabled: boolean
   readonly open: boolean
   readonly options: readonly PermissionPillOption[]
+  /** A coordinator's mode is locked readonly in the backend: no pill at all. */
+  readonly hidden: boolean
 }
 
 /**
@@ -198,7 +200,9 @@ export interface PermissionPillView {
 export function permissionPillView(input: {
   runtime: WireRuntimeSnapshot | undefined
   open: boolean
+  coordinator?: boolean
 }): PermissionPillView {
+  const hidden = input.coordinator === true
   const current = input.runtime?.permissionMode
   const options = PERMISSION_PILL_MODES.map((mode) => ({
     mode,
@@ -213,6 +217,7 @@ export function permissionPillView(input: {
       enabled: false,
       open: false,
       options,
+      hidden,
     }
   }
 
@@ -223,8 +228,9 @@ export function permissionPillView(input: {
     enabled: true,
     // Never open while inert, so a snapshot arriving late cannot leave a menu
     // hanging over a pill that has nothing to switch.
-    open: input.open,
+    open: input.open && !hidden,
     options,
+    hidden,
   }
 }
 

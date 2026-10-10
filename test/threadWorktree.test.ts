@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
@@ -59,6 +59,24 @@ test('a repository with no commits gets an empty root commit that leaves staged 
     await removeThreadWorktree(repo, wt)
   } finally {
     await rm(repo, { recursive: true, force: true })
+  }
+})
+
+test('a directory that is not a repository is initialised first', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'thread-wt-plain-'))
+  const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, encoding: 'utf8' }).trim()
+  const env = { ...process.env }
+  Object.assign(process.env, { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.com' })
+  try {
+    await writeFile(path.join(dir, 'a.txt'), 'one\n')
+    const wt = await createThreadWorktree({ cwd: dir, threadId: 'thr_p', slug: 'p' })
+    assert.equal(git('rev-parse', '--show-toplevel'), await realpath(dir))
+    assert.equal(wt.baseRef, git('rev-parse', 'HEAD'))
+    assert.equal(git('status', '--porcelain'), '?? a.txt')
+    await removeThreadWorktree(dir, wt)
+  } finally {
+    process.env = env
+    await rm(dir, { recursive: true, force: true })
   }
 })
 

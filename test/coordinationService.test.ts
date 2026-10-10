@@ -110,6 +110,7 @@ test('startThread with code gets its own worktree', async (t) => {
 
 test('a thread whose worktree cannot be created leaves no row and no note', async (t) => {
   const s = await setup(t)
+  await writeFile(path.join(s.cwd, '.git'), 'not a gitfile\n')
   await assert.rejects(s.service.startThread(s.caller, { ...request, writesCode: true }), { code: 'WORKTREE_FAILED' })
   const file = await s.store.read()
   assert.equal(file.threads.length, 0)

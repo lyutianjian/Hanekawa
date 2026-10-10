@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import { mkdir, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { isSafeBranchName } from '../../runtime/gitBranches.js'
@@ -26,6 +27,12 @@ function slugify(slug: string): string {
 export async function createThreadWorktree(input: { cwd: string; threadId: string; slug: string }): Promise<ThreadWorktree> {
   const branch = `hanekawa/${slugify(input.slug)}-${input.threadId}`
   if (!isSafeBranchName(branch)) throw new Error(`Unsafe thread branch name "${branch}"`)
+  // A project that is not a repository becomes one; never the home directory.
+  const inRepo = await git(input.cwd, ['rev-parse', '--show-toplevel']).then(() => true, () => false)
+  if (!inRepo) {
+    if (path.resolve(input.cwd) === path.resolve(homedir())) throw new Error('Refusing to turn the home directory into a git repository')
+    await git(input.cwd, ['init', '-q'])
+  }
   const repoRoot = await git(input.cwd, ['rev-parse', '--show-toplevel'])
   // A repository with no commits has nothing to fork from; give it an empty root
   // commit. `--only` with no paths leaves whatever the user has staged out of it.

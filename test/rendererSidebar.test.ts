@@ -19,7 +19,7 @@ import {
   type SidebarState,
   type SidebarView,
 } from '../src/desktop/renderer/model/sidebar.js'
-import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
+import type { WireCoordinationThreads, WireLaneInfo, WireThreadStatus } from '../src/desktop/shellProtocol.js'
 import type { WireSessionSummary } from '../src/desktop/shellProtocol.js'
 
 /**
@@ -1008,4 +1008,75 @@ test('a project being removed takes its whole group with it', () => {
     }),
   )
   assert.deepEqual(view.groups.map((group) => group.projectRoot), ['/b'])
+})
+
+// --- 项目调度 section -----------------------------------------------------------
+
+function threadInfo(id: string, status: WireThreadStatus, title = id) {
+  return { threadId: `th-${id}`, sessionId: id, title, status, lastActivityAt: at(0) }
+}
+
+function coordState(overrides: Partial<SidebarState> = {}, threads: WireCoordinationThreads['threads'] = []) {
+  return stateWith({
+    projects: [project('/a', 'alpha', [session('coord'), session('t1'), session('t2'), session('plain')])],
+    coordination: new Map([['/a', { projectRoot: '/a', coordinatorSessionId: 'coord', threads }]]),
+    ...overrides,
+  })
+}
+
+const sampleThreads = [
+  threadInfo('t1', 'running', 'build'),
+  threadInfo('t2', 'needs-you', 'review'),
+  threadInfo('t3', 'quiet'),
+  threadInfo('t4', 'resolved'),
+]
+
+test('coordination rows lead rows, and leave the project group', () => {
+  const view = sidebarView(coordState({}, sampleThreads))
+  assert.deepEqual(view.rows.map((row) => row.sessionId), ['coord', 't1', 't2', 'plain'])
+  assert.deepEqual(view.groups[0]!.rows.map((row) => row.sessionId), ['plain'])
+  const group = view.coordination[0]!
+  assert.equal(group.projectName, 'alpha')
+  assert.equal(group.running, 1)
+  assert.equal(group.needsYou, 1)
+  assert.equal(group.hiddenCount, 2)
+  assert.equal(group.coordinator?.roleMarker, '调度')
+  assert.deepEqual(group.threads.map((row) => [row.nested, row.statusLabel, row.statusTone]), [
+    [true, '运行中', 'running'],
+    [true, '需要你', 'attention'],
+  ])
+})
+
+test('search filters thread rows and drops groups with no match', () => {
+  const hit = sidebarView(coordState({ searchQuery: 'REVIEW' }, sampleThreads))
+  assert.deepEqual(hit.coordination[0]!.threads.map((row) => row.sessionId), ['t2'])
+  assert.equal(hit.coordination[0]!.coordinator?.sessionId, 'coord')
+  const miss = sidebarView(coordState({ searchQuery: 'zzz' }, sampleThreads))
+  assert.equal(miss.coordination.length, 0)
+  assert.equal(miss.noMatches, true)
+})
+
+test('recentOnly hides the section', () => {
+  const view = sidebarView(coordState({ recentOnly: true }, sampleThreads))
+  assert.equal(view.coordination.length, 0)
+  assert.ok(!view.rows.some((row) => row.sessionId === 't1'))
+})
+
+test('a project with threads but no coordinator still gets a group; the signature covers it', () => {
+  const state = coordState({
+    coordination: new Map([['/a', { projectRoot: '/a', threads: sampleThreads }]]),
+  })
+  const view = sidebarView(state)
+  assert.equal(view.coordination[0]!.coordinator, undefined)
+  const changed = sidebarView(coordState({}, [threadInfo('t1', 'failed', 'build')]))
+  assert.notEqual(sidebarRenderSignature(view), sidebarRenderSignature(changed))
+})
+
+test('thread rows reuse activateRow', () => {
+  const view = sidebarView(coordState({ lanes: [lane('l1', 't1', '/a')] }, sampleThreads))
+  const open = view.coordination[0]!.threads.find((row) => row.sessionId === 't2')!
+  assert.deepEqual(activateRow(open), { kind: 'open', projectRoot: '/a', sessionId: 't2' })
+  const live = view.coordination[0]!.threads.find((row) => row.sessionId === 't1')!
+  assert.deepEqual(activateRow(live), { kind: 'switch', lane: 'l1' })
+  assert.deepEqual(view.liveRows.map((row) => row.sessionId), ['t1'])
 })

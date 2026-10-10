@@ -7,9 +7,13 @@ import {
   CREATE_BLOCKED_HINT,
   SIDEBAR_RECENT_LABEL,
   activateRow,
+  coordinationCountsText,
+  coordinationHiddenText,
   newSessionIntent,
+  SIDEBAR_COORDINATION_TITLE,
   sidebarContentMounted,
   sidebarRenderSignature,
+  type SidebarCoordinationGroup,
   type SidebarGroup,
   type SidebarIntent,
   type SidebarRow,
@@ -351,8 +355,14 @@ export function createSidebarView(
     onIntent({ kind: 'open-project-menu', projectRoot: undefined })
   })
 
-  const rowNode = (row: SidebarRow, index: number, selected: boolean): HTMLElement => {
+  const rowNode = (
+    row: SidebarRow,
+    index: number,
+    selected: boolean,
+    trailing?: HTMLElement,
+  ): HTMLElement => {
     const classes = ['session-row']
+    if (row.nested) classes.push('nested')
     if (row.active) classes.push('active')
     if (selected) classes.push('selected')
     if (row.lane !== undefined) classes.push('open')
@@ -420,6 +430,10 @@ export function createSidebarView(
       if (hovered === row.sessionId) hovered = undefined
     })
     node.addEventListener('focusin', measure)
+    if (row.statusLabel !== undefined) {
+      open.appendChild(el('span', `session-status ${row.statusTone ?? 'neutral'}`, row.statusLabel))
+    }
+    if (trailing) open.appendChild(trailing)
     if (row.badge !== 'none') {
       const badge = el('span', `session-badge ${row.badge}`)
       badge.setAttribute('aria-label', BADGE_LABELS[row.badge])
@@ -639,6 +653,40 @@ export function createSidebarView(
   }
 
   /**
+   * The 「项目调度」 section: per project, the coordinator row (with its counts),
+   * the active threads indented under it, and a muted count of the folded rest.
+   * Rows go through `rowNode`, so open/switch and delete behave as everywhere.
+   */
+  const coordinationSection = (
+    groups: readonly SidebarCoordinationGroup[],
+    indexOf: (row: SidebarRow) => number,
+    selectedIndex: number,
+  ): HTMLElement => {
+    const section = el('div', 'coord-section')
+    section.appendChild(el('div', 'coord-title', SIDEBAR_COORDINATION_TITLE))
+    for (const group of groups) {
+      const node = el('div', 'coord-group')
+      const counts = coordinationCountsText(group.running, group.needsYou)
+      const head = el('div', 'coord-head')
+      head.title = group.projectRoot
+      head.appendChild(el('span', 'coord-project', group.projectName))
+      // The counts ride on the coordinator row; a project with no coordinator
+      // row has nowhere else to put them.
+      if (!group.coordinator && counts) head.appendChild(el('span', 'coord-counts', counts))
+      node.appendChild(head)
+      const draw = (row: SidebarRow, trailing?: HTMLElement): void => {
+        const index = indexOf(row)
+        node.appendChild(rowNode(row, index, index >= 0 && index === selectedIndex, trailing))
+      }
+      if (group.coordinator) draw(group.coordinator, counts ? el('span', 'coord-counts', counts) : undefined)
+      for (const row of group.threads) draw(row)
+      if (group.hiddenCount > 0) node.appendChild(el('div', 'coord-hidden', coordinationHiddenText(group.hiddenCount)))
+      section.appendChild(node)
+    }
+    return section
+  }
+
+  /**
    * The last drawn view's signature. The guard below is what makes this view
    * affordable: it repaints from `onShellChanged`, which fires on every
    * `SessionClient` snapshot change — including background-task `outputBytes`,
@@ -756,9 +804,14 @@ export function createSidebarView(
             ]
           : view.noMatches
             ? [el('div', 'sidebar-empty', SIDEBAR_NO_MATCHES_TEXT)]
-            : view.groups.map((group) =>
-                groupNode(group, indexOf, view.selectedIndex, view.canCreate),
-              ),
+            : [
+                ...(view.coordination.length > 0
+                  ? [coordinationSection(view.coordination, indexOf, view.selectedIndex)]
+                  : []),
+                ...view.groups.map((group) =>
+                  groupNode(group, indexOf, view.selectedIndex, view.canCreate),
+                ),
+              ],
       )
 
       // Workspaces that are no longer listed. Their nodes are detached by the

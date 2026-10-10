@@ -770,3 +770,41 @@ test('a session waiting for approval says so in words; a running one does not', 
   // because the badge is still the thing being described.
   assert.equal(waiting.attributes.get('aria-label'), '等待授权')
 })
+
+test('the 项目调度 section draws counts, indented thread rows with a chip, and the folded count', (t) => {
+  const { render, root, stub, intents } = mount(t)
+  const at = '2026-01-01T00:00:00.000Z'
+  render(viewOf({
+    projects: [{
+      projectRoot: '/w/app',
+      projectName: 'app',
+      sessions: [{ id: 'c1', updatedAt: at, messageCount: 1 }, { id: 'o1', updatedAt: at, messageCount: 1 }],
+    }],
+    coordination: new Map([['/w/app', {
+      projectRoot: '/w/app',
+      coordinatorSessionId: 'c1',
+      threads: [
+        { threadId: 'a', sessionId: 't1', title: 'build', status: 'running', lastActivityAt: at },
+        { threadId: 'b', sessionId: 't2', title: 'review', status: 'needs-you', lastActivityAt: at },
+        { threadId: 'c', sessionId: 't3', title: 'old', status: 'quiet', lastActivityAt: at },
+      ],
+    }]]),
+  }))
+  const section = find(root(), 'coord-section')
+  assert.ok(section)
+  assert.equal(find(section, 'coord-title')?.text, '项目调度')
+  assert.equal(find(section, 'coord-counts')?.text, '1 运行中 · 1 需要你')
+  assert.equal(find(section, 'coord-hidden')?.text, '+1 已安静/结案')
+  const rows = sessionRows(section)
+  assert.equal(rows.length, 3)
+  assert.deepEqual(rows.map((row) => row.classes.includes('nested')), [false, true, true])
+  assert.deepEqual(
+    descendants(section).filter((node) => node.classes.includes('session-status')).map((node) => node.text),
+    ['运行中', '需要你'],
+  )
+  assert.equal(sessionRows(root()).length, 4, 'coordination rows plus the ordinary one')
+  const open = find(rows[1]!, 'session-open')
+  assert.ok(open)
+  stub.click(open.node)
+  assert.deepEqual(intents, [{ kind: 'open', projectRoot: '/w/app', sessionId: 't1' }])
+})

@@ -4,7 +4,11 @@ import test from 'node:test'
 import { installDomStub, type DomStub, type StubView } from './helpers/domStub.js'
 import { trackAnimationStarts, trackIdentity } from './helpers/motion.js'
 import { createCanvasHeaderView, type CanvasHeaderDom } from '../src/desktop/renderer/dom/canvasHeaderView.js'
-import { canvasHeaderView, type CanvasHeaderMenuItem } from '../src/desktop/renderer/model/canvasHeader.js'
+import {
+  canvasHeaderView,
+  type CanvasHeaderMenuItem,
+  type CanvasHeaderThread,
+} from '../src/desktop/renderer/model/canvasHeader.js'
 import type { WireLaneInfo } from '../src/desktop/shellProtocol.js'
 
 /**
@@ -69,11 +73,15 @@ interface Rendered {
     menuOpen?: boolean
     renaming?: boolean
     pendingDelete?: string
+    role?: 'coordinator' | 'thread'
+    thread?: CanvasHeaderThread
   }): void
   identity(): StubView
   titleNode(): StubView | undefined
   menuItems(): StubView[]
   openLocation(): StubView | undefined
+  crumb(): StubView | undefined
+  threadsButton(): StubView | undefined
 }
 
 function render(t: { after(fn: () => void): void }): Rendered {
@@ -90,6 +98,9 @@ function render(t: { after(fn: () => void): void }): Rendered {
     onRename: (title) => renamed.push(title),
     onCancelRename: () => events.push('cancel-rename'),
     onOpenLocation: () => events.push('open-location'),
+    onBackToCoordinator: () => events.push('back-to-coordinator'),
+    onStopThread: () => events.push('stop-thread'),
+    onOpenThreads: () => events.push('open-threads'),
   })
 
   const identity = () =>
@@ -112,12 +123,17 @@ function render(t: { after(fn: () => void): void }): Rendered {
         // Every case here is about a conversation on screen; the draft case (no
         // header at all) is a model decision and is asserted there.
         hasConversation: true,
+        role: state.role,
+        thread: state.thread,
       }))
     },
     identity,
     titleNode: () =>
       identity().children.find(
-        (child) => child.classes.includes('canvas-title') || child.classes.includes('canvas-title-input'),
+        (child) =>
+          child.classes.includes('canvas-title') ||
+          child.classes.includes('canvas-title-input') ||
+          child.classes.includes('canvas-breadcrumb'),
       ),
     menuItems: () => {
       const shell = find(identity(), 'canvas-menu-shell')
@@ -125,10 +141,12 @@ function render(t: { after(fn: () => void): void }): Rendered {
       return [...(menu?.children ?? [])]
     },
     openLocation: () =>
-      find(
-        stub.inspect(container).children.find((child) => child.classes.includes('canvas-header-controls')),
-        'canvas-open-location',
-      ),
+      find(rightControls(), 'canvas-open-location'),
+    crumb: () => find(identity(), 'canvas-breadcrumb'),
+    threadsButton: () => find(rightControls(), 'canvas-threads-open'),
+  }
+  function rightControls(): StubView | undefined {
+    return stub.inspect(container).children.find((child) => child.classes.includes('canvas-header-controls'))
   }
 }
 
@@ -332,4 +350,65 @@ test('the paint that opens the menu moves focus last of all', (t) => {
 
   assert.equal(r.stub.activeElement(), r.menuItems()[0]?.node, 'the keyboard lands in the menu')
   assert.ok(r.openLocation(), '打开位置 is in the page by the time focus moves')
+})
+
+const thread: CanvasHeaderThread = { title: '缓存迁移', statusLabel: '运行中', tone: 'running', canStop: true }
+
+test('a thread session draws 「← 协调 · 线程名 [状态] [停止]」 in place of the title', (t) => {
+  const r = render(t)
+  r.paint({ role: 'thread', thread })
+
+  const crumb = r.crumb()!
+  assert.equal(crumb.text, '← 协调·缓存迁移运行中停止')
+  assert.equal(r.titleNode()?.classes.includes('canvas-breadcrumb'), true)
+  assert.equal(r.titleNode()?.node, crumb.node)
+
+  const status = crumb.children.find((child) => child.classes.includes('canvas-status'))!
+  assert.equal(status.classes.includes('tone-running'), true)
+  assert.equal(status.text, '运行中')
+
+  r.stub.click(crumb.children.find((child) => child.classes.includes('canvas-back-coordinator'))!.node)
+  r.stub.click(crumb.children.find((child) => child.classes.includes('canvas-stop-thread'))!.node)
+  assert.deepEqual(r.events, ['back-to-coordinator', 'stop-thread'])
+})
+
+test('the stop button is drawn only while a stop applies', (t) => {
+  const r = render(t)
+  r.paint({ role: 'thread', thread: { ...thread, canStop: false } })
+  assert.equal(r.crumb()!.children.some((child) => child.classes.includes('canvas-stop-thread')), false)
+  assert.equal(r.crumb()!.text, '← 协调·缓存迁移运行中')
+})
+
+test('the crumb keeps its nodes across streamed repaints', (t) => {
+  const r = render(t)
+  r.paint({ role: 'thread', thread })
+  const crumb = r.crumb()!.node
+  const back = r.crumb()!.children[0]!.node
+  r.paint({ role: 'thread', thread: { ...thread, statusLabel: '等待你', tone: 'attention' } })
+  assert.equal(r.crumb()!.node, crumb)
+  assert.equal(r.crumb()!.children[0]!.node, back)
+  assert.equal(r.crumb()!.text, '← 协调·缓存迁移等待你停止')
+  assert.equal(r.crumb()!.children.find((child) => child.classes.includes('canvas-status'))!.classes.includes('tone-attention'), true)
+})
+
+test('renaming a thread session swaps the crumb for the field, and back', (t) => {
+  const r = render(t)
+  r.paint({ role: 'thread', thread })
+  r.paint({ role: 'thread', thread, renaming: true })
+  assert.equal(r.titleNode()?.classes.includes('canvas-title-input'), true)
+  r.paint({ role: 'thread', thread })
+  assert.equal(r.titleNode()?.node, r.crumb()!.node)
+})
+
+test('the 线程 button is shown for either coordination role and opens the threads tab', (t) => {
+  const r = render(t)
+  r.paint({})
+  assert.equal(r.threadsButton(), undefined, 'an ordinary session has no threads tab to open')
+
+  r.paint({ role: 'coordinator' })
+  r.stub.click(r.threadsButton()!.node)
+  r.paint({ role: 'thread', thread })
+  assert.equal(r.threadsButton()?.text, '线程')
+  r.stub.click(r.threadsButton()!.node)
+  assert.deepEqual(r.events, ['open-threads', 'open-threads'])
 })

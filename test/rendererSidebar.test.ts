@@ -81,6 +81,27 @@ function stateWith(overrides: Partial<SidebarState> = {}): SidebarState {
   return createSidebarState({ now: NOW, ...overrides })
 }
 
+// --- coordination ---------------------------------------------------------------
+
+test('coordination sessions are ordinary rows with a role marker', () => {
+  const view = sidebarView(
+    stateWith({
+      projects: [
+        project('/a', 'alpha', [
+          session('c', { coordinationRole: 'coordinator' }),
+          session('t', { coordinationRole: 'thread' }),
+          session('p'),
+        ]),
+      ],
+    }),
+  )
+  const rows = view.groups[0]!.rows
+  const marker = (id: string) => rows.find((row) => row.sessionId === id)?.roleMarker
+  assert.equal(marker('c'), '调度')
+  assert.equal(marker('t'), '线程')
+  assert.equal(marker('p'), undefined)
+})
+
 // --- ordering inside a workspace ---------------------------------------------
 
 test('a workspace lists its sessions newest first, with no age sections', () => {

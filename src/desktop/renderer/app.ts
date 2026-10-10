@@ -743,6 +743,13 @@ function runSidebarIntent(intent: SidebarIntent): void {
       pendingRemoveProject = undefined
       renderSidebar()
       return
+    case 'open-coordinator':
+      projectMenu = undefined
+      renderSidebar()
+      void shellClient.openCoordinator(intent.projectRoot).catch((error) => {
+        activePane()?.note(`Failed to open coordinator: ${describe(error)}`, 'error')
+      })
+      return
     case 'confirm-remove-project':
       void removeProject(intent.projectRoot)
       return

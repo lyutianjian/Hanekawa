@@ -72,6 +72,8 @@ export type SidebarBadge = 'none' | 'running' | 'awaiting-input'
 export interface SidebarRow {
   readonly sessionId: string
   readonly title: string
+  /** Small prefix text for a coordination session; absent for an ordinary one. */
+  readonly roleMarker?: string
   readonly projectRoot: string
   /** The lane this session is open on, absent when it is only history. */
   readonly lane?: string
@@ -555,6 +557,13 @@ export function sidebarView(state: SidebarState): SidebarView {
   }
 }
 
+/** The marker a coordination session's row carries; ordinary sessions have none. */
+export function roleMarkerFor(role: 'coordinator' | 'thread' | undefined): string | undefined {
+  if (role === 'coordinator') return '调度'
+  if (role === 'thread') return '线程'
+  return undefined
+}
+
 function rowFor(
   session: WireSessionSummary,
   projectRoot: string,
@@ -565,6 +574,9 @@ function rowFor(
   return {
     sessionId: session.id,
     title: session.title ?? '未命名会话',
+    ...(roleMarkerFor(session.coordinationRole) !== undefined
+      ? { roleMarker: roleMarkerFor(session.coordinationRole) }
+      : {}),
     projectRoot,
     ...(lane !== undefined ? { lane } : {}),
     badge: badgeFor(lane, state),
@@ -644,6 +656,8 @@ export type SidebarIntent =
   /** Unregister the project. Its sessions stay on disk; only the row goes. */
   | { kind: 'confirm-remove-project'; projectRoot: string }
   | { kind: 'cancel-remove-project' }
+  /** Open (or focus) the project's coordinator session — the heading menu's 「项目调度」. */
+  | { kind: 'open-coordinator'; projectRoot: string }
   /** Open or close the footer's `?` panel. */
   | { kind: 'toggle-help' }
   /** Show only the sessions that belong to no project, or every workspace again. */

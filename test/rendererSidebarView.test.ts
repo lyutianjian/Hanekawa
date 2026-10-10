@@ -368,8 +368,13 @@ test('right-clicking a heading opens its menu, and the menu item asks first', (t
   render(viewOf({ ...tieredState(), projectMenu: '/w/app' }))
   const opened = find(root(), 'project-menu')
   assert.equal(opened?.hidden, false, 'the menu the model opened is not showing')
-  const item = find(root(), 'project-menu-item')
+  const items = descendants(root()).filter((node) => node.classes.includes('project-menu-item'))
+  assert.deepEqual(items.map((node) => node.text), ['项目调度', '移除项目并删除历史'])
+  const item = items[1]!
   assert.ok(item, 'the menu drew nothing to click')
+  stub.click(items[0]!.node)
+  assert.deepEqual(intents, [{ kind: 'open-coordinator', projectRoot: '/w/app' }])
+  intents.length = 0
 
   // A repaint that has nothing to do with the menu — the rail gets one per
   // streamed token — must leave the menu's node and its item alone. Re-inserting
@@ -377,10 +382,28 @@ test('right-clicking a heading opens its menu, and the menu item asks first', (t
   // item the user was aiming at.
   render(viewOf({ ...tieredState(), projectMenu: '/w/app', pendingDelete: 'history' }))
   assert.equal(find(root(), 'project-menu')?.node, opened?.node, 'the menu was rebuilt')
-  assert.equal(find(root(), 'project-menu-item')?.node, item.node, 'the menu item was rebuilt')
+  assert.equal(descendants(root()).filter((node) => node.classes.includes('project-menu-item'))[1]?.node, item.node, 'the menu item was rebuilt')
 
   stub.click(item.node)
   assert.deepEqual(intents, [{ kind: 'request-remove-project', projectRoot: '/w/app' }])
+})
+
+test('a coordination session row carries its role marker', (t) => {
+  const { render, root } = mount(t)
+  const base = tieredState()
+  render(viewOf({
+    ...base,
+    projects: [{
+      projectRoot: '/w/app',
+      projectName: 'app',
+      sessions: [
+        { id: 'c1', updatedAt: '2026-01-01T00:00:00.000Z', messageCount: 1, coordinationRole: 'coordinator' },
+        { id: 'o1', updatedAt: '2026-01-01T00:00:00.000Z', messageCount: 1 },
+      ],
+    }],
+  }))
+  const markers = descendants(root()).filter((node) => node.classes.includes('session-role'))
+  assert.deepEqual(markers.map((node) => node.text), ['调度'])
 })
 
 test('the confirming heading replaces its + with an answer', (t) => {

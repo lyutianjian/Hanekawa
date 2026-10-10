@@ -1719,6 +1719,13 @@ body.settings-open #browser-resizer { display: none; }
    screen anywhere else — and an 8px dot is only findable by someone already
    looking for it. Text, not a filled pill: `--accent-*` fills exactly three
    named spots in this sheet and this is not one of them. */
+.session-role {
+  flex: 0 0 auto;
+  margin-right: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
 .session-badge-label {
   flex: 0 0 auto;
   font-size: var(--type-meta);

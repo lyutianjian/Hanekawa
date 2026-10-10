@@ -380,6 +380,7 @@ export function createSidebarView(
     // marquee runs, so at rest it costs the layout nothing and the measurement
     // below is the width of one copy; while the marquee runs it is what the loop
     // wraps onto, and it is `aria-hidden` because it is the same name again.
+    if (row.roleMarker !== undefined) open.appendChild(el('span', 'session-role', row.roleMarker))
     const title = el('span', 'session-title')
     const track = el('span', 'session-title-text')
     const echo = el('span', 'session-title-echo', row.title)
@@ -604,6 +605,8 @@ export function createSidebarView(
     if (group.menuOpen !== entry.menuShown) {
       entry.menuShown = group.menuOpen
       if (group.menuOpen && !entry.menu.firstElementChild) {
+        entry.menu.appendChild(button('project-menu-item', '项目调度', '打开此项目的调度会话', () =>
+          onIntent({ kind: 'open-coordinator', projectRoot: group.projectRoot })))
         entry.menu.appendChild(button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
           onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot })))
       }

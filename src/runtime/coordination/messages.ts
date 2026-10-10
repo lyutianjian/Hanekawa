@@ -34,7 +34,7 @@ export function composeThreadKickoff(input: ThreadKickoffInput): string {
     '- Begin your final message with a one-line summary of what you did.',
     input.worktree
       ? `- You work in a git worktree. When done, commit your changes to branch ${input.worktree.branch}.`
-      : '- The directory is shared. Only touch files you own.',
+      : '- The directory is shared with other sessions. Do not change files; report what you find.',
     '- You cannot start threads.',
   ]
   return [

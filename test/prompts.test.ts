@@ -155,9 +155,10 @@ test('coordinator role prompt covers routing, evidence and reporting', async () 
   for (const name of ['StartThread', 'MessageThread', 'ListThreads', 'FetchThread', 'StopThread', 'ResolveThread']) {
     assert.ok(COORDINATOR_ROLE_PROMPT.includes(name), name)
   }
-  assert.match(COORDINATOR_ROLE_PROMPT, /80 characters/)
+  assert.match(COORDINATOR_ROLE_PROMPT, /git diff HEAD\.\.\.<branch>/)
+  assert.match(COORDINATOR_ROLE_PROMPT, /locked in read-only mode/)
   assert.match(COORDINATOR_ROLE_PROMPT, /merge bar/)
   assert.match(COORDINATOR_ROLE_PROMPT, /not proof/)
   const words = COORDINATOR_ROLE_PROMPT.split(/\s+/).length
-  assert.ok(words >= 300 && words <= 520, `words=${words}`)
+  assert.ok(words >= 300 && words <= 650, `words=${words}`)
 })

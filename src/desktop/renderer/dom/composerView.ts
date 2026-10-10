@@ -123,6 +123,11 @@ export interface ComposerView {
   /** The send gate's title, off the strip the pane just painted. */
   attachStripEl(): HTMLElement
   autosize(): void
+  /**
+   * Shuts the input for a lane that takes no more messages (a finished
+   * thread); the reason stands in as the placeholder. `undefined` reopens it.
+   */
+  setLocked(reason: string | undefined): void
 }
 
 export const MAX_COMPOSER_HEIGHT_PX = 200
@@ -190,6 +195,8 @@ export function createComposerView(els: {
   let contextGauge: ContextGaugeView = hiddenContextGauge()
   let permissionMenuOpen = false
   let streamingNow = false
+  let locked = false
+  const defaultPlaceholder = els.input.placeholder
   /** The chip's popover: its rows while open, `undefined` while shut. */
   let runtimeMenu: RuntimeMenuView | undefined
   /** An open asked for and not yet answered; see `showRuntimeMenu`. */
@@ -405,7 +412,7 @@ export function createComposerView(els: {
     })
     // Enabled in every state: `requestSubmit()` ignores a disabled button, so a
     // grey-but-meaningful button would swallow the click with no error anywhere.
-    els.submit.disabled = false
+    els.submit.disabled = locked
     els.submit.classList.remove('idle', 'ready')
     els.submit.classList.add(view.state)
     show(els.submit, !view.showStop)
@@ -808,6 +815,13 @@ export function createComposerView(els: {
     },
     focus() {
       els.input.focus()
+    },
+    setLocked(reason) {
+      if (locked === (reason !== undefined) && (reason ?? defaultPlaceholder) === els.input.placeholder) return
+      locked = reason !== undefined
+      els.input.disabled = locked
+      els.input.placeholder = reason ?? defaultPlaceholder
+      applySubmitState()
     },
     setStreaming(streaming) {
       // Stop takes the send button's place only while nothing is typed; see

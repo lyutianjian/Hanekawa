@@ -27,6 +27,10 @@ export async function createThreadWorktree(input: { cwd: string; threadId: strin
   const branch = `hanekawa/${slugify(input.slug)}-${input.threadId}`
   if (!isSafeBranchName(branch)) throw new Error(`Unsafe thread branch name "${branch}"`)
   const repoRoot = await git(input.cwd, ['rev-parse', '--show-toplevel'])
+  // A repository with no commits has nothing to fork from; give it an empty root
+  // commit. `--only` with no paths leaves whatever the user has staged out of it.
+  const hasHead = await git(input.cwd, ['rev-parse', '--verify', '--quiet', 'HEAD']).then(() => true, () => false)
+  if (!hasHead) await git(repoRoot, ['commit', '--allow-empty', '--only', '--no-verify', '-m', 'Initial commit'])
   const baseRef = await git(input.cwd, ['rev-parse', '--verify', 'HEAD'])
   const prefix = await git(input.cwd, ['rev-parse', '--show-prefix'])
   const dir = getThreadWorktreeDir(input.cwd, input.threadId)

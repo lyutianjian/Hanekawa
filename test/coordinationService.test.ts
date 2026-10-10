@@ -108,15 +108,12 @@ test('startThread with code gets its own worktree', async (t) => {
   t.after(() => rm(record.worktree!.path, { recursive: true, force: true }))
 })
 
-test('a worktree failure is recorded as a failed thread and a report note', async (t) => {
+test('a thread whose worktree cannot be created leaves no row and no note', async (t) => {
   const s = await setup(t)
   await assert.rejects(s.service.startThread(s.caller, { ...request, writesCode: true }), { code: 'WORKTREE_FAILED' })
   const file = await s.store.read()
-  assert.equal(file.threads.length, 1)
-  assert.equal(file.threads[0]!.status, 'failed')
-  assert.match(file.threads[0]!.statusLine!, /Worktree could not be created/)
-  assert.equal(file.coordinator?.notes.length, 1)
-  assert.match(file.coordinator!.notes[0]!.text, /\[failed\]/)
+  assert.equal(file.threads.length, 0)
+  assert.equal(file.coordinator?.notes.length ?? 0, 0)
   assert.deepEqual(s.calls, ['begin', 'end'])
   assert.equal(s.opened.length, 0)
 })
@@ -142,11 +139,17 @@ test('messageThread enqueues on idle and running lanes and cold-opens an unloade
   assert.equal(s.opened.length, 1)
 
   s.lanes.delete(started.sessionId)
-  await s.store.patchThread(started.threadId, { status: 'resolved' })
   await s.service.messageThread(s.caller, started.threadId, 'cold msg')
   assert.deepEqual(s.opened[1], { sessionId: started.sessionId, activate: false })
   assert.deepEqual(s.lanes.get(started.sessionId)!.enqueued, ['cold msg'])
-  assert.equal((await s.thread(started.threadId)).status, 'idle')
+})
+
+test('a resolved thread is final: it takes no more messages', async (t) => {
+  const s = await setup(t)
+  const started = await s.service.startThread(s.caller, request)
+  await s.service.resolveThread(s.caller, started.threadId)
+  await assert.rejects(s.service.messageThread(s.caller, started.threadId, 'more'), { code: 'THREAD_RESOLVED' })
+  assert.equal((await s.thread(started.threadId)).status, 'resolved')
 })
 
 test('messageThread on unknown and stale threads fails clearly', async (t) => {

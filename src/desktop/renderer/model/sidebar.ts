@@ -1,6 +1,6 @@
 import type { WireCoordinationThreads, WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
 import type { DesktopPlatform } from '../../types.js'
-import { coordinationCounts, THREAD_STATUS_LABEL, threadBucket, threadTone, type ThreadTone } from './coordinationStatus.js'
+import { coordinationCounts } from './coordinationStatus.js'
 import { desktopShortcut } from './desktopShortcuts.js'
 
 /**
@@ -85,16 +85,11 @@ export interface SidebarRow {
   readonly messageCount: number
   /** This row is asking "delete?" and has replaced its actions with the answer. */
   readonly confirmingDelete: boolean
-  /** A coordination thread row: drawn indented under its coordinator. */
-  readonly nested?: boolean
-  /** A thread row's status word and colour tone; absent on every other row. */
-  readonly statusLabel?: string
-  readonly statusTone?: ThreadTone
 }
 
 /**
- * One project's coordination entry: its coordinator session and the active
- * threads hanging under it.
+ * One project's coordination entry: its coordinator session and its threads'
+ * counts. The threads themselves are listed in the side panel's 线程 tab only.
  */
 export interface SidebarCoordinationGroup {
   readonly projectRoot: string
@@ -102,23 +97,15 @@ export interface SidebarCoordinationGroup {
   /** Absent when the project has threads but no coordinator session pointer. */
   readonly coordinator?: SidebarRow
   readonly running: number
-  readonly needsYou: number
-  /** Active-bucket threads only (search-filtered), newest activity first. */
-  readonly threads: readonly SidebarRow[]
-  /** Quiet and resolved threads, which are folded into one count. */
-  readonly hiddenCount: number
+  readonly blocked: number
 }
 
-/** 「2 运行中 · 1 需要你」; empty when neither count is above zero. */
-export function coordinationCountsText(running: number, needsYou: number): string {
+/** 「2 运行中 · 1 阻塞」; empty when neither count is above zero. */
+export function coordinationCountsText(running: number, blocked: number): string {
   const parts: string[] = []
   if (running > 0) parts.push(`${running} 运行中`)
-  if (needsYou > 0) parts.push(`${needsYou} 需要你`)
+  if (blocked > 0) parts.push(`${blocked} 阻塞`)
   return parts.join(' · ')
-}
-
-export function coordinationHiddenText(hiddenCount: number): string {
-  return `+${hiddenCount} 已安静/结案`
 }
 
 export const SIDEBAR_COORDINATION_TITLE = '项目调度'
@@ -501,7 +488,7 @@ export function sidebarView(state: SidebarState): SidebarView {
     const bucket = bucketFor(project.projectRoot, project.projectName, project.isGlobal ?? false)
     for (const session of project.sessions) {
       summaryById.set(session.id, session)
-      if (coordinationSessions.has(session.id)) {
+      if (coordinationSessions.has(session.id) || session.coordinationRole === 'thread') {
         seen.add(session.id)
         continue
       }
@@ -531,7 +518,7 @@ export function sidebarView(state: SidebarState): SidebarView {
   // constructor: badge, active and confirming are one decision each, and two
   // constructors is two places for them to drift.
   for (const lane of state.lanes) {
-    if (seen.has(lane.paneId) || coordinationSessions.has(lane.paneId)) continue
+    if (seen.has(lane.paneId) || coordinationSessions.has(lane.paneId) || lane.coordinationRole === 'thread') continue
     if (state.deletingSessions.has(lane.paneId)) continue
     if (!laneHasConversation(lane.lane)) continue
     const draft: WireSessionSummary = {
@@ -553,7 +540,7 @@ export function sidebarView(state: SidebarState): SidebarView {
     : coordinationGroupsOf(state, summaryById, laneBySession, active?.paneId, needle)
   const coordinationByRoot = new Map<string, SidebarCoordinationGroup>()
   for (const group of coordination) {
-    if (group.coordinator?.active || group.threads.some((row) => row.active)) activeHasRow = true
+    if (group.coordinator?.active) activeHasRow = true
     coordinationByRoot.set(group.projectRoot, group)
     // A project known only from its coordination table still gets its group.
     bucketFor(group.projectRoot, group.projectName)
@@ -608,8 +595,8 @@ export function sidebarView(state: SidebarState): SidebarView {
   // Collapsed groups are drawn as a heading and nothing else, so they are absent
   // here: this list is the cursor's and the digit chords' index space, and both
   // have to mean what is on screen.
-  // Inside a group the coordinator and its threads are drawn above the ordinary
-  // rows, so they lead there too.
+  // Inside a group the coordinator is drawn above the ordinary
+  // rows, so it leads there too.
   const rows = ordered.filter((group) => !group.collapsed).flatMap(groupRows)
 
   // `groups` is empty only when there is genuinely nothing; a collapsed group is
@@ -635,9 +622,9 @@ export function sidebarView(state: SidebarState): SidebarView {
 
 /**
  * The 「项目调度」 section: one entry per project that has a coordinator pointer
- * or threads, in workspace order. Only active-bucket threads get rows; the rest
- * are a count. A search keeps the matching threads (and their coordinator as the
- * parent) and drops an entry nothing matched in.
+ * or threads, in workspace order. The coordinator row stands for its threads
+ * too: it is the active row while one of them is on screen. A search keeps an
+ * entry only when its coordinator matches.
  */
 function coordinationGroupsOf(
   state: SidebarState,
@@ -646,8 +633,6 @@ function coordinationGroupsOf(
   activePaneId: string | undefined,
   needle: string,
 ): SidebarCoordinationGroup[] {
-  const matches = (row: SidebarRow): boolean =>
-    needle === '' || row.title.toLowerCase().includes(needle)
   const roots = [...workspaceRootsOf(state)]
   for (const root of state.coordination.keys()) if (!roots.includes(root)) roots.push(root)
 
@@ -662,7 +647,7 @@ function coordinationGroupsOf(
     if (coordinatorId !== undefined && !state.deletingSessions.has(coordinatorId)) {
       const lane = laneBySession.get(coordinatorId)
       const summary = summaryById.get(coordinatorId)
-      coordinator = rowFor(
+      const row = rowFor(
         {
           id: coordinatorId,
           title: summary?.title ?? lane?.sessionTitle ?? SIDEBAR_COORDINATION_TITLE,
@@ -675,52 +660,19 @@ function coordinationGroupsOf(
         activePaneId,
         state,
       )
+      const threadOnScreen = table.threads.some((thread) => thread.sessionId === activePaneId)
+      coordinator = threadOnScreen ? { ...row, active: true } : row
     }
 
-    const threads: SidebarRow[] = []
-    let hiddenCount = 0
-    for (const thread of table.threads) {
-      if (state.deletingSessions.has(thread.sessionId)) continue
-      if (threadBucket(thread.status) !== 'active') {
-        hiddenCount += 1
-        continue
-      }
-      const lane = laneBySession.get(thread.sessionId)
-      const row = rowFor(
-        {
-          id: thread.sessionId,
-          title: thread.title || '未命名线程',
-          updatedAt: thread.lastActivityAt,
-          messageCount: summaryById.get(thread.sessionId)?.messageCount ?? 0,
-        },
-        root,
-        lane?.lane,
-        activePaneId,
-        state,
-      )
-      const threadRow: SidebarRow = {
-        ...row,
-        nested: true,
-        statusLabel: THREAD_STATUS_LABEL[thread.status],
-        statusTone: threadTone(thread.status),
-      }
-      if (matches(threadRow)) threads.push(threadRow)
-    }
+    if (needle !== '' && (coordinator === undefined || !coordinator.title.toLowerCase().includes(needle))) continue
 
-    const searching = needle !== ''
-    const coordinatorShown = coordinator !== undefined && (!searching || threads.length > 0 || matches(coordinator))
-    if (searching && !coordinatorShown && threads.length === 0) continue
-    if (coordinator === undefined && threads.length === 0 && searching) continue
-
-    const { running, needsYou } = coordinationCounts(table.threads)
+    const { running, blocked } = coordinationCounts(table.threads)
     groups.push({
       projectRoot: root,
       projectName: projectNameOf(state, root),
-      ...(coordinatorShown && coordinator ? { coordinator } : {}),
+      ...(coordinator ? { coordinator } : {}),
       running,
-      needsYou,
-      threads,
-      hiddenCount,
+      blocked,
     })
   }
   return groups
@@ -800,7 +752,7 @@ function groupOf(
 /** A group's rows in screen order: coordinator, its threads, then ordinary sessions. */
 export function groupRows(group: SidebarGroup): SidebarRow[] {
   const co = group.coordination
-  return [...(co?.coordinator ? [co.coordinator] : []), ...(co?.threads ?? []), ...group.rows]
+  return [...(co?.coordinator ? [co.coordinator] : []), ...group.rows]
 }
 
 function clampIndex(index: number, length: number): number {
@@ -1064,13 +1016,13 @@ export function sidebarRenderSignature(view: SidebarView): string {
         + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}${group.coordination ? 'c' : '-'}${group.active ? 'a' : '-'}`,
     )
     const co = group.coordination
-    if (co) parts.push(`k:${co.running}/${co.needsYou}/${co.hiddenCount}`)
+    if (co) parts.push(`k:${co.running}/${co.blocked}`)
     if (group.collapsed) continue
     for (const row of groupRows(group)) {
       parts.push(
         `r:${row.sessionId}${row.lane ?? ''}${row.badge}${row.active ? '1' : '0'}`
           + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`
-          + `${row.nested ? 'n' : ''}${row.statusLabel ?? ''}${row.statusTone ?? ''}${row.roleMarker ?? ''}`,
+          + `${row.roleMarker ?? ''}`,
       )
     }
   }

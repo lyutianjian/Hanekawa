@@ -22,6 +22,7 @@ function errorCodeFor(code: string): ToolResult['errorCode'] {
     case 'THREAD_NOT_FOUND':
       return 'not_found'
     case 'THREAD_STALE':
+    case 'THREAD_RESOLVED':
     case 'NOT_COORDINATOR':
     case 'NO_COORDINATOR':
       return 'precondition_failed'

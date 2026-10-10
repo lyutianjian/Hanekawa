@@ -1,6 +1,6 @@
 /**
  * The side panel's 「线程」 tab, as data: a project's coordination threads
- * split into the active list and two folded sections (安静, 已结案), each row
+ * split into the active list and two folded sections (安静, 已完成), each row
  * carrying what it draws and which controls it may offer.
  *
  * DOM-free like the rest of `model/`. Status labels and tones come from
@@ -8,7 +8,7 @@
  */
 
 import type { WireCoordinationThreads, WireThreadStatus } from '../../shellProtocol.js'
-import { THREAD_STATUS_LABEL, formatLastActivity, threadBucket, threadTone, type ThreadTone } from './coordinationStatus.js'
+import { THREAD_STATUS_LABEL, THREAD_STATUS_REASON, formatLastActivity, threadBucket, threadTone, type ThreadTone } from './coordinationStatus.js'
 
 export type ThreadFold = 'quiet' | 'resolved'
 
@@ -19,7 +19,7 @@ export interface ThreadPanelRow {
   readonly statusLabel: string
   readonly tone: ThreadTone
   readonly lastActivity: string
-  /** The thread's own one-line status, when it has one. */
+  /** The thread's own one-line status, or why it is blocked or stopped. */
   readonly statusLine?: string
   /** The session on screen is this thread's. */
   readonly current: boolean
@@ -65,6 +65,7 @@ export function threadPanelView(input: ThreadPanelInput): ThreadPanelView {
   const quiet: ThreadPanelRow[] = []
   const resolved: ThreadPanelRow[] = []
   for (const thread of threads) {
+    const statusLine = thread.statusLine || THREAD_STATUS_REASON[thread.status]
     const row: ThreadPanelRow = {
       threadId: thread.threadId,
       sessionId: thread.sessionId,
@@ -72,7 +73,7 @@ export function threadPanelView(input: ThreadPanelInput): ThreadPanelView {
       statusLabel: THREAD_STATUS_LABEL[thread.status],
       tone: threadTone(thread.status),
       lastActivity: formatLastActivity(thread.lastActivityAt, input.now),
-      ...(thread.statusLine === undefined || thread.statusLine.length === 0 ? {} : { statusLine: thread.statusLine }),
+      ...(statusLine ? { statusLine } : {}),
       current: thread.sessionId === input.activeSessionId,
       canStop: STOPPABLE.has(thread.status),
       canResolve: !NOT_RESOLVABLE.has(thread.status),

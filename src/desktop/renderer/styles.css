@@ -5415,6 +5415,7 @@ body.settings-open #canvas-header,
   .task-bead,
   .task-panel,
   .session-badge.running .icon,
+  .thread-status .icon,
   .session-title-text {
     animation: none !important;
   }
@@ -5441,53 +5442,33 @@ body.settings-open #canvas-header,
 }
 
 /* --- coordination: sidebar, canvas header, thread panel, merge bar, note cards ---
-   Every colour here is a token. The five thread tones are one vocabulary
-   (`ThreadTone` in model/coordinationStatus.ts) shared by the sidebar status,
-   the canvas crumb, the thread rows and the note cards; each state gets the
+   Every colour here is a token. The four thread tones are one vocabulary
+   (`ThreadTone` in model/coordinationStatus.ts) shared by the canvas crumb,
+   the thread rows and the note cards; each state gets the
    same rung wherever it appears. Text carries the state through its own name
    (`--text-warn`, `--text-danger`), and `running` takes the strong brand rung,
    as `.session-badge.running` does. */
-.session-status.running,
 .canvas-status.tone-running,
 .thread-status.tone-running,
 .thread-note-status.tone-running { color: var(--accent-brand-strong); }
-.session-status.attention,
 .canvas-status.tone-attention,
 .thread-status.tone-attention,
 .thread-note-status.tone-attention { color: var(--text-warn); }
-.session-status.danger,
-.canvas-status.tone-danger,
-.thread-status.tone-danger,
 .thread-note-status.tone-danger { color: var(--text-danger); }
-.session-status.neutral,
 .canvas-status.tone-neutral,
 .thread-status.tone-neutral,
 .thread-note-status.tone-neutral { color: var(--text-secondary); }
-.session-status.muted,
 .canvas-status.tone-muted,
 .thread-status.tone-muted,
 .thread-note-status.tone-muted { color: var(--text-tertiary); }
 
-/* Sidebar: coordination rows sit inside their project group and reuse
-   `.session-row`'s box; counts and the folded line follow the rows. */
+/* Sidebar: the coordinator row sits inside its project group and reuses
+   `.session-row`'s box; its thread counts trail the title. */
 .coord-counts {
   flex: 0 0 auto;
   color: var(--text-tertiary);
   font-family: var(--font-mono);
   font-size: var(--type-micro);
-  white-space: nowrap;
-}
-.coord-hidden {
-  margin: 0 var(--space-2);
-  padding: var(--space-1) var(--space-3) var(--space-2) calc(var(--space-3) + 14px + var(--space-2));
-  color: var(--text-tertiary);
-  font-size: var(--type-micro);
-}
-.session-row.nested { margin-left: calc(var(--space-2) + var(--space-4)); }
-.session-status {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-  font-size: var(--type-meta);
   white-space: nowrap;
 }
 
@@ -5617,7 +5598,16 @@ body.settings-open #canvas-header,
   white-space: nowrap;
   cursor: pointer;
 }
-.thread-status { flex: 0 0 auto; font-size: var(--type-micro); white-space: nowrap; }
+.thread-status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.thread-status .icon { width: 12px; height: 12px; animation: spin var(--motion-running) linear infinite; }
+.thread-status .icon path { stroke-width: 2; }
 .thread-row-time {
   flex: 0 0 auto;
   color: var(--text-tertiary);

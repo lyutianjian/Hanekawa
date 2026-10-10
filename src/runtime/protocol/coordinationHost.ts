@@ -20,6 +20,7 @@ export interface CoordinationCaller {
 export type CoordinationErrorCode =
   | 'THREAD_NOT_FOUND'
   | 'THREAD_STALE'
+  | 'THREAD_RESOLVED'
   | 'NOT_COORDINATOR'
   | 'NO_COORDINATOR'
   | 'WORKTREE_FAILED'

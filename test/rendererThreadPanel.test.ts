@@ -66,8 +66,9 @@ test('resolve is offered for every thread except the live three and the settled 
 
 test('labels, tones and relative time come from the shared status helpers', () => {
   const [row] = threadPanelView({ state: state([thread('needs-you')]), now: NOW, ...EMPTY }).active
-  assert.equal(row?.statusLabel, '需要你')
+  assert.equal(row?.statusLabel, '阻塞')
   assert.equal(row?.tone, 'attention')
+  assert.equal(row?.statusLine, '等你处理', 'the reason stands in for a missing status line')
   assert.equal(row?.lastActivity, '刚刚')
 })
 

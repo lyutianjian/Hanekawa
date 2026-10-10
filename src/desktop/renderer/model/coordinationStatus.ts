@@ -4,35 +4,51 @@ import type { WireCoordinationThreads, WireThreadInfo, WireThreadStatus } from '
  * How a coordination thread's status reads in the renderer: its label, its
  * colour tone, which list section it sits in, and the counts the project row
  * badges. Pure, from wire types only.
+ *
+ * The table's nine statuses read as four: 运行中, 阻塞 (waiting on the user or
+ * the coordinator), 空闲 (its turn is over; it can still be messaged) and 已完成
+ * (resolved, final). A failed or interrupted turn is 空闲 with a reason line.
  */
 
 export const THREAD_STATUS_LABEL: Readonly<Record<WireThreadStatus, string>> = {
   running: '运行中',
   idle: '空闲',
-  'awaiting-coordinator': '等协调者',
-  'needs-you': '需要你',
-  failed: '失败',
-  interrupted: '被中断',
-  quiet: '安静',
-  resolved: '已结案',
-  stale: '失效',
+  'awaiting-coordinator': '阻塞',
+  'needs-you': '阻塞',
+  failed: '空闲',
+  interrupted: '空闲',
+  quiet: '空闲',
+  resolved: '已完成',
+  stale: '已完成',
 }
 
-export type ThreadTone = 'running' | 'attention' | 'danger' | 'neutral' | 'muted'
+/** Why an idle-looking thread stopped, when its status says more than 空闲. */
+export const THREAD_STATUS_REASON: Readonly<Partial<Record<WireThreadStatus, string>>> = {
+  'awaiting-coordinator': '等协调者回复',
+  'needs-you': '等你处理',
+  failed: '上一回合出错',
+  interrupted: '上一回合被中断',
+}
+
+/** Resolved and stale threads take no more messages. */
+export function threadFinished(status: WireThreadStatus): boolean {
+  return status === 'resolved' || status === 'stale'
+}
+
+export type ThreadTone = 'running' | 'attention' | 'neutral' | 'muted'
 
 export function threadTone(status: WireThreadStatus): ThreadTone {
   switch (status) {
     case 'running':
       return 'running'
     case 'needs-you':
+    case 'awaiting-coordinator':
       return 'attention'
+    case 'idle':
     case 'failed':
     case 'interrupted':
-      return 'danger'
-    case 'idle':
-    case 'awaiting-coordinator':
-      return 'neutral'
     case 'quiet':
+      return 'neutral'
     case 'resolved':
     case 'stale':
       return 'muted'
@@ -48,14 +64,14 @@ export function threadBucket(status: WireThreadStatus): ThreadBucket {
   return 'active'
 }
 
-export function coordinationCounts(threads: readonly WireThreadInfo[]): { running: number; needsYou: number } {
+export function coordinationCounts(threads: readonly WireThreadInfo[]): { running: number; blocked: number } {
   let running = 0
-  let needsYou = 0
+  let blocked = 0
   for (const thread of threads) {
     if (thread.status === 'running') running += 1
-    else if (thread.status === 'needs-you') needsYou += 1
+    else if (thread.status === 'needs-you' || thread.status === 'awaiting-coordinator') blocked += 1
   }
-  return { running, needsYou }
+  return { running, blocked }
 }
 
 const MINUTE = 60_000

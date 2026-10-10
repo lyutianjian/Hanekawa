@@ -8,7 +8,6 @@ import {
   SIDEBAR_RECENT_LABEL,
   activateRow,
   coordinationCountsText,
-  coordinationHiddenText,
   newSessionIntent,
   sidebarContentMounted,
   sidebarRenderSignature,
@@ -360,7 +359,6 @@ export function createSidebarView(
     trailing?: HTMLElement,
   ): HTMLElement => {
     const classes = ['session-row']
-    if (row.nested) classes.push('nested')
     if (row.active) classes.push('active')
     if (selected) classes.push('selected')
     if (row.lane !== undefined) classes.push('open')
@@ -428,9 +426,6 @@ export function createSidebarView(
       if (hovered === row.sessionId) hovered = undefined
     })
     node.addEventListener('focusin', measure)
-    if (row.statusLabel !== undefined) {
-      open.appendChild(el('span', `session-status ${row.statusTone ?? 'neutral'}`, row.statusLabel))
-    }
     if (trailing) open.appendChild(trailing)
     if (row.badge !== 'none') {
       const badge = el('span', `session-badge ${row.badge}`)
@@ -641,15 +636,13 @@ export function createSidebarView(
     const children: HTMLElement[] = []
     const co = group.coordination
     if (co) {
-      const counts = coordinationCountsText(co.running, co.needsYou)
+      const counts = coordinationCountsText(co.running, co.blocked)
       const draw = (row: SidebarRow, trailing?: HTMLElement): void => {
         const index = indexOf(row)
         children.push(rowNode(row, index, index >= 0 && index === selectedIndex, trailing))
       }
       if (co.coordinator) draw(co.coordinator, counts ? el('span', 'coord-counts', counts) : undefined)
       else if (counts) children.push(el('div', 'coord-counts', counts))
-      for (const row of co.threads) draw(row)
-      if (co.hiddenCount > 0) children.push(el('div', 'coord-hidden', coordinationHiddenText(co.hiddenCount)))
     }
     for (const row of group.rows) {
       const index = indexOf(row)

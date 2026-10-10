@@ -267,7 +267,7 @@ export class CoordinationWakeEngine {
     this.schedule(cwd, async () => {
       const store = this.port.storeFor(cwd)
       const thread = findThread(await store.read(), sessionId)
-      if (thread) await store.patchThread(thread.threadId, { status: 'running', lastActivityAt: now() })
+      if (thread && !INACTIVE.has(thread.status)) await store.patchThread(thread.threadId, { status: 'running', lastActivityAt: now() })
     })
   }
 
@@ -291,7 +291,10 @@ export class CoordinationWakeEngine {
         const thread = findThread(file, sessionId)
         if (!thread) return
         const askedQuestion = question !== undefined && !stopped && !outcome.failed
-        const status = threadStatusAfterTurn({ aborted: stopped, failed: outcome.failed, askedQuestion })
+        // A thread resolved mid-turn stays resolved; its last report still goes out.
+        const status = INACTIVE.has(thread.status)
+          ? thread.status
+          : threadStatusAfterTurn({ aborted: stopped, failed: outcome.failed, askedQuestion })
         const report = askedQuestion
           ? [`Question: ${question}`, turn.lastText].filter(Boolean).join('\n\n')
           : turn.lastText
@@ -327,7 +330,7 @@ export class CoordinationWakeEngine {
     this.schedule(cwd, async () => {
       const store = this.port.storeFor(cwd)
       const thread = findThread(await store.read(), sessionId)
-      if (!thread) return
+      if (!thread || INACTIVE.has(thread.status)) return
       if (waiting) {
         await store.patchThread(thread.threadId, { status: 'needs-you', lastActivityAt: now() })
         this.port.notify({ title: thread.title, body: 'A thread is waiting for your approval.', sessionId })

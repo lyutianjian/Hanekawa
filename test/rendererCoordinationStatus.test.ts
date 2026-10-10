@@ -24,15 +24,17 @@ test('every status has a label, a tone and a bucket', () => {
     assert.ok(threadBucket(status))
   }
   assert.equal(threadTone('needs-you'), 'attention')
-  assert.equal(threadTone('failed'), 'danger')
+  assert.equal(threadTone('awaiting-coordinator'), 'attention')
+  assert.equal(threadTone('failed'), 'neutral')
+  assert.deepEqual(new Set(Object.values(THREAD_STATUS_LABEL)), new Set(['运行中', '阻塞', '空闲', '已完成']))
   assert.equal(threadBucket('stale'), 'resolved')
   assert.equal(threadBucket('quiet'), 'quiet')
   assert.equal(threadBucket('awaiting-coordinator'), 'active')
 })
 
-test('coordinationCounts counts running and needs-you threads', () => {
-  const threads = [thread('a', 'running'), thread('b', 'running'), thread('c', 'needs-you'), thread('d', 'idle')]
-  assert.deepEqual(coordinationCounts(threads), { running: 2, needsYou: 1 })
+test('coordinationCounts counts running and blocked threads', () => {
+  const threads = [thread('a', 'running'), thread('b', 'running'), thread('c', 'needs-you'), thread('e', 'awaiting-coordinator'), thread('d', 'idle')]
+  assert.deepEqual(coordinationCounts(threads), { running: 2, blocked: 2 })
 })
 
 test('formatLastActivity buckets elapsed time', () => {

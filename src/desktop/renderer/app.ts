@@ -121,7 +121,7 @@ import { bindWindowChrome, type WindowControlsOverlay } from './dom/windowChrome
 import { REDUCED_MOTION_QUERY } from './model/reducedMotion.js'
 import { finishPresenceWithin } from './dom/presence.js'
 import type { WireCoordinationThreads, WireThreadMerge, WireThreadStatus } from '../shellProtocol.js'
-import { THREAD_STATUS_LABEL, coordinationCounts, threadBySession, threadTone } from './model/coordinationStatus.js'
+import { THREAD_STATUS_LABEL, coordinationCounts, threadBySession, threadFinished, threadTone } from './model/coordinationStatus.js'
 import { threadPanelView, type ThreadFold, type ThreadPanelIntent } from './model/threadPanel.js'
 import { mergeBarView, type MergeBarIntent } from './model/mergeBar.js'
 import { createThreadPanelView } from './dom/threadPanelView.js'
@@ -1071,7 +1071,13 @@ function runMergeIntent(intent: MergeBarIntent): void {
 const mergeBar = createMergeBarView(mergeBarNode, (intent) => runMergeIntent(intent))
 
 shellClient.onCoordinationThreads((state) => {
+  const previous = coordinationByRoot.get(state.projectRoot)
   coordinationByRoot.set(state.projectRoot, state)
+  // A thread just started in the project on screen: bring its list up. The
+  // first pull has nothing to compare with, so opening the app opens nothing.
+  const started = previous !== undefined
+    && state.threads.some((thread) => !previous.threads.some((known) => known.threadId === thread.threadId))
+  if (started && state.projectRoot === activeLaneInfo()?.projectRoot) showSideTab('threads')
   renderSidebar()
   renderCanvasHeader()
   renderSubagents()
@@ -1129,6 +1135,7 @@ function renderCanvasHeader(): void {
     // that answer — the lane list cannot tell a fresh session from an empty one.
     hasConversation: activePane()?.hasConversation() ?? false,
   }))
+  composer.setLocked(thread !== undefined && threadFinished(thread.status) ? '线程已完成，不能再发消息' : undefined)
 }
 
 function closeHeaderMenu(): void {

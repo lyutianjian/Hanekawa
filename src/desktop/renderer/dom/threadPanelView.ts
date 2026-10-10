@@ -9,6 +9,7 @@
 
 import type { ThreadFold, ThreadPanelFold, ThreadPanelIntent, ThreadPanelRow, ThreadPanelView } from '../model/threadPanel.js'
 import { button } from './controls.js'
+import { icon } from './icons.js'
 import { el, replace, type Child } from './dom.js'
 
 export interface ThreadPanelDom {
@@ -17,11 +18,16 @@ export interface ThreadPanelDom {
 
 const FOLD_LABEL: Readonly<Record<ThreadFold, string>> = {
   quiet: '安静',
-  resolved: '已结案',
+  resolved: '已完成',
 }
 
 export function createThreadPanelView(root: HTMLElement, onIntent: (intent: ThreadPanelIntent) => void): ThreadPanelDom {
   let drawn: string | undefined
+
+  function status(item: ThreadPanelRow): HTMLElement {
+    // Running spins, as the sidebar's running badge does.
+    return el('span', `thread-status tone-${item.tone}`, item.tone === 'running' ? icon('spinner') : undefined, item.statusLabel)
+  }
 
   function row(item: ThreadPanelRow): HTMLElement {
     const actions: Child[] = []
@@ -29,7 +35,7 @@ export function createThreadPanelView(root: HTMLElement, onIntent: (intent: Thre
       actions.push(button('thread-row-stop', '停止', '停止这个线程', () => onIntent({ kind: 'stop', threadId: item.threadId }), { enabled: !item.pending }))
     }
     if (item.canResolve) {
-      actions.push(button('thread-row-resolve', '结案', '把这个线程标为已结案', () => onIntent({ kind: 'resolve', threadId: item.threadId }), { enabled: !item.pending }))
+      actions.push(button('thread-row-resolve', '完成', '把这个线程标为已完成（之后不能再发消息）', () => onIntent({ kind: 'resolve', threadId: item.threadId }), { enabled: !item.pending }))
     }
     const title = button('thread-row-title', item.title, `打开线程 ${item.title}`, () => onIntent({ kind: 'open', sessionId: item.sessionId }))
     if (item.current) title.setAttribute('aria-current', 'true')
@@ -37,7 +43,7 @@ export function createThreadPanelView(root: HTMLElement, onIntent: (intent: Thre
     return el(
       'div',
       className,
-      el('div', 'thread-row-head', title, el('span', `thread-status tone-${item.tone}`, item.statusLabel), el('span', 'thread-row-time', item.lastActivity)),
+      el('div', 'thread-row-head', title, status(item), el('span', 'thread-row-time', item.lastActivity)),
       item.statusLine === undefined ? undefined : el('div', 'thread-row-line', item.statusLine),
       actions.length === 0 ? undefined : el('div', 'thread-row-actions', ...actions),
     )

@@ -173,6 +173,20 @@ test('markStopped on a thread with no running turn marks it interrupted', async 
   assert.equal((await h.store.read()).threads[0]!.status, 'interrupted')
 })
 
+test('a thread resolved mid-turn stays resolved through its turn end and approvals', async () => {
+  const h = await setup(1)
+  const t = h.threads[0]!
+  t.start('coordinator')
+  await h.settle()
+  await h.store.patchThread('t0', { status: 'resolved' })
+  t.setApproval(true)
+  t.end('coordinator')
+  await h.settle()
+  const f = await h.store.read()
+  assert.equal(f.threads[0]!.status, 'resolved')
+  assert.equal(h.coord.wakes.length, 1, 'its last report still goes out')
+})
+
 test('a running coordinator gets no wake, then exactly one at its turn-end', async () => {
   const h = await setup()
   h.coord.start('user')

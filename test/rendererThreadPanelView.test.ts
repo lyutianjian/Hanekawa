@@ -133,7 +133,7 @@ test('the current thread is marked, its status chip carries the tone', (t) => {
   const title = r.button('thread-row-title')
   assert.equal(title.attributes.get('aria-current'), 'true')
   const chip = r.button('thread-status')
-  assert.equal(chip.text, '需要你')
+  assert.equal(chip.text, '阻塞')
   assert.ok(chip.classes.includes('tone-attention'))
 })
 
@@ -143,7 +143,7 @@ test('folds are inline disclosures: closed by default, rows drawn only while ope
   const quietHead = r.button('thread-fold-head', 0)
   assert.equal(quietHead.text, '安静 · 1')
   assert.equal(quietHead.attributes.get('aria-expanded'), 'false')
-  assert.equal(r.button('thread-fold-head', 1).text, '已结案 · 1')
+  assert.equal(r.button('thread-fold-head', 1).text, '已完成 · 1')
   assert.equal(r.buttons('thread-row-title').length, 0, 'the folded rows are not drawn')
 
   r.stub.click(quietHead.node)

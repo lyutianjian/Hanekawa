@@ -43,6 +43,25 @@ test('create and remove a thread worktree', async () => {
   }
 })
 
+test('a repository with no commits gets an empty root commit that leaves staged files alone', async () => {
+  const repo = await mkdtemp(path.join(tmpdir(), 'thread-wt-empty-'))
+  const git = (...a: string[]) => execFileSync('git', a, { cwd: repo, encoding: 'utf8' }).trim()
+  try {
+    git('init', '-q', '-b', 'main')
+    git('config', 'user.name', 't')
+    git('config', 'user.email', 't@example.com')
+    await writeFile(path.join(repo, 'a.txt'), 'one\n')
+    git('add', 'a.txt')
+    const wt = await createThreadWorktree({ cwd: repo, threadId: 'thr_e', slug: 'e' })
+    assert.equal(wt.baseRef, git('rev-parse', 'HEAD'))
+    assert.equal(git('ls-tree', '-r', '--name-only', 'HEAD'), '')
+    assert.equal(git('status', '--porcelain'), 'A  a.txt')
+    await removeThreadWorktree(repo, wt)
+  } finally {
+    await rm(repo, { recursive: true, force: true })
+  }
+})
+
 test('branchDiff counts commits and lines; merge succeeds on a clean tree', async () => {
   const { repo, git, dispose } = await fixture()
   try {

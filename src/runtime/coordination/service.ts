@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { CoordinationSettings } from '../../config/settings.js'
 import type { SessionRecord } from '../../harness/types.js'
-import { applyLifecycle } from '../../services/coordination/lifecycle.js'
+import { applyLifecycle, effectiveThreadStatus } from '../../services/coordination/lifecycle.js'
 import { CoordinationStore, newThreadId } from '../../services/coordination/threadStore.js'
 import {
   branchDiff,
@@ -37,7 +37,7 @@ import type {
   ThreadSummary,
 } from '../protocol/coordinationHost.js'
 import { lastCompactSummary } from './contextPolicy.js'
-import { composeThreadKickoff, formatCoordinatorSeed, formatThreadNote, threadSlug } from './messages.js'
+import { composeThreadKickoff, formatCoordinatorSeed, threadSlug } from './messages.js'
 
 export const COORDINATOR_SESSION_TITLE = '项目调度'
 const FETCH_DEFAULT_LIMIT = 20
@@ -203,9 +203,7 @@ export class CoordinationService implements CoordinationHost {
         try {
           worktree = await createThreadWorktree({ cwd, threadId, slug: name })
         } catch (error) {
-          const reason = `Worktree could not be created: ${errorMessage(error)}`
-          await this.recordFailure(cwd, { ...base, status: 'failed', statusLine: reason })
-          throw new CoordinationError('WORKTREE_FAILED', reason)
+          throw new CoordinationError('WORKTREE_FAILED', `Worktree could not be created: ${errorMessage(error)}`)
         }
       }
 
@@ -232,9 +230,10 @@ export class CoordinationService implements CoordinationHost {
           ...(worktree ? { worktree: { branch: worktree.branch } } : {}),
         }))
       } catch (error) {
-        const reason = `The brief could not be delivered: ${errorMessage(error)}`
-        await this.recordFailure(cwd, { ...record, status: 'failed', statusLine: reason })
-        throw error
+        // A thread that never started leaves no row; the tool error tells the coordinator why.
+        await store.removeThreadsBySession([meta.id])
+        if (worktree) await removeThreadWorktree(cwd, worktree)
+        throw new Error(`The brief could not be delivered: ${errorMessage(error)}`)
       }
 
       return { threadId, sessionId: meta.id, ...(worktree ? { branch: worktree.branch } : {}) }
@@ -261,7 +260,9 @@ export class CoordinationService implements CoordinationHost {
 
   /** The user's resolve: same effect as the tool, without the coordinator check. */
   async resolveThreadById(cwd: string, threadId: string, note?: string): Promise<void> {
-    await this.findThread(cwd, threadId)
+    const thread = await this.findThread(cwd, threadId)
+    // Resolving is final, so whatever the thread is still doing ends with it.
+    await this.stopSession(cwd, thread.sessionId)
     await this.coordinationStore(cwd).patchThread(threadId, {
       status: 'resolved',
       ...(note?.trim() ? { statusLine: sanitizeReportText(note, REPORT_MAX) } : {}),
@@ -506,6 +507,9 @@ export class CoordinationService implements CoordinationHost {
     const thread = await this.findThread(cwd, threadId)
     const stale = (why: string) => new CoordinationError('THREAD_STALE', `Thread ${threadId} (${sanitizeTitle(thread.title)}) ${why}; start a new thread instead.`)
     if (thread.status === 'stale') throw stale('is stale: its session no longer exists')
+    if (effectiveThreadStatus(thread, new Date(), this.port.settings(cwd)) === 'resolved') {
+      throw new CoordinationError('THREAD_RESOLVED', `Thread ${threadId} (${sanitizeTitle(thread.title)}) is resolved and takes no more messages; start a new thread instead.`)
+    }
     if (!thread.sessionId) throw stale('never started')
     if (!(await this.port.storeFor(cwd).resolve(thread.sessionId))) {
       await store.patchThread(threadId, { status: 'stale', statusLine: 'session deleted' })
@@ -514,28 +518,11 @@ export class CoordinationService implements CoordinationHost {
     const control = this.port.laneControl(thread.sessionId)
       ?? await this.port.openLane(cwd, thread.sessionId, { activate: false })
     await control.enqueueFromCoordinator(text)
-    await store.patchThread(threadId, {
-      lastActivityAt: new Date().toISOString(),
-      ...(thread.status === 'resolved' ? { status: 'idle' as const } : {}),
-    })
+    await store.patchThread(threadId, { lastActivityAt: new Date().toISOString() })
   }
 
   private async stopSession(cwd: string, sessionId: string): Promise<void> {
     if (sessionId) await this.port.laneControl(sessionId)?.stop()
     await this.engine.markStopped(cwd, sessionId)
-  }
-
-  /** A thread that failed to start: its row says why, and the coordinator gets it as a report. */
-  private async recordFailure(cwd: string, record: ThreadRecord): Promise<void> {
-    const store = this.coordinationStore(cwd)
-    await store.upsertThread(record)
-    if (!(await store.getCoordinatorSessionId())) return
-    await store.enqueueNote({
-      threadId: record.threadId,
-      kind: 'report',
-      userDriven: false,
-      text: formatThreadNote(record, { status: 'failed', report: record.statusLine ?? null }),
-      at: new Date().toISOString(),
-    })
   }
 }

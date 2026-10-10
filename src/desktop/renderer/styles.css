@@ -5439,3 +5439,360 @@ body.settings-open #canvas-header,
     display: none;
   }
 }
+
+/* --- coordination: sidebar, canvas header, thread panel, merge bar, note cards ---
+   Every colour here is a token. The five thread tones are one vocabulary
+   (`ThreadTone` in model/coordinationStatus.ts) shared by the sidebar status,
+   the canvas crumb, the thread rows and the note cards; each state gets the
+   same rung wherever it appears. Text carries the state through its own name
+   (`--text-warn`, `--text-danger`), and `running` takes the strong brand rung,
+   as `.session-badge.running` does. */
+.session-status.running,
+.canvas-status.tone-running,
+.thread-status.tone-running,
+.thread-note-status.tone-running { color: var(--accent-brand-strong); }
+.session-status.attention,
+.canvas-status.tone-attention,
+.thread-status.tone-attention,
+.thread-note-status.tone-attention { color: var(--text-warn); }
+.session-status.danger,
+.canvas-status.tone-danger,
+.thread-status.tone-danger,
+.thread-note-status.tone-danger { color: var(--text-danger); }
+.session-status.neutral,
+.canvas-status.tone-neutral,
+.thread-status.tone-neutral,
+.thread-note-status.tone-neutral { color: var(--text-secondary); }
+.session-status.muted,
+.canvas-status.tone-muted,
+.thread-status.tone-muted,
+.thread-note-status.tone-muted { color: var(--text-tertiary); }
+
+/* Sidebar: the coordination section sits above the workspaces, and its rows
+   reuse `.session-row`'s box so the indent lines up with session titles. */
+.coord-section { margin-top: var(--space-2); }
+.coord-title {
+  padding: var(--space-1) var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+}
+.coord-group { margin-bottom: var(--space-1); }
+.coord-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  margin: var(--space-2) var(--space-2) 2px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--type-ui);
+}
+.coord-project {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.coord-counts {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.coord-hidden {
+  margin: 0 var(--space-2);
+  padding: var(--space-1) var(--space-3) var(--space-2) calc(var(--space-3) + 14px + var(--space-2));
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+}
+.session-row.nested { margin-left: calc(var(--space-2) + var(--space-4)); }
+.session-status {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
+
+/* Canvas header: the breadcrumb replaces the title while a thread is open. */
+.canvas-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--type-ui);
+  white-space: nowrap;
+}
+.canvas-back-coordinator {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.canvas-back-coordinator:hover { color: var(--text-primary); background: var(--surface-hover); }
+.canvas-breadcrumb-thread {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+}
+.canvas-breadcrumb-sep { flex: 0 0 auto; color: var(--text-tertiary); }
+.canvas-status { flex: 0 0 auto; font-size: var(--type-meta); }
+.canvas-stop-thread,
+.thread-row-stop,
+.thread-row-resolve {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.canvas-stop-thread:hover:enabled,
+.thread-row-stop:hover:enabled,
+.thread-row-resolve:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+.thread-row-stop:hover:enabled { color: var(--text-danger); }
+.canvas-stop-thread:disabled,
+.thread-row-stop:disabled,
+.thread-row-resolve:disabled { opacity: 0.5; cursor: default; }
+.canvas-threads-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.canvas-threads-open:hover { color: var(--text-primary); background: var(--surface-hover); }
+
+/* Thread panel: a card like the task panel, rows inside it like session rows. */
+.thread-panel {
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.thread-panel-head {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.thread-panel-stop-all {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.thread-panel-stop-all:hover:enabled { color: var(--text-danger); background: var(--surface-hover); }
+.thread-panel-stop-all:disabled { opacity: 0.5; cursor: default; }
+.thread-panel-active { display: flex; flex-direction: column; padding: var(--space-1); }
+.thread-panel-empty {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+}
+.thread-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.thread-row:hover { background: var(--surface-hover); }
+.thread-row.current { background: var(--surface-active); }
+.thread-row.pending { opacity: 0.7; }
+.thread-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.thread-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--type-ui);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.thread-status { flex: 0 0 auto; font-size: var(--type-micro); white-space: nowrap; }
+.thread-row-time {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.thread-row-line {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-row-actions { display: flex; justify-content: flex-end; gap: var(--space-1); }
+.thread-fold { border-top: 1px solid var(--border-subtle); }
+.thread-fold-head {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.thread-fold-head:hover { background: var(--surface-hover); color: var(--text-primary); }
+.thread-fold-body { display: flex; flex-direction: column; padding: 0 var(--space-1) var(--space-1); }
+.thread-fold.quiet .thread-row-title { color: var(--text-secondary); }
+.thread-fold.resolved .thread-row-title { color: var(--text-tertiary); }
+
+/* Merge bar: the same pill vocabulary as `.process-chip`, stacked above the
+   composer in the strip's place. */
+#merge-bar { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-2); }
+#merge-bar[hidden] { display: none; }
+.merge-bar-toggle,
+.merge-bar-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  font: inherit;
+  font-size: var(--type-meta);
+}
+.merge-bar-toggle { align-self: flex-start; padding: var(--space-1) var(--space-3); cursor: pointer; }
+.merge-bar-toggle:hover { color: var(--text-primary); background: var(--surface-hover); }
+.merge-bar-toggle[aria-expanded="true"] { color: var(--text-primary); }
+.merge-bar-row {
+  display: flex;
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+}
+.merge-bar-project { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
+.merge-bar-branch {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.merge-bar-stat { flex: 0 0 auto; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
+.merge-bar-conflict { flex: 0 0 auto; color: var(--text-warn); white-space: nowrap; }
+.merge-bar-merge,
+.merge-bar-resolve {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.merge-bar-merge:hover:enabled,
+.merge-bar-resolve:hover:enabled { background: var(--surface-hover); }
+.merge-bar-merge:disabled,
+.merge-bar-resolve:disabled { color: var(--text-tertiary); cursor: default; }
+.merge-bar-dismiss {
+  flex: 0 0 auto;
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  cursor: pointer;
+}
+.merge-bar-dismiss:hover { color: var(--text-primary); background: var(--surface-hover); }
+.merge-bar-list { display: flex; flex-direction: column; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.merge-bar-item { min-width: 0; }
+
+/* Note cards in the transcript: title and status on one line, the report
+   clipped to one line beneath, and 查看 at the right. */
+.thread-notes-head {
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+}
+.thread-note-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px var(--space-2);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.thread-note-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--type-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-note-status {
+  justify-self: end;
+  color: var(--text-secondary);
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.thread-note-report {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-note-open {
+  grid-column: 2;
+  justify-self: end;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.thread-note-open:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+.thread-note-open:disabled { opacity: 0.5; cursor: default; }

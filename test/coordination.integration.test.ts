@@ -81,7 +81,7 @@ interface Lane {
   close(): void
 }
 
-async function setup(t: TestContext, script: Script, options: { git?: boolean } = {}) {
+async function setup(t: TestContext, script: Script, options: { git?: boolean; side?: (request: ModelRequest) => ModelResponse | Promise<ModelResponse> } = {}) {
   const testHome = await mkdtemp(path.join(tmpdir(), 'myagent-coord-home-'))
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-coord-project-'))
   const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
@@ -106,7 +106,7 @@ async function setup(t: TestContext, script: Script, options: { git?: boolean } 
   const roles = new Map<string, 'coordinator' | 'thread' | undefined>()
   t.mock.method(AnthropicProvider.prototype, 'createMessage', async (request: ModelRequest) => {
     // Side requests (session title, tool-use summary) are not a turn's own.
-    if (!request.cacheSource?.startsWith('agent:')) return text('Side')
+    if (!request.cacheSource?.startsWith('agent:')) return options.side ? options.side(request) : text('Side')
     const sessionId = [...roles.keys()].find((id) => request.cacheSource.includes(id))
     assert.ok(sessionId, `request from an unknown session: ${request.cacheSource}`)
     return script({
@@ -135,6 +135,7 @@ async function setup(t: TestContext, script: Script, options: { git?: boolean } 
     openLane: async (dir, id, o) => (await openLane(dir, id, o)).host,
     notify: (n) => { notices.push(n.body) },
     onError: (error) => { errors.push(error) },
+    reseedCoordinator: (dir, id) => service.reseedCoordinator(dir, id),
   })
   service = new CoordinationService({
     storeFor: () => project.store,
@@ -248,7 +249,7 @@ async function setup(t: TestContext, script: Script, options: { git?: boolean } 
   const start = (title: string, brief: string, writesCode = false) =>
     service.startThread(caller, { title, brief, background: BACKGROUND, writesCode })
 
-  return { cwd, project, service, engine, coordStore, coordinatorId, coordinator, lanes, opened, caller, wakes, settle, thread, start, openLane, errors }
+  return { cwd, project, service, engine, coordStore, coordinatorId, coordinator, lanes, opened, caller, wakes, settle, thread, start, openLane, errors, notices }
 }
 
 test('two StartThread calls (one in a worktree) converge into exactly one coordinator wake', async (t) => {
@@ -340,11 +341,25 @@ test(`after ${AUTO_WAKE_LIMIT} automatic wakes the coordinator waits for the use
   assert.equal(state.autoWakeCount, AUTO_WAKE_LIMIT)
   assert.equal(state.notes.length, 1, 'the last question waits in the inbox')
 
+  // The waiting note rides with the user's message as a coordination_update
+  // at the turn's first step; it no longer needs a wake of its own.
   pingPong = false
   await h.coordinator.client.submit('stop now and tell me')
   await h.settle()
-  assert.equal(h.wakes(), AUTO_WAKE_LIMIT + 1, 'a user message resets the count and the waiting note wakes it')
-  assert.equal((await h.coordStore.read()).coordinator!.autoWakeCount, 1)
+  assert.equal(h.wakes(), AUTO_WAKE_LIMIT, 'the waiting note joined the user turn instead of waking')
+  const userTurn = (await h.project.store.loadRecords(h.coordinatorId))
+  const userIndex = userTurn.findIndex((r) => r.type === 'message' && r.role === 'user' && r.content.includes('stop now'))
+  const update = userTurn.slice(userIndex).find((r) => r.type === 'coordination_update')
+  assert.ok(update && update.type === 'coordination_update' && update.content.includes('Next question?'))
+  const after = (await h.coordStore.read()).coordinator!
+  assert.equal(after.autoWakeCount, 0, 'the user message reset the count')
+  assert.equal(after.notes.length, 0)
+
+  // The count was reset: a later thread report wakes the coordinator again.
+  await h.service.messageThread(h.caller, threadId, 'One more question, please.')
+  await h.settle()
+  assert.ok(h.wakes() > AUTO_WAKE_LIMIT, 'a later report wakes again')
+  assert.ok((await h.coordStore.read()).coordinator!.autoWakeCount >= 1)
 })
 
 test('a closed coordinator lane is cold-opened without activating and woken', async (t) => {
@@ -472,4 +487,153 @@ test('a thread turn the user drove only queues its note', async (t) => {
   assert.equal(notes[0]!.userDriven, true)
   assert.ok(notes[0]!.text.includes('Did what the user said.'))
   assert.equal((await h.coordStore.read()).coordinator!.autoWakeCount, 1, 'a user message in a thread does not reset the count')
+})
+
+/** Large enough that an idle coordinator is over the idle-compaction occupancy line. */
+const big = (content: string): ModelResponse => ({
+  ...text(content),
+  usage: { inputTokens: 150_000, outputTokens: 5, cacheReadInputTokens: 0 },
+})
+
+/** Pretends the coordinator's cache expired long ago, so its next turn compacts before sending. */
+function expireIdle(lane: Lane): void {
+  (lane.pane.controller as unknown as { lastRequestAt: number }).lastRequestAt = Date.now() - 3 * 3_600_000
+}
+
+test('a thread that finishes while the coordinator is mid-turn joins the next step, without a wake', async (t) => {
+  const finishThread = gate()
+  const coordStep = gate()
+  let coordEntered!: () => void
+  const entered = new Promise<void>((resolve) => { coordEntered = resolve })
+  const coordRequests: string[] = []
+  const h = await setup(t, async (call) => {
+    if (call.role === 'coordinator') {
+      coordRequests.push(call.text)
+      if (call.afterTool) return text('Saw the report.')
+      coordEntered()
+      await coordStep.promise
+      return tool('Glob', { pattern: '*.none' })
+    }
+    await finishThread.promise
+    return text('MIDTURN-REPORT done.')
+  })
+  const started = await h.start('Busy', 'BRIEF-MID')
+  const turn = h.coordinator.client.submit('keep an eye on it')
+  await entered
+  finishThread.open()
+  await until(async () => (await h.coordStore.read()).coordinator!.notes.length === 1, 'the report was not queued')
+  coordStep.open()
+  await turn
+  await h.settle()
+
+  assert.equal(h.wakes(), 0, 'the report rode along; no wake followed')
+  assert.equal(coordRequests.length, 2)
+  assert.ok(!coordRequests[0]!.includes('MIDTURN-REPORT'))
+  assert.ok(coordRequests[1]!.includes('MIDTURN-REPORT'), 'the next step carried the report')
+  const records = await h.project.store.loadRecords(h.coordinatorId)
+  const result = records.findIndex((r) => r.type === 'tool_result')
+  const update = records.findIndex((r) => r.type === 'coordination_update' && r.content.includes('MIDTURN-REPORT'))
+  assert.ok(result >= 0 && update > result, 'the update lands at the step boundary, after the tool result')
+  assert.equal((await h.coordStore.read()).coordinator!.notes.length, 0)
+  assert.equal((await h.thread(started.threadId)).status, 'idle')
+})
+
+test('a board snapshot rides along with the next user message', async (t) => {
+  const coordRequests: string[] = []
+  const h = await setup(t, async (call) => {
+    if (call.role === 'coordinator') {
+      coordRequests.push(call.text)
+      return text('Ok.')
+    }
+    return text('Kickoff done.')
+  })
+  const started = await h.start('Board', 'BRIEF-BOARD')
+  await h.settle()
+  assert.equal(h.wakes(), 1)
+
+  await h.coordStore.patchThread(started.threadId, { title: 'RENAMED-ROW' })
+  await h.engine.idle(h.cwd)
+  assert.ok((await h.coordStore.read()).coordinator!.pendingSnapshot?.includes('RENAMED-ROW'))
+  await h.coordinator.client.submit('USER-ASKS what is the state')
+  await h.settle()
+
+  assert.equal(h.wakes(), 1, 'a snapshot alone never wakes')
+  const request = coordRequests.at(-1)!
+  assert.ok(request.includes('USER-ASKS') && request.includes('RENAMED-ROW'), 'the snapshot joined the user turn')
+  const records = await h.project.store.loadRecords(h.coordinatorId)
+  const user = records.findIndex((r) => r.type === 'message' && r.role === 'user' && r.content.includes('USER-ASKS'))
+  const update = records.findIndex((r) => r.type === 'coordination_update' && r.content.includes('RENAMED-ROW'))
+  assert.ok(user >= 0 && update > user, 'recorded as a coordination_update in the user turn')
+  assert.equal((await h.coordStore.read()).coordinator!.pendingSnapshot, undefined)
+})
+
+test('after a forced compaction the coordinator restore carries the board and the queued notes', async (t) => {
+  const compactGate = gate()
+  let compactEntered!: () => void
+  const compacting = new Promise<void>((resolve) => { compactEntered = resolve })
+  const h = await setup(t, async (call) => {
+    if (call.role === 'coordinator') return big('Seen.')
+    return text(call.last.includes('USER-DIRECT') ? 'DURING-COMPACT report.' : 'Kickoff done.')
+  }, {
+    side: async (request) => {
+      if (!request.cacheSource.startsWith('compact')) return text('Side')
+      compactEntered()
+      await compactGate.promise
+      return text('SUMMARY-OK')
+    },
+  })
+  const started = await h.start('Restorable', 'BRIEF-R')
+  await h.settle()
+  assert.equal(h.wakes(), 1)
+
+  expireIdle(h.coordinator)
+  const turn = h.coordinator.client.submit('RESUME please')
+  await compacting
+  // A thread reports while the summary is being written.
+  await h.lanes.get(started.sessionId)!.client.submit('USER-DIRECT check')
+  await until(async () => (await h.coordStore.read()).coordinator!.notes.length === 1, 'the report was not queued')
+  compactGate.open()
+  await turn
+  await h.settle()
+
+  const records = await h.project.store.loadRecords(h.coordinatorId)
+  const boundary = records.find((r) => r.type === 'compact_boundary')
+  assert.ok(boundary && boundary.type === 'compact_boundary', 'the forced compaction ran')
+  assert.equal(boundary.postCompactRestore, 'consumed')
+  const restored = boundary.restoredContext ?? ''
+  assert.ok(restored.includes('Post-compaction restore'), restored)
+  assert.ok(restored.includes('Restorable'), 'the restore carries the board')
+  assert.ok(restored.includes('DURING-COMPACT report.'), 'the restore carries the queued note')
+  assert.equal((await h.coordStore.read()).coordinator!.notes.length, 0)
+})
+
+test('a tripped compaction breaker moves the pointer to a new coordinator; the old one stays on disk', async (t) => {
+  const h = await setup(t, async (call) => {
+    if (call.role === 'coordinator') return big('Seen.')
+    return text('Kickoff done.')
+  }, {
+    side: (request) => {
+      if (request.cacheSource.startsWith('compact')) throw new Error('summary failed')
+      return text('Side')
+    },
+  })
+  await h.start('Survivor', 'BRIEF-S')
+  await h.settle()
+  const oldId = h.coordinatorId
+
+  await h.project.store.setCompactFailureCount(oldId, 2)
+  expireIdle(h.coordinator)
+  await h.coordinator.client.submit('one more turn')
+  await h.settle()
+
+  const records = await h.project.store.loadRecords(oldId)
+  assert.ok(records.some((r) => r.type === 'compact_attempt_failed' && r.circuitOpen), 'the breaker tripped')
+  const pointer = await h.coordStore.getCoordinatorSessionId()
+  assert.ok(pointer && pointer !== oldId, 'the pointer moved to a new session')
+  assert.equal(await h.service.ensureCoordinator(h.cwd), pointer, 'the entry opens the new coordinator')
+  const old = await h.project.store.resolve(oldId)
+  assert.ok(old, 'the old session is still on disk')
+  assert.equal(old.coordination?.role, 'coordinator')
+  const seeded = (await h.project.store.loadRecords(pointer))[0]
+  assert.ok(seeded && seeded.type === 'compact_boundary' && seeded.summary.includes(oldId))
 })

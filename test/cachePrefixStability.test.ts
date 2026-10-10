@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { z } from 'zod/v3'
 import { buildAnthropicPayload } from '../src/config/providers.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
-import { resetCacheTTLEvaluation } from '../src/harness/cacheControl.js'
+import { resetCacheTTLEvaluation, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../src/harness/cacheControl.js'
 import type { SessionRecord, Tool } from '../src/harness/types.js'
 
 const tool: Tool = {
@@ -51,10 +51,20 @@ function breakpointIndex(messages: Array<Record<string, unknown>>): number {
   )
 }
 
-async function payloadMessages(toolTurns: number): Promise<Array<Record<string, unknown>>> {
+/** Each tool turn followed by a coordination_update, as the coordinator records one at a step boundary. */
+function coordinatorRecords(toolTurns: number): SessionRecord[] {
+  return records(toolTurns).flatMap((record): SessionRecord[] => record.type === 'tool_result'
+    ? [record, { type: 'coordination_update' as const, id: `upd-${record.id}`, content: `Thread note after ${record.id}`, turnId: 't1', createdAt: at }]
+    : [record])
+}
+
+async function payloadMessages(
+  toolTurns: number,
+  build: (n: number) => SessionRecord[] = records,
+): Promise<Array<Record<string, unknown>>> {
   const builder = new ContextBuilder(undefined, { contextWindow: 200_000, summaryOutputTokens: 0 })
   const built = await builder.build({
-    records: records(toolTurns),
+    records: build(toolTurns),
     tools: [tool],
     system: 'system',
     now: new Date('2026-05-10T12:00:00.000Z'),
@@ -71,11 +81,7 @@ async function payloadMessages(toolTurns: number): Promise<Array<Record<string, 
   return payload.messages
 }
 
-test('cache breakpoint stays inside the prefix two consecutive turns share', async () => {
-  resetCacheTTLEvaluation()
-  const turnN = await payloadMessages(2)
-  const turnNext = await payloadMessages(3)
-
+function assertBreakpointInCommonPrefix(turnN: Array<Record<string, unknown>>, turnNext: Array<Record<string, unknown>>): void {
   let commonPrefix = 0
   while (
     commonPrefix < turnN.length
@@ -89,6 +95,34 @@ test('cache breakpoint stays inside the prefix two consecutive turns share', asy
     index < commonPrefix,
     `breakpoint at ${index} must fall inside the common prefix of ${commonPrefix} messages`,
   )
+}
+
+test('cache breakpoint stays inside the prefix two consecutive turns share', async () => {
+  resetCacheTTLEvaluation()
+  assertBreakpointInCommonPrefix(await payloadMessages(2), await payloadMessages(3))
+})
+
+test('a coordination_update in the history keeps the breakpoint inside the common prefix', async () => {
+  resetCacheTTLEvaluation()
+  const turnN = await payloadMessages(2, coordinatorRecords)
+  assert.ok(JSON.stringify(turnN).includes('Thread note after res-1'), 'the update is part of the history')
+  assertBreakpointInCommonPrefix(turnN, await payloadMessages(3, coordinatorRecords))
+})
+
+test('the role prompt is static: identical across builds and ahead of the dynamic boundary', async () => {
+  const build = async () => new ContextBuilder(undefined, { contextWindow: 200_000, summaryOutputTokens: 0 }).build({
+    records: records(1),
+    tools: [tool],
+    system: 'system',
+    rolePrompt: 'ROLE-PROMPT you coordinate threads',
+    now: new Date('2026-05-10T12:00:00.000Z'),
+  })
+  const first = (await build()).systemBlocks!
+  const second = (await build()).systemBlocks!
+  assert.deepEqual(first, second)
+  const role = first.findIndex((block) => block.includes('ROLE-PROMPT'))
+  const boundary = first.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+  assert.ok(role >= 0 && boundary > role, `role section at ${role} must precede the boundary at ${boundary}`)
 })
 
 test('the built payload carries no transient marker field', async () => {

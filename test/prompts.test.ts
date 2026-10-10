@@ -148,3 +148,16 @@ test('PromptComposer builds request context items', () => {
   assert.equal(noHistory.messages.length, 0)
   assert.equal(noHistory.contextItems.length, 0)
 })
+
+test('coordinator role prompt covers routing, evidence and reporting', async () => {
+  const { COORDINATOR_ROLE_PROMPT } = await import('../src/prompts/coordinatorPrompt.js')
+  assert.match(COORDINATOR_ROLE_PROMPT, /^# Coordinator role/)
+  for (const name of ['StartThread', 'MessageThread', 'ListThreads', 'FetchThread', 'StopThread', 'ResolveThread']) {
+    assert.ok(COORDINATOR_ROLE_PROMPT.includes(name), name)
+  }
+  assert.match(COORDINATOR_ROLE_PROMPT, /80 characters/)
+  assert.match(COORDINATOR_ROLE_PROMPT, /merge bar/)
+  assert.match(COORDINATOR_ROLE_PROMPT, /not proof/)
+  const words = COORDINATOR_ROLE_PROMPT.split(/\s+/).length
+  assert.ok(words >= 300 && words <= 520, `words=${words}`)
+})

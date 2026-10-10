@@ -1031,3 +1031,16 @@ test('without an attachment resolver the summary placeholder still names the att
   assert.match(seenPrompt, /a\.png, sent 64x64, cached in this session's attachment store \(attachment img-a\)/)
 })
 
+
+test('coordinator compact prompt variant is separate and forbids thread status', async () => {
+  const { getCompactPrompt, getSharedPrefixCompactPrompt } = await import('../src/prompts/compactPrompt.js')
+  const base = getCompactPrompt()
+  const coord = getCompactPrompt('extra', 'coordinator')
+  assert.notEqual(coord, base)
+  assert.match(coord, /Do not record thread status/)
+  assert.match(coord, /fresh board is restored after compaction/)
+  assert.match(coord, /Questions Waiting on the User/)
+  assert.match(coord, /Additional Instructions:\nextra/)
+  assert.equal(getCompactPrompt(undefined, 'default'), base)
+  assert.match(getSharedPrefixCompactPrompt(undefined, 'coordinator'), /Do not record thread status[\s\S]*Do not call any tools/)
+})

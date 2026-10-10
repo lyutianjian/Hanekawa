@@ -38,7 +38,7 @@ import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
-import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, SteerSource, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, SteerSource, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage, TurnOrigin } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
@@ -132,6 +132,8 @@ export interface AgentRunOverrides {
    * `ChatMessage.sourceQueuedMessageId`.
    */
   sourceQueuedMessageId?: string
+  /** Who drives this turn. Defaults to 'user'. */
+  origin?: TurnOrigin
 }
 
 interface ActiveRunOverrides {
@@ -142,6 +144,7 @@ interface ActiveRunOverrides {
   hooks?: Hooks
   displayInput?: string
   sourceQueuedMessageId?: string
+  origin?: TurnOrigin
   skillInvocation?: {
     skillName: string
     skillArgs: string
@@ -514,6 +517,7 @@ export class AgentLoop {
     if (overrides.displayInput !== undefined && overrides.displayInput !== userInput.text) {
       normalized.displayInput = overrides.displayInput
     }
+    if (overrides.origin) normalized.origin = overrides.origin
     if (overrides.sourceQueuedMessageId) normalized.sourceQueuedMessageId = overrides.sourceQueuedMessageId
     if (overrides.skillName) {
       normalized.skillInvocation = {
@@ -607,6 +611,9 @@ export class AgentLoop {
       // The message this turn started from; its removal may still be in flight.
       if (message.id === this.activeRunOverrides?.sourceQueuedMessageId) continue
       if (message.content.trimStart().startsWith('/')) return
+      // A coordinator message never joins a turn someone else is driving; it
+      // stays queued (and keeps the order) for the pump.
+      if (message.origin === 'coordinator' && this.activeRunOverrides?.origin !== 'coordinator') return
       let userMessage: ChatMessage & { type: 'message' }
       try {
         userMessage = await this.recordUserInput(

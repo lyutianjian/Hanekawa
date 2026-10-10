@@ -27,6 +27,21 @@ describe('messageQueue', () => {
     assert.deepEqual(persisted.map(({ record }) => record.operation), ['enqueue', 'enqueue', 'dequeue', 'dequeue'])
   })
 
+  it('keeps origin through replay and discard drops the named messages', async () => {
+    const a = await queue.enqueue({ text: 'a' }, 'next', { origin: 'coordinator' })
+    const b = await queue.enqueue({ text: 'b' })
+    const c = await queue.enqueue({ text: 'c' })
+    assert.equal(a.origin, 'coordinator')
+    assert.equal(b.origin, undefined)
+    const records = persisted.map(({ record }, index) => ({ ...record, id: `r${index}` }) as SessionRecord)
+    assert.equal(replayMessageQueue(records)[0]?.origin, 'coordinator')
+    await queue.discard([a.id, 'missing', c.id])
+    assert.deepEqual(queue.getSnapshot().map((m) => m.id), [b.id])
+    assert.deepEqual(persisted.filter(({ record }) => record.operation === 'dequeue').length, 2)
+    const replayed = replayMessageQueue(persisted.map(({ record }) => record as SessionRecord))
+    assert.deepEqual(replayed.map((m) => m.id), [b.id])
+  })
+
   it('keeps the snapshot stable and notifies only on changes', async () => {
     const initial = queue.getSnapshot()
     let notifications = 0

@@ -124,12 +124,14 @@ export class MessageQueue implements SteerSource {
   async enqueue(
     input: UserInput,
     priority: MessageQueuePriority = 'next',
+    options?: { origin?: 'coordinator' },
   ): Promise<QueuedMessage> {
     const message: QueuedMessage = Object.freeze({
       id: randomUUID(),
       content: input.text,
       priority,
       createdAt: new Date().toISOString(),
+      ...(options?.origin ? { origin: options.origin } : {}),
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
     })
 
@@ -181,6 +183,25 @@ export class MessageQueue implements SteerSource {
         createdAt: new Date().toISOString(),
       })
       this.replaceSnapshot(this.snapshot.filter((message) => message.id !== messageId))
+    })
+  }
+
+  /** Drops several messages, one `dequeue` record per id still present. */
+  async discard(ids: readonly string[]): Promise<void> {
+    return this.serialize(async () => {
+      let next = this.snapshot
+      for (const messageId of new Set(ids)) {
+        if (!next.some((message) => message.id === messageId)) continue
+        await this.persist(this.sessionId, {
+          id: randomUUID(),
+          type: 'message_queue',
+          operation: 'dequeue',
+          messageId,
+          createdAt: new Date().toISOString(),
+        })
+        next = next.filter((message) => message.id !== messageId)
+        this.replaceSnapshot(next)
+      }
     })
   }
 
@@ -325,6 +346,7 @@ function sameMessages(left: readonly QueuedMessage[], right: readonly QueuedMess
       && message.content === other.content
       && message.priority === other.priority
       && message.createdAt === other.createdAt
+      && message.origin === other.origin
       && sameImages(message.images, other.images)
   })
 }
@@ -355,6 +377,7 @@ function isValidQueuedMessage(value: PersistedQueuedMessage): boolean {
     && typeof value.content === 'string'
     && typeof value.createdAt === 'string'
     && (value.priority === 'now' || value.priority === 'next' || value.priority === 'later')
+    && (value.origin === undefined || value.origin === 'coordinator')
     && (value.images === undefined || (Array.isArray(value.images) && value.images.every(isValidImageRef)))
 }
 

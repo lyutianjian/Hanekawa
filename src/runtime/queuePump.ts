@@ -86,7 +86,7 @@ export interface QueueHandoffDeps {
    * disk — which is *not* the same moment this promise settles: it settles when
    * the whole turn is over.
    */
-  deliver: (input: UserInput, context: { queuedMessageId: string; onAccepted: () => void }) => Promise<void>
+  deliver: (input: UserInput, context: { queuedMessageId: string; onAccepted: () => void; origin?: 'coordinator' }) => Promise<void>
 }
 
 /**
@@ -114,7 +114,11 @@ export async function handOffQueuedMessage(deps: QueueHandoffDeps): Promise<Queu
 
   let deliveryError: unknown
   try {
-    await deps.deliver(queuedMessageToInput(message), { queuedMessageId: message.id, onAccepted })
+    await deps.deliver(queuedMessageToInput(message), {
+      queuedMessageId: message.id,
+      onAccepted,
+      ...(message.origin ? { origin: message.origin } : {}),
+    })
     // A delivery that finished without announcing acceptance still handled the
     // message — a slash command, which produces no user record, takes this
     // path. Leaving it queued would run it again on the next tick.

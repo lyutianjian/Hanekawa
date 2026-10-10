@@ -339,6 +339,9 @@ export interface TurnInterruptionRecord {
   turnId?: string
 }
 
+/** Who drove a turn: the user, a coordinator session, or an automatic wake. */
+export type TurnOrigin = 'user' | 'coordinator' | 'wake'
+
 export type MessageQueuePriority = 'now' | 'next' | 'later'
 
 export interface PersistedQueuedMessage {
@@ -348,6 +351,8 @@ export interface PersistedQueuedMessage {
   createdAt: string
   /** Image refs queued with the text; restored intact across a restart. */
   images?: ImageAttachmentRef[]
+  /** Absent = the user. A coordinator message is only steered into a coordinator-driven turn. */
+  origin?: 'coordinator'
 }
 
 /**

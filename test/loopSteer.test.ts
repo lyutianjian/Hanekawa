@@ -109,3 +109,29 @@ test('the queued message a turn started from is not steered into it again', asyn
   assert.deepEqual(userTexts(records), ['fix the bug', 'use the new API'])
   assert.deepEqual(pending.map((message) => message.id), ['head'])
 })
+
+test('a coordinator message is steered only into a coordinator-driven turn', async () => {
+  for (const origin of ['user', 'coordinator'] as const) {
+    const records: SessionRecord[] = []
+    const pending: PersistedQueuedMessage[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage() {
+        calls += 1
+        if (calls === 1) return { content: '', toolCalls: [{ id: 'noop-1', name: 'noop', input: {} }] }
+        return { content: 'done', toolCalls: [] }
+      },
+    }
+    await loopFor(provider, records, steerFrom(pending), () => {
+      pending.push({ ...queued('c1', 'from coordinator'), origin: 'coordinator' })
+    }).run({ text: 'go' }, undefined, undefined, { origin })
+    if (origin === 'user') {
+      assert.deepEqual(userTexts(records), ['go'])
+      assert.deepEqual(pending.map((message) => message.id), ['c1'])
+    } else {
+      assert.deepEqual(userTexts(records), ['go', 'from coordinator'])
+      assert.deepEqual(pending, [])
+    }
+  }
+})

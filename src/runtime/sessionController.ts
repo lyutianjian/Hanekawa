@@ -8,6 +8,7 @@ import type {
   TaskDisplaySnapshot,
   TokenUsage,
   ToolProgressEvent,
+  TurnOrigin,
 } from '../harness/types.js'
 import { getRecordsAfterLastCompact } from '../harness/requestPrep.js'
 import { promptTokens } from '../harness/usage.js'
@@ -53,7 +54,7 @@ import type { AgentSession } from './types.js'
  */
 export type SessionEvent =
   /** A turn is beginning. Emitted synchronously before any I/O. */
-  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[]; queuedMessageId?: string }
+  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[]; queuedMessageId?: string; origin?: TurnOrigin }
   /** A record reached the UI. `approvalToolUseId`/`subagentProgress` are the correlations the controller tracks. */
   | { type: 'record'; record: SessionRecord; approvalToolUseId?: string; subagentProgress?: string }
   /**
@@ -85,7 +86,7 @@ export type SessionEvent =
    * The turn finished. `aborted` mirrors `AbortSignal.aborted`, *not* "did it
    * throw" — a failed turn is not aborted and still gets a duration summary.
    */
-  | { type: 'turn-end'; aborted: boolean; rolledBack: boolean; durationMs: number; usage?: TokenUsage }
+  | { type: 'turn-end'; origin?: TurnOrigin; failed?: boolean; aborted: boolean; rolledBack: boolean; durationMs: number; usage?: TokenUsage }
 
 /**
  * A submission that came from the message queue (design §12.2).
@@ -293,9 +294,11 @@ export class SessionController {
     const agentSession = this.getSession()
     const loop = agentSession.loop
     const messageId = randomUUID()
+    const origin: TurnOrigin = options?.origin ?? 'user'
     const runOverrides: AgentRunOverrides | undefined = handoff
       ? { ...options, sourceQueuedMessageId: handoff.queuedMessageId }
       : options
+    let failed = false
 
     // Submission preparation (design §9.2): the new-image gate runs before
     // turn-start is emitted and before any record exists, so a blocked input
@@ -307,6 +310,7 @@ export class SessionController {
     this.emit({
       type: 'turn-start',
       messageId,
+      origin,
       displayInput: options?.displayInput ?? input.text,
       createdAt: new Date().toISOString(),
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -374,6 +378,7 @@ export class SessionController {
           })
         }
       } else {
+        failed = true
         // A mid-turn image block (a fallback or plan route onto a text-only
         // model, the provider's final check) leaves the notice as its only
         // trace, so it arrives with its exit attached (design §13, S24). A
@@ -400,6 +405,8 @@ export class SessionController {
 
       this.emit({
         type: 'turn-end',
+        origin,
+        failed,
         aborted: ac.signal.aborted,
         rolledBack: this.didRollback,
         durationMs: Date.now() - this.loopStartMs,

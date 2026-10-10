@@ -1002,3 +1002,14 @@ test('a model-written title replaces the first-message fallback, unless the user
   await settle()
   assert.equal(renamed.controller.getSessionMeta().title, '我自己的名字')
 })
+
+test('turn events carry the origin and whether the turn failed', async () => {
+  const ok = await createHarness({})
+  await ok.controller.submit({ text: 'a' }, { origin: 'wake' })
+  assert.deepEqual(structuredClone(ok.events.filter((e) => e.type === 'turn-start' || e.type === 'turn-end')).map((e) => [e.origin, e.type === 'turn-end' ? e.failed : undefined]), [['wake', undefined], ['wake', false]])
+
+  const bad = await createHarness({ run: async () => { throw new Error('boom') } })
+  await bad.controller.submit({ text: 'a' })
+  const end = bad.events.at(-1)
+  assert.ok(end?.type === 'turn-end' && end.failed === true && end.origin === 'user')
+})

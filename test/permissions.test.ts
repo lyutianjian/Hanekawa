@@ -1298,3 +1298,14 @@ test('PermissionGate session rule store keeps config rules isolated', async () =
   // The child's config deny does not leak into the shared session rules.
   assert.equal(await parent.approve(bashTool, { command: 'rm file' }), true)
 })
+
+test('PermissionGate with lockMode ignores mode and plan-mode transitions', () => {
+  const gate = new PermissionGate(async () => true, [], { mode: 'readonly', lockMode: true })
+  assert.equal(gate.isModeLocked(), true)
+  gate.setMode('bypass')
+  assert.equal(gate.getMode(), 'readonly')
+  gate.prepareContextForPlanMode()
+  assert.equal(gate.getMode(), 'readonly')
+  assert.equal(gate.exitPlanMode(), 'readonly')
+  assert.equal(new PermissionGate(async () => true, [], { mode: 'default' }).isModeLocked(), false)
+})

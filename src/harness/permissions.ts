@@ -286,6 +286,10 @@ export class PermissionGate {
   private planSlugProvider?: () => string | undefined
   private readonly persistRule?: (rule: PermissionRule) => Promise<void>
   private readonly cwd: string
+  /** Key for the project's data dirs (plans, spill); absent means `cwd`. */
+  private readonly projectDir?: string
+  /** A locked gate keeps its mode: `setMode` and the plan-mode transitions do nothing. */
+  private readonly lockMode: boolean
   /** Extra workspace roots, from `permissions.additionalDirectories`. */
   private readonly additionalDirectories: string[]
   private sessionId?: string
@@ -303,6 +307,10 @@ export class PermissionGate {
     options?: {
       mode?: PermissionMode
       cwd?: string
+      /** Key for the project's data dirs when `cwd` is a separate working directory. */
+      projectDir?: string
+      /** Freeze the mode for the gate's lifetime. */
+      lockMode?: boolean
       additionalDirectories?: string[]
       /** The session whose tool-result spill directory counts as workspace. */
       sessionId?: string
@@ -316,6 +324,8 @@ export class PermissionGate {
     this.addRules(configRules ?? [])
     this.mode = options?.mode ?? 'default'
     this.cwd = options?.cwd ?? process.cwd()
+    this.projectDir = options?.projectDir
+    this.lockMode = options?.lockMode ?? false
     this.additionalDirectories = (options?.additionalDirectories ?? [])
       .map((dir) => dir.trim())
       .filter((dir) => dir !== '')
@@ -581,7 +591,12 @@ export class PermissionGate {
     }
   }
 
+  isModeLocked(): boolean {
+    return this.lockMode
+  }
+
   setMode(mode: PermissionMode): void {
+    if (this.lockMode) return
     if (this.mode === mode) return
     if (mode === 'plan') {
       this.prePlanMode = this.mode
@@ -596,6 +611,7 @@ export class PermissionGate {
   }
 
   exitPlanMode(): PermissionMode {
+    if (this.lockMode) return this.mode
     if (this.mode !== 'plan') return this.mode
     const restoredMode = this.prePlanMode === 'plan' ? 'default' : this.prePlanMode
     this.prePlanMode = 'default'
@@ -608,6 +624,7 @@ export class PermissionGate {
 
   /** Transition gate into plan mode, saving the current mode. */
   prepareContextForPlanMode(): void {
+    if (this.lockMode) return
     this.setMode('plan')
   }
 
@@ -794,6 +811,7 @@ export class PermissionGate {
   private riskContextFor(): RiskContext {
     this.riskContext ??= createRiskContext({
       cwd: this.cwd,
+      ...(this.projectDir ? { projectDir: this.projectDir } : {}),
       additionalDirectories: this.additionalDirectories,
       ...(this.sessionId ? { sessionId: this.sessionId } : {}),
       ...(this.memoryDir ? { memoryDir: this.memoryDir } : {}),
@@ -824,7 +842,7 @@ export class PermissionGate {
     if (!slug || !filePath) return false
     const absolute = path.resolve(this.cwd, filePath)
     const name = path.basename(absolute)
-    return samePath(path.dirname(absolute), getPlansDir(this.cwd))
+    return samePath(path.dirname(absolute), getPlansDir(this.projectDir ?? this.cwd))
       && (name === `${slug}.md` || (name.startsWith(`${slug}-agent-`) && name.endsWith('.md')))
   }
 }

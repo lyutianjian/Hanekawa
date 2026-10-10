@@ -826,3 +826,41 @@ test('project context is cached per cwd and invalidated per cwd', async () => {
     await rm(projectB, { recursive: true, force: true })
   }
 })
+
+test('ContextBuilder maps coordination_update to a durable system-reminder user message', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  const records: SessionRecord[] = [
+    { type: 'message', id: 'u1', role: 'user', content: 'hi', createdAt: '2026-06-02T00:00:00.000Z' },
+    { id: 'cu1', type: 'coordination_update', content: 'board v1', createdAt: '2026-06-02T00:00:01.000Z' },
+  ]
+  const built = await builder.build({ records, tools: [], includeUserContext: false })
+  const item = built.contextItems.find((i) => i.kind === 'message' && i.message.id === 'cu1')
+  assert.ok(item && item.kind === 'message')
+  assert.equal(item.message.role, 'user')
+  assert.match(item.message.content, /^<system-reminder>\nboard v1\n<\/system-reminder>$/)
+  assert.notEqual(item.message.transient, true)
+})
+
+test('ContextBuilder places rolePrompt before the dynamic boundary and omits it when absent', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  const base = await builder.build({ records: [], tools: [], system: 'dyn-text', memoryPrompt: 'MEM' })
+  const withRole = await builder.build({ records: [], tools: [], system: 'dyn-text', memoryPrompt: 'MEM', rolePrompt: 'ROLE-TEXT' })
+  assert.doesNotMatch(base.system ?? '', /ROLE-TEXT/)
+  const sys = withRole.system ?? ''
+  assert.ok(sys.indexOf('MEM') < sys.indexOf('ROLE-TEXT'))
+  assert.ok(sys.indexOf('ROLE-TEXT') < sys.indexOf('dyn-text'))
+  const blocks = withRole.systemBlocks
+  if (blocks) {
+    const boundary = blocks.findIndex((b) => b.includes('DYNAMIC'))
+    const roleIdx = blocks.findIndex((b) => b.includes('ROLE-TEXT'))
+    if (boundary >= 0) assert.ok(roleIdx < boundary)
+  }
+})
+
+test('buildPostCompactRestore puts leading first and returns content with nothing else to restore', async () => {
+  const builder = new ContextBuilder(undefined, contextWindow(5000))
+  assert.equal(await builder.buildPostCompactRestore(undefined), undefined)
+  const restore = await builder.buildPostCompactRestore(undefined, 'LEADING-BLOCK')
+  assert.ok(restore)
+  assert.match(restore, /^<system-reminder>\nLEADING-BLOCK\n\nPrior conversation was compacted/)
+})

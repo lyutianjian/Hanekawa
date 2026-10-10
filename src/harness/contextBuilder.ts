@@ -24,6 +24,8 @@ export interface BuildContextInput {
   system?: string
   projectContext?: string
   memoryPrompt?: string
+  /** Fixed per scope; goes before the dynamic boundary so the cached prefix stays stable. */
+  rolePrompt?: string
   criticalSystemReminder?: string
   skills?: SkillDefinition[]
   contextManagement?: Partial<ContextManagementConfig>
@@ -199,6 +201,7 @@ export class ContextBuilder {
       input.skills ?? [],
       input.env,
       input.dynamicToolSearchEnabled ?? false,
+      input.rolePrompt,
     )
     const system = systemBlocks
       .filter((b) => b !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
@@ -331,6 +334,20 @@ export class ContextBuilder {
         continue
       }
 
+      if (record.type === 'coordination_update') {
+        contextItems.push({
+          kind: 'message',
+          message: {
+            id: record.id,
+            role: 'user',
+            content: wrapInSystemReminder(record.content),
+            createdAt: record.createdAt,
+            turnId: record.turnId,
+          },
+        })
+        continue
+      }
+
       if (record.type === 'tool_use_summary') {
         contextItems.push({
           kind: 'message',
@@ -356,11 +373,13 @@ export class ContextBuilder {
     skills: readonly SkillDefinition[] = [],
     env?: EnvironmentInfo,
     dynamicToolSearchEnabled = false,
+    rolePrompt?: string,
   ): string[] {
     const staticSections = [
       ...this.buildDefaultSystemSections(enabledSections ?? this.defaultEnabledSections),
       projectContext?.trim(),
       memoryPrompt?.trim(),
+      rolePrompt?.trim(),
       this.buildEnvironmentSystemSection(env),
       this.buildSkillsSystemSection(skills),
       // Deferred tools are announced via injected user message in the payload builder,
@@ -485,7 +504,7 @@ export class ContextBuilder {
    * The post-compact restore, built once and stored on the boundary record so
    * every later request replays the same bytes as part of the cached prefix.
    */
-  async buildPostCompactRestore(toolContext: ToolContext | undefined): Promise<string | undefined> {
+  async buildPostCompactRestore(toolContext: ToolContext | undefined, leading?: string): Promise<string | undefined> {
     const fileRestoreLimits = {
       maxEntries: 5,
       maxTokensPerEntry: 5_000,
@@ -506,9 +525,10 @@ export class ContextBuilder {
       ? `Previously discovered tools via ToolSearch (available for immediate use): ${[...discoveredNames].join(', ')}`
       : undefined
 
-    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0 && !discoveredBlock) return undefined
+    if (refreshedFiles.length === 0 && refreshed.inaccessibleFiles.length === 0 && restoredSkills.length === 0 && !discoveredBlock && !leading?.trim()) return undefined
 
     const innerContent = [
+      ...(leading?.trim() ? [leading.trim()] : []),
       'Prior conversation was compacted. The following recently used context has been restored for continuity:',
       ...refreshedFiles.map((entry) => `# restoredFile ${entry.name}\n${entry.content}`),
       ...refreshed.inaccessibleFiles.map((name) => `Note: previously read file ${name} is no longer accessible.`),

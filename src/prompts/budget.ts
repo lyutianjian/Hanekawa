@@ -239,6 +239,10 @@ export function countSessionRecordTokens(
     return countTextTokens(`${record.tool}\n${JSON.stringify(record.input ?? {})}`)
   }
 
+  if (record.type === 'coordination_update') {
+    return countTextTokens(record.content)
+  }
+
   if (record.type === 'tool_use_summary') {
     return countTextTokens(record.summary)
   }

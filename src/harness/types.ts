@@ -181,6 +181,18 @@ export interface CompactAttemptFailedRecord {
   turnId?: string
 }
 
+/**
+ * Coordinator board snapshot / pending notes, appended by the loop at the start
+ * of a step. Durable: replayed on every later request as a system reminder.
+ */
+export interface CoordinationUpdateRecord {
+  id: string
+  type: 'coordination_update'
+  content: string
+  createdAt: string
+  turnId?: string
+}
+
 export interface ToolUseSummaryRecord {
   id: string
   type: 'tool_use_summary'
@@ -400,6 +412,7 @@ export type SessionRecord =
   | CompactBoundaryRecord
   | CompactAttemptFailedRecord
   | ToolUseSummaryRecord
+  | CoordinationUpdateRecord
   | SubagentTranscriptRecord
   | SubagentTaskRecord
   | BackgroundTaskRecord

@@ -30,6 +30,8 @@
     "test/rendererSidebarView.test.ts",
     "test/rendererStatusView.test.ts",
     "test/rendererTaskPanelView.test.ts",
+    "test/rendererMergeBarView.test.ts",
+    "test/rendererThreadPanelView.test.ts",
     "test/rendererTitleBarView.test.ts",
     "test/rendererTranscriptView.test.ts",
     "test/rendererWelcomeView.test.ts",

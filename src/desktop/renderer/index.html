@@ -101,6 +101,12 @@
             <div id="task-panel"></div>
             <!-- Running background processes; empty (and not drawn) when there are none. -->
             <div id="process-strip"></div>
+            <!--
+              The merge reminder (stage 5): a thread canvas's own pending branch,
+              or the coordinator's summary of every one. Resident and in the
+              flow like the two strips above; empty when nothing waits.
+            -->
+            <div id="merge-bar"></div>
             <div id="composer">
               <!--
                 The permission request, drawn inside the capsule instead of over
@@ -230,6 +236,8 @@
           <div id="browser-hole"></div>
         </div>
         <div id="subagent-view" hidden></div>
+        <!-- The 「线程」 tab: the active project's coordination threads. -->
+        <div id="thread-view" hidden></div>
       </aside>
     </div>
     <!--

@@ -79,7 +79,7 @@ const openList = (root: StubView): StubView | undefined =>
     .flatMap((shell) => shell.children)
     .find((child) => child.classes.includes('titlebar-menu') && !child.hidden && !child.classes.includes('presence-closing'))
 
-test('the bar is the rail toggle and the three Chinese menus, in that order', (t) => {
+test('the bar is the rail toggle and the two Chinese menus, in that order', (t) => {
   const { render, root, stub, actions } = mount(t)
   render(viewOf())
 
@@ -87,7 +87,7 @@ test('the bar is the rail toggle and the three Chinese menus, in that order', (t
   assert.ok(children[0]?.classes.includes('titlebar-rail'))
   assert.deepEqual(
     shells(root()).map((shell) => shell.children[0]?.text),
-    ['文件', '视图', '帮助'],
+    ['文件', '视图'],
   )
 
   stub.click(children[0]?.node)
@@ -184,7 +184,7 @@ test('Escape closes an open menu and only then', (t) => {
   stub.dispatch(container, 'keydown', { key: 'Escape' })
   assert.deepEqual(menuRequests, [], 'Escape with nothing open must reach the app, not be eaten')
 
-  render(viewOf({ openMenu: 'help' }))
+  render(viewOf({ openMenu: 'view' }))
   stub.dispatch(container, 'keydown', { key: 'Escape' })
   assert.deepEqual(menuRequests, [undefined])
 })
@@ -199,7 +199,7 @@ test('every item names an action the model can enable, and toggling is idempoten
   }
   assert.equal(toggleMenu('file', 'file'), undefined)
   assert.equal(toggleMenu('file', 'view'), 'view')
-  assert.equal(toggleMenu(undefined, 'help'), 'help')
+  assert.equal(toggleMenu(undefined, 'view'), 'view')
 })
 
 test('macOS menus and the rail use the supplied Command labels, including on repaint', (t) => {

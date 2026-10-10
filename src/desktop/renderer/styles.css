@@ -456,6 +456,20 @@ body:has(#sidebar.collapsed) .titlebar-lead {
   flex-basis: 0;
   transition: flex-basis var(--motion-layout) var(--ease-exit);
 }
+/* The sidebar/canvas divider continues up through the caption strip so it runs
+   the window's full height: the canvas's own edge shadow starts below the bar. */
+.titlebar-lead { position: relative; align-self: stretch; }
+.titlebar-lead::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(-1 * var(--space-1) - 1px);
+  width: 1px;
+  background: var(--border-subtle);
+}
+body:has(#sidebar.collapsed) .titlebar-lead::after,
+body.settings-open .titlebar-lead::after { display: none; }
 .titlebar-rail {
   display: inline-flex;
   align-items: center;
@@ -661,7 +675,7 @@ body:has(#sidebar.collapsed) .titlebar-lead {
   /* The line's height is reserved from the start: `statusView` writes empty
      strings on a fresh session, and a strip that only grew once the first turn
      reported usage pushed the whole composer up by its height mid-session. */
-  min-height: 20px;
+  min-height: 16px;
   box-sizing: border-box;
   color: var(--text-tertiary);
   font-size: var(--type-meta);
@@ -761,7 +775,7 @@ body:has(#sidebar.collapsed) .titlebar-lead {
   margin: 0;
   background: var(--surface-canvas);
   overflow: hidden;
-  box-shadow: -1px 0 0 var(--border-strong);
+  box-shadow: -1px 0 0 var(--border-subtle);
 }
 
 /* --- sidebar --- */
@@ -3058,7 +3072,7 @@ button.welcome-pill:hover { background: var(--surface-hover); color: var(--text-
   /* `.transcript`'s gutter, less the overhang: the capsule reaches closer to the
      canvas edge than the transcript does, so the text inside it still lands on
      the transcript's axis at every window width. */
-  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) var(--space-2);
+  padding: 0 calc(var(--reading-gutter) - var(--composer-overhang)) 0;
 }
 /* The composer's half of the reading column; kept in step with
    `.transcript-column`, so a question and its answer share one axis — one

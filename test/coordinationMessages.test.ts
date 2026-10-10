@@ -40,7 +40,7 @@ test('composeThreadKickoff in a shared directory orders background, task and rul
   assert.match(text, /Do only the assigned task/)
   assert.match(text, /exactly one question with AskCoordinator/)
   assert.match(text, /Begin your final message with a one-line summary/)
-  assert.match(text, /shared\. Only touch files you own/)
+  assert.match(text, /shared with other sessions\. Do not change files/)
   assert.match(text, /cannot start threads/)
   assert.doesNotMatch(text, /git worktree/)
 })
@@ -52,7 +52,7 @@ test('composeThreadKickoff in a worktree names the branch to commit to', () => {
     worktree: { branch: 'hanekawa/x-1' },
   })
   assert.match(text, /git worktree\. When done, commit your changes to branch hanekawa\/x-1/)
-  assert.doesNotMatch(text, /shared\. Only touch/)
+  assert.doesNotMatch(text, /Do not change files/)
 })
 
 test('formatThreadNote labels the report as quoted thread output', () => {

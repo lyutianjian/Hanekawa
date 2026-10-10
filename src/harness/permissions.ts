@@ -360,7 +360,7 @@ export class PermissionGate {
       const askedByRule = mode === 'bypass' ? undefined : this.matchingRule('ask', tool.name, input, risk)
       if (!askedByRule || this.coveredBy(this.sessionRuleStore.rules, tool.name, input, risk)) return allow('mode')
       if (mode === 'readonly') {
-        return deny('ask rule', `The user asked to confirm ${permissionRuleToEntry(askedByRule)} before it runs, and read-only mode cannot ask. Ask the user to run it themselves or to switch permission mode.`)
+        return deny('ask rule', `The user asked to confirm ${permissionRuleToEntry(askedByRule)} before it runs, and read-only mode cannot ask. ${this.lockMode ? 'Ask the user to run it themselves.' : 'Ask the user to run it themselves or to switch permission mode.'}`)
       }
       return this.ask(tool, input, risk, 'ask rule', askedByRule)
     }
@@ -383,7 +383,7 @@ export class PermissionGate {
     const askedBy = mode === 'bypass' ? undefined : this.matchingRule('ask', tool.name, input, risk)
     if (askedBy && !this.coveredBy(this.sessionRuleStore.rules, tool.name, input, risk)) {
       if (mode === 'readonly') {
-        return deny('ask rule', `The user asked to confirm ${permissionRuleToEntry(askedBy)} before it runs, and read-only mode cannot ask. Ask the user to run it themselves or to switch permission mode.`)
+        return deny('ask rule', `The user asked to confirm ${permissionRuleToEntry(askedBy)} before it runs, and read-only mode cannot ask. ${this.lockMode ? 'Ask the user to run it themselves.' : 'Ask the user to run it themselves or to switch permission mode.'}`)
       }
       return this.ask(tool, input, risk, 'ask rule', askedBy)
     }
@@ -395,7 +395,7 @@ export class PermissionGate {
       // A read-only call that starts something writable (an Agent of a writing type) still is not one.
       return level === 'readonly' && tool.isReadOnlyInput?.(input) !== false
         ? allow('mode')
-        : deny('readonly mode', `Read-only permission mode blocks ${tool.name}${risk.reasons.length > 0 ? `: ${reasonList(risk)}` : '.'} Ask the user to leave read-only mode if this call is needed.`)
+        : deny('readonly mode', `Read-only permission mode blocks ${tool.name}${risk.reasons.length > 0 ? `: ${reasonList(risk)}` : '.'} ${this.lockMode ? 'This session is locked in read-only mode.' : 'Ask the user to leave read-only mode if this call is needed.'}`)
     }
 
     // 6. An allow rule or an earlier approval that covers this tier.

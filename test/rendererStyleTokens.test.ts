@@ -938,7 +938,7 @@ test('the canvas is a flush clipped pane divided by a hairline', () => {
   // A shadow, not a border: a border would inset the `absolute; inset: 0` scrims.
   const line = canvas.decls.find((decl) => decl.prop === 'box-shadow')
   assert.ok(line, '#canvas needs the divider against the sidebar')
-  assert.match(line.value, /var\(--border-strong\)/)
+  assert.match(line.value, /var\(--border-subtle\)/)
   assert.ok(
     !canvas.decls.some((decl) => decl.prop === 'border' || decl.prop.startsWith('border-width')),
     '#canvas must not use a border: it would move the modal scrim off the canvas edge',

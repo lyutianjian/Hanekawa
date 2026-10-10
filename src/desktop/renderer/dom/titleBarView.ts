@@ -15,7 +15,7 @@ import { createPresence } from './presence.js'
 /**
  * The frameless window's own title bar (5g).
  *
- * Left to right: the sidebar rail toggle and 文件 / 视图 / 帮助 (the lead group,
+ * Left to right: the sidebar rail toggle and 文件 / 视图 (the lead group,
  * as wide as the sidebar so what follows starts on the canvas's edge), then the
  * canvas header, then the browser panel's rail toggle at the far end. `dom/windowChrome.ts` reserves the native
  * controls' measured space: left on macOS, normally right on Windows/Linux.

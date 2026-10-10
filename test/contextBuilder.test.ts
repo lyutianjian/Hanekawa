@@ -42,7 +42,7 @@ test('ContextBuilder injects layered system and user context', async () => {
   assert.match(built.system ?? '', /# Using your tools/)
   assert.match(built.system ?? '', /Prefer dedicated tools over Bash/)
   assert.deepEqual(built.systemBlocks?.map((block) => block.slice(0, 40)), [
-    'You are Hanekawa, an interactive CLI age',
+    'You are Hanekawa, an interactive coding ',
     '# System\n - All text you output outside ',
     '# Doing tasks\n - The user will request s',
     '# Executing actions with care\n\nConsider ',
@@ -134,7 +134,7 @@ test('ContextBuilder can build a reduced system prompt from enabled sections', a
   assert.doesNotMatch(built.system ?? '', /# Using your tools/)
   assert.doesNotMatch(built.system ?? '', /# Tone and style/)
   assert.deepEqual(built.systemBlocks?.map((block) => block.slice(0, 40)), [
-    'You are Hanekawa, an interactive CLI age',
+    'You are Hanekawa, an interactive coding ',
     '# Doing tasks\n - The user will request s',
   ])
 })

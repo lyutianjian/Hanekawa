@@ -62,6 +62,7 @@ function snapshotOf(): WireSettingsSnapshot {
       microCompactThresholdRatio: 0.9,
       autoCompactThresholdRatio: 0.93,
     },
+    coordination: { quietDays: 7, autoResolveDays: 14 },
     general: { localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json' },
     userInstructions: '',
   }

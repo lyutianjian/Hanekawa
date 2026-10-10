@@ -153,6 +153,7 @@ function snapshotOf(overrides: Partial<WireSettingsSnapshot> = {}): WireSettings
       microCompactThresholdRatio: 0.9,
       autoCompactThresholdRatio: 0.93,
     },
+    coordination: { quietDays: 7, autoResolveDays: 14 },
     general: { localPath: 'C:\\repo\\alpha\\.myagent\\settings.local.json' },
     userInstructions: '',
     ...overrides,
@@ -1460,6 +1461,34 @@ test('a context number is validated here, so a typo is not a host error', () => 
       { scope: 'general', kind: 'set-context-management', field: 'contextWindow', value: 200000 },
     ], typed)
   }
+})
+
+test('the 项目调度 card maps selects and day inputs to coordination changes', () => {
+  const state = openState({ category: 'agent', snapshot: snapshotOf({ coordination: { threadModel: 'a', quietDays: 7, autoResolveDays: 14 } }) })
+  const card = settingsView(state).cards.find((c) => c.title === '项目调度')
+  assert.ok(card)
+  assert.deepEqual(card.rows.map((r) => r.id), [
+    'agent:coordination-coordinator-model',
+    'agent:coordination-coordinator-effort',
+    'agent:coordination-thread-model',
+    'agent:coordination-thread-effort',
+    'agent:coordination-quietDays',
+    'agent:coordination-autoResolveDays',
+  ])
+  const threadModel = card.rows[2]!.control
+  assert.ok(threadModel.kind === 'select')
+  assert.equal(threadModel.value, 'a')
+  assert.equal(threadModel.choices[0]!.label, '跟随默认')
+
+  const days = applySettingsIntent(state, { kind: 'set-coordination-days', field: 'quietDays', value: '0' })
+  assert.deepEqual(days.changes, [{ scope: 'agent', kind: 'set-coordination-days', field: 'quietDays', value: 0 }])
+  assert.deepEqual([...pendingRowIds([{ change: days.changes![0]! } as PendingMutation])], ['agent:coordination-quietDays'])
+  for (const bad of ['', '-1', '1.5', 'x']) {
+    const out = applySettingsIntent(state, { kind: 'set-coordination-days', field: 'quietDays', value: bad })
+    assert.equal(out.changes, undefined, bad)
+  }
+  const effort = applySettingsIntent(state, { kind: 'set-coordination-effort', role: 'thread', value: 'inherit' })
+  assert.deepEqual(effort.changes, [{ scope: 'agent', kind: 'set-coordination-effort', role: 'thread', value: 'inherit' }])
 })
 
 // --- effects -----------------------------------------------------------------

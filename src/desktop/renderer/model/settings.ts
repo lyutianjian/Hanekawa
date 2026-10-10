@@ -700,6 +700,24 @@ function projectOne(snapshot: WireSettingsSnapshot, change: SettingsChange): Wir
         ...snapshot,
         contextManagement: { ...snapshot.contextManagement, [change.field]: change.value },
       }
+    case 'set-coordination-model': {
+      const key = change.role === 'coordinator' ? 'coordinatorModel' : 'threadModel'
+      const { [key]: _drop, ...rest } = snapshot.coordination
+      return {
+        ...snapshot,
+        coordination: change.value === INHERIT ? rest : { ...rest, [key]: change.value },
+      }
+    }
+    case 'set-coordination-effort': {
+      const key = change.role === 'coordinator' ? 'coordinatorEffort' : 'threadEffort'
+      const { [key]: _drop, ...rest } = snapshot.coordination
+      return {
+        ...snapshot,
+        coordination: change.value === INHERIT ? rest : { ...rest, [key]: change.value },
+      }
+    }
+    case 'set-coordination-days':
+      return { ...snapshot, coordination: { ...snapshot.coordination, [change.field]: change.value } }
     case 'set-permission-entries':
       return {
         ...snapshot,
@@ -799,6 +817,15 @@ export function pendingRowIds(pending: readonly PendingMutation[]): Set<string> 
         break
       case 'set-context-management':
         ids.add(`context:${change.field}`)
+        break
+      case 'set-coordination-model':
+        ids.add(`agent:coordination-${change.role}-model`)
+        break
+      case 'set-coordination-effort':
+        ids.add(`agent:coordination-${change.role}-effort`)
+        break
+      case 'set-coordination-days':
+        ids.add(`agent:coordination-${change.field}`)
         break
       case 'set-startup-permission-mode':
         ids.add('permissions:mode')
@@ -1360,6 +1387,7 @@ function permissionGroupCard(group: WirePermissionGroup, localPath: string): Set
 function agentCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
   const choices = routingOptions(snapshot)
   return [
+    coordinationCard(snapshot),
     {
       id: 'agents',
       title: '子代理',
@@ -1391,6 +1419,75 @@ function agentCards(snapshot: WireSettingsSnapshot): SettingsCard[] {
       ],
     },
   ]
+}
+
+// --- project coordination ------------------------------------------------------
+
+const COORDINATION_INHERIT_CHOICE = { value: INHERIT, label: '跟随默认' }
+const COORDINATION_DAY_LABELS = { quietDays: '安静天数', autoResolveDays: '自动结案天数' } as const
+const COORDINATION_DAY_DETAILS = {
+  quietDays: '线程这么多天没有动静后算作安静。0 表示关闭。',
+  autoResolveDays: '线程安静这么多天后自动结案。0 表示关闭。',
+} as const
+
+function coordinationCard(snapshot: WireSettingsSnapshot): SettingsCard {
+  const c = snapshot.coordination
+  const modelChoices = [
+    COORDINATION_INHERIT_CHOICE,
+    ...snapshot.models.map((model) => ({
+      value: model.key,
+      label: model.resolves ? model.key : `${model.key}（无法解析）`,
+    })),
+  ]
+  const effortChoices = [
+    COORDINATION_INHERIT_CHOICE,
+    ...VALID_EFFORT_LEVELS.map((level) => ({ value: level, label: EFFORT_LABELS[level] })),
+  ]
+  const roles = [
+    { role: 'coordinator' as const, name: '协调会话', model: c.coordinatorModel, effort: c.coordinatorEffort },
+    { role: 'thread' as const, name: '线程默认', model: c.threadModel, effort: c.threadEffort },
+  ]
+  const rows: SettingsRow[] = roles.flatMap(({ role, name, model, effort }) => [
+    {
+      id: `agent:coordination-${role}-model`,
+      label: `${name}模型`,
+      control: {
+        kind: 'select' as const,
+        value: model ?? INHERIT,
+        choices: modelChoices,
+        intentOnChange: (value: string): SettingsIntent => ({ kind: 'set-coordination-model', role, value }),
+      },
+    },
+    {
+      id: `agent:coordination-${role}-effort`,
+      label: `${name}推理强度`,
+      control: {
+        kind: 'select' as const,
+        value: effort ?? INHERIT,
+        choices: effortChoices,
+        intentOnChange: (value: string): SettingsIntent => ({ kind: 'set-coordination-effort', role, value }),
+      },
+    },
+  ])
+  for (const field of ['quietDays', 'autoResolveDays'] as const) {
+    rows.push({
+      id: `agent:coordination-${field}`,
+      label: COORDINATION_DAY_LABELS[field],
+      detail: COORDINATION_DAY_DETAILS[field],
+      control: {
+        kind: 'input' as const,
+        value: String(c[field]),
+        unit: '天',
+        intentOnCommit: (value: string): SettingsIntent => ({ kind: 'set-coordination-days', field, value }),
+      },
+    })
+  }
+  return {
+    id: 'coordination',
+    title: '项目调度',
+    note: `${SAVED_LOCAL}「跟随默认」表示沿用主对话的设置。`,
+    rows,
+  }
 }
 
 /** Every mode an agent file may name, not just the three the startup select offers. */
@@ -2179,6 +2276,9 @@ export type SettingsIntent =
   | { kind: 'reload-agent-definitions' }
   | { kind: 'set-cache-ttl'; enabled: boolean }
   | { kind: 'set-thinking'; enabled: boolean }
+  | { kind: 'set-coordination-model'; role: 'coordinator' | 'thread'; value: string }
+  | { kind: 'set-coordination-effort'; role: 'coordinator' | 'thread'; value: string }
+  | { kind: 'set-coordination-days'; field: 'quietDays' | 'autoResolveDays'; value: string }
   | { kind: 'set-context-value'; field: WireContextManagementField; value: string }
   | { kind: 'set-skill-enabled'; name: string; enabled: boolean }
   | { kind: 'reload-skills' }
@@ -2696,6 +2796,33 @@ function reduceSettingsIntent(state: SettingsState, intent: SettingsIntent): Set
         state: { ...cleared, busy: true },
         changes: [{ scope: 'general', kind: 'set-thinking', enabled: intent.enabled }],
       }
+    case 'set-coordination-model':
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'agent', kind: 'set-coordination-model', role: intent.role, value: intent.value }],
+      }
+    case 'set-coordination-effort': {
+      const value = intent.value as EffortLevel | typeof INHERIT
+      if (value !== INHERIT && !VALID_EFFORT_LEVELS.includes(value)) {
+        return { state: { ...state, error: '推理强度无效。', openMenu: undefined } }
+      }
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'agent', kind: 'set-coordination-effort', role: intent.role, value }],
+      }
+    }
+    case 'set-coordination-days': {
+      const label = COORDINATION_DAY_LABELS[intent.field]
+      const text = intent.value.trim()
+      const parsed = text === '' ? NaN : Number(text)
+      if (!Number.isSafeInteger(parsed) || parsed < 0) {
+        return { state: { ...state, error: `${label}必须是不小于 0 的整数。`, openMenu: undefined } }
+      }
+      return {
+        state: { ...cleared, busy: true },
+        changes: [{ scope: 'agent', kind: 'set-coordination-days', field: intent.field, value: parsed }],
+      }
+    }
     case 'set-context-value': {
       const parsed = parseContextValue(intent.field, intent.value)
       if (typeof parsed !== 'number') return { state: { ...state, error: parsed.error, openMenu: undefined } }

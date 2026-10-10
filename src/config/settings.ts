@@ -420,10 +420,10 @@ export async function loadLocalSettings(cwd: string): Promise<MyAgentSettings> {
 
 /** The keys {@link updateLocalSettings} is allowed to rewrite. */
 export type LocalSettingsPatch = {
-  [K in 'permissions' | 'mcp' | 'skills' | 'cache' | 'thinking' | 'mcpServers']?: MyAgentSettings[K]
+  [K in 'permissions' | 'mcp' | 'skills' | 'cache' | 'thinking' | 'mcpServers' | 'coordination']?: MyAgentSettings[K]
 }
 
-const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'skills', 'cache', 'thinking', 'mcpServers'] as const
+const LOCAL_PATCH_KEYS = ['permissions', 'mcp', 'skills', 'cache', 'thinking', 'mcpServers', 'coordination'] as const
 
 /**
  * Rewrites the named keys in the local layer and leaves the rest of that file
@@ -611,6 +611,23 @@ export async function trustMcpServerLocally(cwd: string, serverName: string): Pr
  */
 export async function setLocalThinking(cwd: string, enabled: boolean): Promise<void> {
   await updateLocalSettings(cwd, { thinking: enabled })
+}
+
+/**
+ * Merges coordination fields into the local layer. A field set to `undefined`
+ * is deleted (back to inheriting); the group itself goes when nothing is left.
+ */
+export async function setLocalCoordination(
+  cwd: string,
+  patch: { [K in keyof CoordinationSettings]?: CoordinationSettings[K] | undefined },
+): Promise<void> {
+  const local = await loadLocalSettings(cwd)
+  const next: CoordinationSettings = { ...local.coordination }
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) delete next[key as keyof CoordinationSettings]
+    else (next as Record<string, unknown>)[key] = value
+  }
+  await updateLocalSettings(cwd, { coordination: Object.keys(next).length > 0 ? next : undefined })
 }
 
 /** The 1-hour prompt-cache TTL, in the local layer. */

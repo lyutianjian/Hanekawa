@@ -14,6 +14,8 @@ import {
   localSettingsPath,
   setLocalCacheTtl1h,
   setLocalThinking,
+  coordinationSettings,
+  setLocalCoordination,
   setLocalPermissionEntries,
   setLocalStartupPermissionMode,
   setMcpServerTrustLocally,
@@ -32,6 +34,7 @@ import { SessionStore } from '../sessions/service.js'
 import type { McpServerConfig } from '../services/mcp/index.js'
 import { BUILT_IN_AGENT_DEFINITIONS, type BaseAgentDefinition } from '../tools/AgentTool/AgentTool.js'
 import { SkillsService, type SkillDefinition } from '../services/skills/skillsService.js'
+import { DEFAULT_AUTO_RESOLVE_DAYS, DEFAULT_QUIET_DAYS } from '../services/coordination/lifecycle.js'
 import { importSkill } from '../services/skills/importSkill.js'
 import { readUserInstructions, writeUserInstructions } from '../services/context/projectContext.js'
 import { peekSessions } from './recentProjects.js'
@@ -76,6 +79,7 @@ import {
   type WireSettingsSnapshot,
   type WireAgentDefinitionInfo,
   type WireContextManagementInfo,
+  type WireCoordinationSettingsInfo,
   type WireEndpointInfo,
   type WireMcpServerInfo,
   type WireSkillInfo,
@@ -544,6 +548,30 @@ const SETTINGS_CHANGE_SCHEMAS = {
     .strict(),
   'reload-agent-definitions': z
     .object({ scope: z.literal('agent'), kind: z.literal('reload-agent-definitions') })
+    .strict(),
+  'set-coordination-model': z
+    .object({
+      scope: z.literal('agent'),
+      kind: z.literal('set-coordination-model'),
+      role: z.enum(['coordinator', 'thread']),
+      value: z.string().min(1),
+    })
+    .strict(),
+  'set-coordination-effort': z
+    .object({
+      scope: z.literal('agent'),
+      kind: z.literal('set-coordination-effort'),
+      role: z.enum(['coordinator', 'thread']),
+      value: z.union([z.enum(VALID_EFFORT_LEVELS), z.literal('inherit')]),
+    })
+    .strict(),
+  'set-coordination-days': z
+    .object({
+      scope: z.literal('agent'),
+      kind: z.literal('set-coordination-days'),
+      field: z.enum(['quietDays', 'autoResolveDays']),
+      value: z.number().int().min(0),
+    })
     .strict(),
   'set-cache-ttl': z
     .object({ scope: z.literal('general'), kind: z.literal('set-cache-ttl'), enabled: z.boolean() })
@@ -1927,6 +1955,7 @@ export class ShellHost<
       mcpServers,
       contextManagement,
       userInstructions: await readUserInstructions(),
+      coordination: describeCoordination(merged),
       general: {
         localPath: localSettingsPath(entry.cwd),
         ...(merged.cache?.ttl1h !== undefined ? { cacheTtl1h: merged.cache.ttl1h } : {}),
@@ -2148,6 +2177,19 @@ function splitPermissionGroup(
 }
 
 /** One skill row: its frontmatter, minus the body and the hook commands. */
+/** Merged coordination settings with the default day counts filled in. */
+function describeCoordination(merged: ReturnType<ShellLaneProject['getSettings']>): WireCoordinationSettingsInfo {
+  const c = coordinationSettings(merged)
+  return {
+    ...(c.coordinatorModel !== undefined ? { coordinatorModel: c.coordinatorModel } : {}),
+    ...(c.coordinatorEffort !== undefined ? { coordinatorEffort: c.coordinatorEffort } : {}),
+    ...(c.threadModel !== undefined ? { threadModel: c.threadModel } : {}),
+    ...(c.threadEffort !== undefined ? { threadEffort: c.threadEffort } : {}),
+    quietDays: c.quietDays ?? DEFAULT_QUIET_DAYS,
+    autoResolveDays: c.autoResolveDays ?? DEFAULT_AUTO_RESOLVE_DAYS,
+  }
+}
+
 function describeSkill(skill: SkillDefinition, enabled: boolean): WireSkillInfo {
   const info: WireSkillInfo = {
     name: skill.name,
@@ -2267,6 +2309,29 @@ async function applySettingsEffect<P extends ShellLaneProject, W extends ShellLa
       // A runtime hands its Agent tool the definitions that existed when it was
       // built, so without the rebuild the reload only reaches the next one.
       return { saveConfig: false, rebuild: true, scope: 'models' }
+    case 'set-coordination-model': {
+      if (change.value !== 'inherit' && entry.project.config.get().models[change.value] === undefined) {
+        throw new Error(`No model named ${change.value}`)
+      }
+      const value = change.value === 'inherit' ? undefined : change.value
+      await setLocalCoordination(
+        entry.cwd,
+        change.role === 'coordinator' ? { coordinatorModel: value } : { threadModel: value },
+      )
+      // Read live through `port.settings` when a coordinator or thread starts.
+      return { saveConfig: false, rebuild: false, scope: 'models' }
+    }
+    case 'set-coordination-effort': {
+      const value = change.value === 'inherit' ? undefined : change.value
+      await setLocalCoordination(
+        entry.cwd,
+        change.role === 'coordinator' ? { coordinatorEffort: value } : { threadEffort: value },
+      )
+      return { saveConfig: false, rebuild: false, scope: 'models' }
+    }
+    case 'set-coordination-days':
+      await setLocalCoordination(entry.cwd, { [change.field]: change.value })
+      return { saveConfig: false, rebuild: false, scope: 'models' }
     case 'set-cache-ttl':
       await setLocalCacheTtl1h(entry.cwd, change.enabled)
       // `cacheRuntime` is captured at runtime construction, so this one does

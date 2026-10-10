@@ -13,6 +13,7 @@ import {
   loadMergedSettings,
   localSettingsPath,
   setLocalCacheTtl1h,
+  setLocalCoordination,
   setLocalPermissionEntries,
   setLocalStartupPermissionMode,
   setMcpServerTrustLocally,
@@ -462,4 +463,17 @@ test('coordination: negative or non-finite days and non-string models are reject
   assert.match(invalid({ coordinatorModel: 3 }).errors.join('\n'), /coordination\.coordinatorModel must be a string/)
   assert.match(invalid({ threadEffort: 'extreme' }).errors.join('\n'), /coordination\.threadEffort/)
   assert.equal(invalid({ quietDays: 0, autoResolveDays: 7.5, threadModel: 'm' }).valid, true)
+})
+
+test('setLocalCoordination merges fields, deletes cleared ones, and drops an empty group', async () => {
+  await withLocalLayer({}, async (cwd) => {
+    await setLocalCoordination(cwd, { threadModel: 'small', quietDays: 2 })
+    await setLocalCoordination(cwd, { coordinatorEffort: 'high', quietDays: undefined })
+    assert.deepEqual((await loadLocalSettings(cwd)).coordination, {
+      threadModel: 'small',
+      coordinatorEffort: 'high',
+    })
+    await setLocalCoordination(cwd, { threadModel: undefined, coordinatorEffort: undefined })
+    assert.equal((await loadLocalSettings(cwd)).coordination, undefined)
+  })
 })

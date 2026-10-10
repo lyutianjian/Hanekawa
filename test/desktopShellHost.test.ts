@@ -728,6 +728,9 @@ const SETTINGS_CHANGE_SAMPLES = {
     mode: 'auto',
   },
   'reload-agent-definitions': { scope: 'agent', kind: 'reload-agent-definitions' },
+  'set-coordination-model': { scope: 'agent', kind: 'set-coordination-model', role: 'coordinator', value: 'big' },
+  'set-coordination-effort': { scope: 'agent', kind: 'set-coordination-effort', role: 'thread', value: 'high' },
+  'set-coordination-days': { scope: 'agent', kind: 'set-coordination-days', field: 'quietDays', value: 5 },
   'set-cache-ttl': { scope: 'general', kind: 'set-cache-ttl', enabled: true },
   'set-thinking': { scope: 'general', kind: 'set-thinking', enabled: false },
   'set-context-management': {
@@ -2256,6 +2259,65 @@ test('the startup mode is stored locally and reported as local', async () => {
     assert.equal(result.settings.permissions.mode, 'auto')
     assert.equal(result.settings.permissions.modeIsLocal, true)
     assert.equal(h.project.config.saves, 0)
+  })
+})
+
+test('coordination settings: local layer, inherit clears, strict validation', async () => {
+  await withSettingsDir({}, async (h, cwd) => {
+    seedConfig(h.project)
+    const defaults = (await h.client.getSettings(h.entry.root)).settings.coordination
+    assert.deepEqual(defaults, { quietDays: 3, autoResolveDays: 7 })
+
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'agent', kind: 'set-coordination-model', role: 'coordinator', value: 'small',
+    })
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'agent', kind: 'set-coordination-effort', role: 'thread', value: 'high',
+    })
+    const result = await h.client.changeSettings(h.entry.root, {
+      scope: 'agent', kind: 'set-coordination-days', field: 'autoResolveDays', value: 0,
+    })
+    assert.deepEqual((await readLocalLayer(cwd)).coordination, {
+      coordinatorModel: 'small', threadEffort: 'high', autoResolveDays: 0,
+    })
+    assert.deepEqual(result.settings.coordination, {
+      coordinatorModel: 'small', threadEffort: 'high', quietDays: 3, autoResolveDays: 0,
+    })
+    assert.equal(result.rebuiltLanes, 0)
+    assert.equal(h.project.config.saves, 0)
+
+    await assert.rejects(
+      h.client.changeSettings(h.entry.root, {
+        scope: 'agent', kind: 'set-coordination-model', role: 'thread', value: 'nope',
+      }),
+      /No model named nope/,
+    )
+    for (const value of [1.5, -1]) {
+      await assert.rejects(
+        h.client.changeSettings(h.entry.root, {
+          scope: 'agent', kind: 'set-coordination-days', field: 'quietDays', value,
+        }),
+      )
+    }
+    assert.equal(
+      parseShellCommand({
+        type: 'settings-change', id: 'x', projectRoot: 'r',
+        change: { scope: 'agent', kind: 'set-coordination-effort', role: 'thread', value: 'bogus' },
+      }).ok,
+      false,
+    )
+
+    const cleared = await h.client.changeSettings(h.entry.root, {
+      scope: 'agent', kind: 'set-coordination-model', role: 'coordinator', value: 'inherit',
+    })
+    assert.equal(cleared.settings.coordination.coordinatorModel, undefined)
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'agent', kind: 'set-coordination-effort', role: 'thread', value: 'inherit',
+    })
+    await h.client.changeSettings(h.entry.root, {
+      scope: 'agent', kind: 'set-coordination-days', field: 'autoResolveDays', value: 7,
+    })
+    assert.deepEqual((await readLocalLayer(cwd)).coordination, { autoResolveDays: 7 })
   })
 })
 

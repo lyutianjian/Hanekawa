@@ -482,6 +482,19 @@ export type WireContextManagementField = (typeof CONTEXT_MANAGEMENT_FIELDS)[numb
 /** Merged over the defaults, so every field has a number to draw. */
 export type WireContextManagementInfo = Record<WireContextManagementField, number>
 
+/**
+ * Merged coordination settings. A model or effort that is absent inherits; the
+ * day counts always carry a number (the default filled in), 0 meaning off.
+ */
+export interface WireCoordinationSettingsInfo {
+  coordinatorModel?: string
+  coordinatorEffort?: EffortLevel
+  threadModel?: string
+  threadEffort?: EffortLevel
+  quietDays: number
+  autoResolveDays: number
+}
+
 export interface WireGeneralInfo {
   /** `localSettingsPath(cwd)`, `~/.myagent/projects/<key>/settings.local.json`, same file the permission groups use. */
   localPath: string
@@ -526,6 +539,7 @@ export interface WireSettingsSnapshot {
   /** From `config.json`, not the settings layers — see `setContextManagement`. */
   contextManagement: WireContextManagementInfo
   general: WireGeneralInfo
+  coordination: WireCoordinationSettingsInfo
   /** `~/.myagent/AGENTS.md`; empty when the file does not exist. Global, not per project. */
   userInstructions: string
 }
@@ -581,6 +595,12 @@ export type SettingsChange =
   | { scope: 'permissions'; kind: 'set-startup-permission-mode'; mode: 'default' | 'auto' | 'bypass' }
   /** An action, not a write: re-reads `.myagent/agents/` and rebuilds runtimes. */
   | { scope: 'agent'; kind: 'reload-agent-definitions' }
+  /** Local layer. `'inherit'` clears the setting; otherwise a model key from the snapshot. */
+  | { scope: 'agent'; kind: 'set-coordination-model'; role: 'coordinator' | 'thread'; value: string }
+  /** Local layer. `'inherit'` clears the setting. */
+  | { scope: 'agent'; kind: 'set-coordination-effort'; role: 'coordinator' | 'thread'; value: EffortLevel | 'inherit' }
+  /** Local layer; an integer >= 0, where 0 turns the rule off. */
+  | { scope: 'agent'; kind: 'set-coordination-days'; field: 'quietDays' | 'autoResolveDays'; value: number }
   | { scope: 'general'; kind: 'set-cache-ttl'; enabled: boolean }
   | { scope: 'general'; kind: 'set-thinking'; enabled: boolean }
   | { scope: 'personalization'; kind: 'set-user-instructions'; content: string }

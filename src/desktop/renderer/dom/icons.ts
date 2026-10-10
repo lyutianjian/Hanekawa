@@ -126,16 +126,16 @@ const ICONS = {
     paths: ['M8 1.25a6.75 6.75 0 1 1 0 13.5a6.75 6.75 0 1 1 0-13.5zM8 2.5a5.5 5.5 0 1 0 0 11a5.5 5.5 0 1 0 0-11zM5.9 5.9h4.2v4.2H5.9z'],
     filled: true,
   },
-  // The settings gear, as a computed polygon rather than a traced one. The path
-  // it replaced was a 24-grid Feather gear squeezed onto this 16-grid: its arc
-  // radii were wider than the space left between teeth, so the shape folded in
-  // on itself at 14px. This one is eight teeth on radii 6.35/4.55 about (8,8),
-  // each tooth tapering from an 36°-wide base to a 24°-wide top — a 1.8 tooth
-  // depth against the 1.5 stroke, the same ratio the reference sets keep.
+  // The settings mark: two sliders, outlined like every other icon here. It
+  // replaced a polygon gear that read as heavy and jagged at 14px.
   gear: {
     paths: [
-      'M12.33 6.59 14.21 6.68 14.21 9.32 12.33 9.41 12.05 10.07 13.33 11.46 11.46 13.33 10.07 12.05 9.41 12.33 9.32 14.21 6.68 14.21 6.59 12.33 5.93 12.05 4.54 13.33 2.67 11.46 3.95 10.07 3.67 9.41 1.79 9.32 1.79 6.68 3.67 6.59 3.95 5.93 2.67 4.54 4.54 2.67 5.93 3.95 6.59 3.67 6.68 1.79 9.32 1.79 9.41 3.67 10.07 3.95 11.46 2.67 13.33 4.54 12.05 5.93Z',
-      'M8 5.85a2.15 2.15 0 1 1 0 4.3 2.15 2.15 0 0 1 0-4.3z',
+      'M2.5 4.5H8.5',
+      'M11.5 4.5H13.5',
+      'M10 3a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z',
+      'M2.5 11.5H4.5',
+      'M7.5 11.5H13.5',
+      'M6 10a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z',
     ],
   },
   // --- the empty-state screen ---

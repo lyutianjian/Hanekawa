@@ -762,7 +762,7 @@ body:has(#sidebar.collapsed) .titlebar-lead {
   margin: 0;
   background: var(--surface-canvas);
   overflow: hidden;
-  box-shadow: -1px 0 0 var(--border-subtle);
+  box-shadow: -1px 0 0 var(--border-strong);
 }
 
 /* --- sidebar --- */
@@ -878,9 +878,11 @@ body.resizing #sidebar { transition: none; }
   display: flex;
   flex-direction: column;
   margin: 0;
-  background: var(--surface-canvas);
+  /* Same tone as the sidebar (the frame), so both columns read as chrome
+     around the lighter canvas, with a stronger hairline on its edge. */
+  background: var(--surface-base);
   overflow: hidden;
-  box-shadow: -1px 0 0 var(--border-subtle);
+  box-shadow: -1px 0 0 var(--border-strong);
 }
 #browser-panel[hidden] { display: none; }
 /* The hole. No padding, no border, no transform — it is a measurement, and
@@ -1293,7 +1295,8 @@ body.settings-open #browser-resizer { display: none; }
   color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  min-height: 28px;
   font: inherit;
   font-size: var(--type-meta);
   white-space: nowrap;
@@ -1320,7 +1323,8 @@ body.settings-open #browser-resizer { display: none; }
 .sidebar-empty { color: var(--text-secondary); font-size: var(--type-meta); padding: var(--space-2) var(--space-3); }
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: var(--space-2) var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   gap: var(--space-1);

@@ -16,6 +16,7 @@ import { toolSearchTool } from '../src/tools/ToolSearchTool/ToolSearchTool.js'
 import { SessionStore } from '../src/sessions/service.js'
 import { clearAllPlanSlugs, writePlan } from '../src/utils/plans.js'
 import { getAutoCompactThreshold } from '../src/prompts/budget.js'
+import { getCompactPrompt } from '../src/prompts/compactPrompt.js'
 import type { SessionMetricInput } from '../src/harness/metrics.js'
 import type { RecordStream } from '../src/harness/recordStream.js'
 import type { ChatMessage, ModelProvider, ModelRequest, ModelStreamEvent, SessionRecord, TokenUsage, Tool } from '../src/harness/types.js'
@@ -1996,6 +1997,56 @@ test('agent loop consumes pending post-compact restore after a successful build'
   assert.equal(boundary?.type, 'compact_boundary')
   assert.equal(boundary?.type === 'compact_boundary' ? boundary.postCompactRestore : undefined, 'consumed')
   assert.match(boundary?.type === 'compact_boundary' ? boundary.restoredContext ?? '' : '', /Debug skill body/)
+})
+
+test('compactBeforeSend forces compaction on iteration 0 with the variant, rolePrompt and board restore', async () => {
+  const run = async (compactBeforeSend: boolean) => {
+    resetAutoCompactFailureState()
+    const records: SessionRecord[] = [
+      { type: 'message', id: 'old-user', role: 'user', content: 'old context', createdAt: '2026-05-10T00:00:00.000Z' },
+      { type: 'message', id: 'old-assistant', role: 'assistant', content: 'old answer', createdAt: '2026-05-10T00:01:00.000Z' },
+    ]
+    const requests: ModelRequest[] = []
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage(request) {
+        requests.push(request)
+        const isCompact = displayCacheSource(request.cacheSource!) === 'compact'
+        return { content: isCompact ? '<summary>forced summary</summary>' : 'done', toolCalls: [] }
+      },
+    }
+    const loop = new AgentLoop({
+      provider,
+      model: 'fake-model',
+      tools: [],
+      contextBuilder: new ContextBuilder(),
+      toolRunner: new ToolRunner([], new PermissionGate(async () => true), {
+        onRecord: async (record) => { records.push(record) },
+      }),
+      toolContext: { cwd: process.cwd(), sessionId: `forced-compact-${compactBeforeSend}`, readFiles: new Set() },
+      contextWindow: 200_000,
+      rolePrompt: 'You are the coordinator.',
+      compactPromptVariant: 'coordinator',
+      coordinationRestore: async () => 'BOARD: t1 running',
+      recordStream: recordStreamFor(records),
+    })
+    await loop.run({ text: 'next' }, undefined, undefined, { compactBeforeSend })
+    return { records, requests }
+  }
+
+  const idle = await run(false)
+  assert.ok(!idle.records.some((record) => record.type === 'compact_boundary'))
+  assert.equal(idle.requests.length, 1)
+  assert.ok(idle.requests[0]!.systemBlocks!.some((block) => block.includes('You are the coordinator.')))
+
+  const forced = await run(true)
+  const boundary = forced.records.find((record) => record.type === 'compact_boundary')
+  assert.equal(boundary?.type, 'compact_boundary')
+  assert.match(boundary?.type === 'compact_boundary' ? boundary.summary : '', /forced summary/)
+  assert.match(boundary?.type === 'compact_boundary' ? boundary.restoredContext ?? '' : '', /^<system-reminder>\nBOARD: t1 running/)
+  const compactRequest = forced.requests.find((request) => displayCacheSource(request.cacheSource!) === 'compact')
+  const serialized = JSON.stringify(compactRequest)
+  assert.ok(serialized.includes(JSON.stringify(getCompactPrompt(undefined, 'coordinator')).slice(1, 80)))
 })
 
 test('agent loop preserves tool result association for mixed safe and unsafe order', async () => {

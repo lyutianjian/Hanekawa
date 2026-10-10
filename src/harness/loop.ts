@@ -40,6 +40,7 @@ import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
 import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, SteerSource, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage, TurnOrigin } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
+import type { CompactPromptVariant } from '../prompts/compactPrompt.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
@@ -134,9 +135,12 @@ export interface AgentRunOverrides {
   sourceQueuedMessageId?: string
   /** Who drives this turn. Defaults to 'user'. */
   origin?: TurnOrigin
+  /** Force a compaction check on iteration 0, ignoring the threshold (idle compaction). */
+  compactBeforeSend?: boolean
 }
 
 interface ActiveRunOverrides {
+  compactBeforeSend?: boolean
   allowedTools?: Set<string>
   tools?: Tool[]
   model?: ActiveModelRuntime
@@ -245,6 +249,16 @@ export interface AgentLoopOptions {
   consumePendingUserMessages?(): string[]
   /** The user's mid-turn messages, recorded into the running turn at each step. */
   steer?: SteerSource
+  /** Fixed role segment for the static system prompt (coordinator lanes). */
+  rolePrompt?: string
+  compactPromptVariant?: CompactPromptVariant
+  /**
+   * A pending coordination update, taken at the start of each step. The loop
+   * appends it as a durable record, then acks; a failed append leaves it pending.
+   */
+  consumeCoordinationUpdate?(): Promise<{ content: string; ack(): Promise<void> } | undefined>
+  /** Leading block of the post-compact restore (the coordinator board). */
+  coordinationRestore?(): Promise<string | undefined>
 }
 
 const MAX_RECOVERY_COUNT = 3
@@ -468,6 +482,7 @@ export class AgentLoop {
         // §11.3): images in the summarized range become text placeholders.
         ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
         cwd: this.dataRoot(),
+        ...(this.options.compactPromptVariant ? { compactPromptVariant: this.options.compactPromptVariant } : {}),
       })
       return {
         summary: result.content,
@@ -518,6 +533,7 @@ export class AgentLoop {
       normalized.displayInput = overrides.displayInput
     }
     if (overrides.origin) normalized.origin = overrides.origin
+    if (overrides.compactBeforeSend) normalized.compactBeforeSend = true
     if (overrides.sourceQueuedMessageId) normalized.sourceQueuedMessageId = overrides.sourceQueuedMessageId
     if (overrides.skillName) {
       normalized.skillInvocation = {
@@ -629,6 +645,48 @@ export class AgentLoop {
     }
   }
 
+  /**
+   * A pending coordination update joins the turn as a durable record at a step
+   * boundary — after the previous step's tool results, never between a
+   * tool_use and its result. Appended first, then acked: a failed ack only
+   * means the same update may arrive again. Fail-open throughout.
+   */
+  private async takeCoordinationUpdate(turnId: string): Promise<void> {
+    const consume = this.options.consumeCoordinationUpdate
+    if (!consume) return
+    let taken: { content: string; ack(): Promise<void> } | undefined
+    try {
+      taken = await consume()
+    } catch {
+      return
+    }
+    if (!taken?.content) return
+    try {
+      await this.appendRecord({
+        type: 'coordination_update',
+        id: randomUUID(),
+        content: taken.content,
+        turnId,
+        createdAt: new Date().toISOString(),
+      })
+    } catch {
+      return
+    }
+    try {
+      await taken.ack()
+    } catch {
+      // The record is in place; the update stays pending and may repeat.
+    }
+  }
+
+  private async coordinationRestore(): Promise<string | undefined> {
+    try {
+      return await this.options.coordinationRestore?.()
+    } catch {
+      return undefined
+    }
+  }
+
   private async runInternal(userInput: UserInput, signal?: AbortSignal, messageId?: string): Promise<AgentRunResult> {
     let usage = { ...EMPTY_TOKEN_USAGE }
     let lastForegroundResponseUsage: TokenUsage | undefined
@@ -689,6 +747,7 @@ export class AgentLoop {
             createdAt: new Date().toISOString(),
           })
         }
+        await this.takeCoordinationUpdate(turnId)
         await this.takeSteerMessages(turnId, signal)
         await this.options.planModeManager?.beforeTurn()
         if (this.syncRoleModel(cacheSource)) {
@@ -742,6 +801,8 @@ export class AgentLoop {
           turnId,
           circuitKey: this.options.toolContext.sessionId,
           cwd: this.dataRoot(),
+          ...(iteration === 0 && this.activeRunOverrides?.compactBeforeSend === true ? { force: true } : {}),
+          ...(this.options.compactPromptVariant ? { compactPromptVariant: this.options.compactPromptVariant } : {}),
           ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
           getCompactFailureCount: this.options.getCompactFailureCount,
           setCompactFailureCount: this.options.setCompactFailureCount,
@@ -1678,6 +1739,7 @@ export class AgentLoop {
       system: this.options.system,
       projectContext: this.options.projectContext,
       memoryPrompt: this.options.memoryPrompt,
+      rolePrompt: this.options.rolePrompt,
       criticalSystemReminder: this.options.criticalSystemReminder,
       skills: this.options.skills,
       contextManagement: this.activeContextManagement,
@@ -1803,7 +1865,10 @@ export class AgentLoop {
       .map((record) => record.id))
     if (pendingIds.size === 0) return records
 
-    const restoredContext = await this.options.contextBuilder.buildPostCompactRestore(this.options.toolContext)
+    const restoredContext = await this.options.contextBuilder.buildPostCompactRestore(
+      this.options.toolContext,
+      await this.coordinationRestore(),
+    )
     const consume = (record: SessionRecord): SessionRecord => {
       if (!pendingIds.has(record.id) || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
       return { ...record, postCompactRestore: 'consumed', ...(restoredContext ? { restoredContext } : {}) }

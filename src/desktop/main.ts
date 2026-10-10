@@ -681,6 +681,9 @@ async function ensureShell(): Promise<Shell> {
   const stopTabUpdates = browserTabs.onChanged((tabs) => {
     host.broadcastBrowserState(tabs)
   })
+  // Every thread-table write, from the service and the wake engine alike;
+  // the host coalesces them per project before re-reading the table.
+  const stopThreadUpdates = coordination.onThreadsChanged((cwd) => host.broadcastCoordinationThreads(cwd))
 
   const built: Shell = { window, host }
   shell = built
@@ -692,6 +695,8 @@ async function ensureShell(): Promise<Shell> {
     // Before the guard: the tab host outlives the window, and a failed load
     // destroys the window after `shell` was already reset.
     stopTabUpdates()
+    stopThreadUpdates()
+    host.dispose()
     if (shell !== built) return
     shell = undefined
     // Before the lanes: `detachLane` closes each lane's tabs one by one, and

@@ -217,6 +217,12 @@ export type ShellCommand =
   | { type: 'thread-merge-dismiss'; id: string; projectRoot: string; threadId: string }
   /** Asks the thread itself to bring its branch up to date and resolve the conflict. */
   | { type: 'thread-merge-resolve'; id: string; projectRoot: string; threadId: string }
+  /** The project's thread table (pull); the same payload the `coordination-threads` event pushes. */
+  | { type: 'coordination-threads'; id: string; projectRoot: string }
+  /** The user's stop of one thread: interrupts its lane, no coordinator involved. */
+  | { type: 'thread-stop'; id: string; projectRoot: string; threadId: string }
+  /** The user's 结案 of one thread. */
+  | { type: 'thread-resolve'; id: string; projectRoot: string; threadId: string }
 
 // --- browser -----------------------------------------------------------------
 
@@ -634,6 +640,11 @@ export type ShellEvent =
    * would need its own ordering guarantees against the open/close events.
    */
   | { type: 'browser-state'; tabs: WireBrowserTabInfo[] }
+  /**
+   * One project's thread table changed. The whole list, like `browser-state`,
+   * coalesced per project on the host; only pushed for open projects.
+   */
+  | { type: 'coordination-threads'; state: WireCoordinationThreads }
   | { type: 'reply'; id: string; result: unknown }
   | { type: 'fail'; id: string; message: string }
 
@@ -778,6 +789,41 @@ export interface WireThreadMerge {
   removed: number
   /** The last merge attempt conflicted and was undone. */
   conflict: boolean
+  /** The thread is still working (or waiting on the user): shown, but not mergeable yet. */
+  running: boolean
+}
+
+/** A thread's effective status (lifecycle already applied host-side). */
+export type WireThreadStatus =
+  | 'running'
+  | 'idle'
+  | 'awaiting-coordinator'
+  | 'needs-you'
+  | 'failed'
+  | 'interrupted'
+  | 'quiet'
+  | 'resolved'
+  | 'stale'
+
+/** One thread as the desktop shows it. Title and report text are already sanitized. */
+export interface WireThreadInfo {
+  threadId: string
+  sessionId: string
+  title: string
+  status: WireThreadStatus
+  statusLine?: string
+  lastReport?: string
+  /** ISO 8601. */
+  lastActivityAt: string
+  /** The worktree branch, for a thread that writes code. */
+  branch?: string
+}
+
+/** A project's whole thread table, newest activity first. */
+export interface WireCoordinationThreads {
+  projectRoot: string
+  coordinatorSessionId?: string
+  threads: WireThreadInfo[]
 }
 
 export interface WireShellThreadMergesResult {

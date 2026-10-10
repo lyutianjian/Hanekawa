@@ -89,6 +89,9 @@ import {
   type WireShellThreadMergeResult,
   type WireShellThreadMergesResult,
   type WireThreadMerge,
+  type WireCoordinationThreads,
+  type WireThreadInfo,
+  type WireThreadStatus,
 } from './shellProtocol.js'
 
 /**
@@ -257,7 +260,31 @@ export interface ShellCoordination {
   mergeThread(cwd: string, threadId: string): Promise<WireShellThreadMergeResult>
   dismissMerge(cwd: string, threadId: string): Promise<void>
   resolveConflictViaThread(cwd: string, threadId: string): Promise<void>
+  /** The thread table, lifecycle applied and text sanitized; no coordinator check. */
+  threadInfos(cwd: string): Promise<{ coordinatorSessionId?: string; threads: readonly ShellThreadInfo[] }>
+  /** The user's stop of one thread. */
+  stopThreadById(cwd: string, threadId: string): Promise<void>
+  /** The user's 结案 of one thread. */
+  resolveThreadById(cwd: string, threadId: string): Promise<void>
 }
+
+/**
+ * The slice of the service's `ThreadInfo` the wire carries. `status` is the
+ * service's plain string; {@link toWireThreadInfo} narrows it.
+ */
+export interface ShellThreadInfo {
+  threadId: string
+  sessionId: string
+  title: string
+  status: string
+  statusLine?: string
+  lastReport?: string
+  lastActivityAt?: string
+  branch?: string
+}
+
+/** How long a burst of thread-table writes for one project is folded into one push. */
+export const COORDINATION_BROADCAST_DELAY_MS = 50
 
 export interface LaneAttach<
   P extends ShellLaneProject = RuntimeHost,
@@ -757,6 +784,25 @@ const SHELL_COMMAND_SCHEMAS = {
       threadId: z.string().min(1),
     })
     .strict(),
+  'coordination-threads': z
+    .object({ type: z.literal('coordination-threads'), id: commandId, projectRoot: z.string().min(1) })
+    .strict(),
+  'thread-stop': z
+    .object({
+      type: z.literal('thread-stop'),
+      id: commandId,
+      projectRoot: z.string().min(1),
+      threadId: z.string().min(1),
+    })
+    .strict(),
+  'thread-resolve': z
+    .object({
+      type: z.literal('thread-resolve'),
+      id: commandId,
+      projectRoot: z.string().min(1),
+      threadId: z.string().min(1),
+    })
+    .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
 type CommandOption = (typeof SHELL_COMMAND_SCHEMAS)[ShellCommand['type']]
@@ -837,6 +883,9 @@ export class ShellHost<
   private readonly channel: RuntimeChannel
   /** Insertion-ordered: the lane list the renderer sees is the order lanes were opened. */
   private readonly lanes = new Map<string, LaneEntry<P, W, PaneT>>()
+  /** Project root -> the pending `coordination-threads` push for it. */
+  private readonly threadBroadcasts = new Map<string, ReturnType<typeof setTimeout>>()
+  private disposed = false
 
   constructor(private readonly deps: ShellHostDeps<P, PaneT, W>) {
     this.channel = deps.mux.lane(SHELL_LANE)
@@ -1227,9 +1276,39 @@ export class ShellHost<
         await coordination.resolveConflictViaThread(entry.cwd, command.threadId)
         return { ok: true } satisfies WireShellCoordinationOkResult
       }
+      case 'coordination-threads': {
+        const coordination = this.requireCoordination()
+        const cwd = await this.requireCwdForRoot(command.projectRoot)
+        return this.coordinationThreads(coordination, cwd, command.projectRoot)
+      }
+      case 'thread-stop': {
+        const coordination = this.requireCoordination()
+        await coordination.stopThreadById(await this.requireCwdForRoot(command.projectRoot), command.threadId)
+        return { ok: true } satisfies WireShellCoordinationOkResult
+      }
+      case 'thread-resolve': {
+        const coordination = this.requireCoordination()
+        await coordination.resolveThreadById(await this.requireCwdForRoot(command.projectRoot), command.threadId)
+        return { ok: true } satisfies WireShellCoordinationOkResult
+      }
       default:
         return assertNever(command)
     }
+  }
+
+  private async coordinationThreads(
+    coordination: ShellCoordination,
+    cwd: string,
+    projectRoot: string,
+  ): Promise<WireCoordinationThreads> {
+    const table = await coordination.threadInfos(cwd)
+    const state: WireCoordinationThreads = { projectRoot, threads: [] }
+    if (table.coordinatorSessionId !== undefined) state.coordinatorSessionId = table.coordinatorSessionId
+    for (const thread of table.threads) {
+      const wire = toWireThreadInfo(thread)
+      if (wire) state.threads.push(wire)
+    }
+    return state
   }
 
   private requireCoordination(): ShellCoordination {
@@ -1928,9 +2007,71 @@ export class ShellHost<
     this.post({ type: 'browser-state', tabs })
   }
 
+  /**
+   * A project's thread table was written. Pushes the whole table, like
+   * `browser-state`, but coalesced per project root: one wake writes the
+   * table several times in a row, and each push re-reads it. A project that
+   * is not open is skipped — the renderer pulls when it opens one.
+   */
+  broadcastCoordinationThreads(cwd: string): void {
+    const coordination = this.deps.coordination
+    if (this.disposed || !coordination) return
+    const root = projectRootKey(cwd)
+    if (!this.deps.directory.get(root) || this.threadBroadcasts.has(root)) return
+    this.threadBroadcasts.set(
+      root,
+      setTimeout(() => {
+        this.threadBroadcasts.delete(root)
+        const entry = this.deps.directory.get(root)
+        if (this.disposed || !entry) return
+        this.coordinationThreads(coordination, entry.cwd, root).then(
+          (state) => {
+            if (!this.disposed) this.post({ type: 'coordination-threads', state })
+          },
+          (error: unknown) => console.error('[hanekawa] coordination threads push failed:', error),
+        )
+      }, COORDINATION_BROADCAST_DELAY_MS),
+    )
+  }
+
+  /** Drops the pending pushes; the window (and its renderer) is gone. */
+  dispose(): void {
+    this.disposed = true
+    for (const timer of this.threadBroadcasts.values()) clearTimeout(timer)
+    this.threadBroadcasts.clear()
+  }
+
   private post(event: ShellEvent): void {
     this.channel.post(event)
   }
+}
+
+const WIRE_THREAD_STATUSES: ReadonlySet<string> = new Set<WireThreadStatus>([
+  'running',
+  'idle',
+  'awaiting-coordinator',
+  'needs-you',
+  'failed',
+  'interrupted',
+  'quiet',
+  'resolved',
+  'stale',
+])
+
+/** Field by field, never a spread: `ThreadInfo` carries tool-only fields. A status the wire does not know is dropped. */
+function toWireThreadInfo(thread: ShellThreadInfo): WireThreadInfo | undefined {
+  if (!WIRE_THREAD_STATUSES.has(thread.status)) return undefined
+  const wire: WireThreadInfo = {
+    threadId: thread.threadId,
+    sessionId: thread.sessionId,
+    title: thread.title,
+    status: thread.status as WireThreadStatus,
+    lastActivityAt: thread.lastActivityAt ?? '',
+  }
+  if (thread.statusLine !== undefined) wire.statusLine = thread.statusLine
+  if (thread.lastReport !== undefined) wire.lastReport = thread.lastReport
+  if (thread.branch !== undefined) wire.branch = thread.branch
+  return wire
 }
 
 function assertNever(value: never): never {

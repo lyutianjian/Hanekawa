@@ -13,6 +13,7 @@ import {
   type LaneAttach,
   type ShellLaneProject,
   type ShellCoordination,
+  COORDINATION_BROADCAST_DELAY_MS,
   type ShellLaneWorkspace,
 } from '../src/desktop/shellHost.js'
 import { ShellClient } from '../src/desktop/renderer/shellClient.js'
@@ -694,6 +695,9 @@ const COMMAND_SAMPLES = {
   'thread-merge': { type: 'thread-merge', id: 'y', projectRoot: 'r', threadId: 't1' },
   'thread-merge-dismiss': { type: 'thread-merge-dismiss', id: 'z', projectRoot: 'r', threadId: 't1' },
   'thread-merge-resolve': { type: 'thread-merge-resolve', id: 'aa', projectRoot: 'r', threadId: 't1' },
+  'coordination-threads': { type: 'coordination-threads', id: 'ab', projectRoot: 'r' },
+  'thread-stop': { type: 'thread-stop', id: 'ac', projectRoot: 'r', threadId: 't1' },
+  'thread-resolve': { type: 'thread-resolve', id: 'ad', projectRoot: 'r', threadId: 't1' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 /**
@@ -798,6 +802,7 @@ test('every shell command variant round-trips through its schema', () => {
       'browser-set-bounds',
       'browser-take-over',
       'coordination-stop-all',
+      'coordination-threads',
       'delete-session',
       'get-settings',
       'list-sessions',
@@ -815,6 +820,8 @@ test('every shell command variant round-trips through its schema', () => {
       'thread-merge-dismiss',
       'thread-merge-resolve',
       'thread-merges',
+      'thread-resolve',
+      'thread-stop',
     ],
     'a variant added to ShellCommand must fail the satisfies table by name',
   )
@@ -823,6 +830,8 @@ test('every shell command variant round-trips through its schema', () => {
 test('a coordination command without a thread id is rejected', () => {
   assert.equal(parseShellCommand({ type: 'thread-merge', id: 'x', projectRoot: 'r' }).ok, false)
   assert.equal(parseShellCommand({ type: 'open-coordinator', id: 'x', projectRoot: 'r', extra: 1 }).ok, false)
+  assert.equal(parseShellCommand({ type: 'thread-stop', id: 'x', projectRoot: 'r' }).ok, false)
+  assert.equal(parseShellCommand({ type: 'thread-resolve', id: 'x', projectRoot: 'r', threadId: '' }).ok, false)
 })
 
 test('a malformed command fails with the id recovered', () => {
@@ -2815,7 +2824,9 @@ function fakeCoordination(store: () => FakeStore, calls: string[]): ShellCoordin
     },
     pendingMerges: async (cwd) => {
       calls.push(`merges:${cwd}`)
-      return [{ threadId: 't1', title: 'T', branch: 'hanekawa/t-t1', added: 3, removed: 1, conflict: false }]
+      return [
+        { threadId: 't1', title: 'T', branch: 'hanekawa/t-t1', added: 3, removed: 1, conflict: false, running: false },
+      ]
     },
     mergeThread: async (cwd, threadId) => {
       calls.push(`merge:${cwd}:${threadId}`)
@@ -2827,8 +2838,35 @@ function fakeCoordination(store: () => FakeStore, calls: string[]): ShellCoordin
     resolveConflictViaThread: async (cwd, threadId) => {
       calls.push(`resolve:${cwd}:${threadId}`)
     },
+    threadInfos: async (cwd) => {
+      calls.push(`threads:${cwd}`)
+      return {
+        coordinatorSessionId: 'coord-1',
+        threads: [
+          {
+            threadId: 't1',
+            sessionId: 's1',
+            title: 'T',
+            status: 'running',
+            lastActivityAt: '2026-10-10T00:00:00.000Z',
+            branch: 'hanekawa/t-t1',
+            // A tool-only field the projection must drop.
+            ...({ writesCode: true } as object),
+          },
+          { threadId: 't2', sessionId: 's2', title: 'U', status: 'mystery', lastActivityAt: '2026-10-10T00:00:00.000Z' },
+        ],
+      }
+    },
+    stopThreadById: async (cwd, threadId) => {
+      calls.push(`stop:${cwd}:${threadId}`)
+    },
+    resolveThreadById: async (cwd, threadId) => {
+      calls.push(`resolve-thread:${cwd}:${threadId}`)
+    },
   }
 }
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 test('open-coordinator creates the coordinator session once, then reuses its lane', async () => {
   const calls: string[] = []
@@ -2866,6 +2904,59 @@ test('the thread merge commands delegate to the coordination deps with the proje
     `resolve:${cwd}:t1`,
     `stop-all:${cwd}`,
   ])
+})
+
+test('the thread table commands project to the wire and fill the client cache', async () => {
+  const calls: string[] = []
+  const h = createHarness({ coordination: fakeCoordination(() => h.project.store, calls) })
+  const cwd = h.entry.cwd
+  const pushed: string[] = []
+  h.client.onCoordinationThreads((state) => pushed.push(state.projectRoot))
+
+  const state = await h.client.coordinationThreads(h.entry.root)
+  assert.deepEqual(state, {
+    projectRoot: h.entry.root,
+    coordinatorSessionId: 'coord-1',
+    threads: [
+      {
+        threadId: 't1',
+        sessionId: 's1',
+        title: 'T',
+        status: 'running',
+        lastActivityAt: '2026-10-10T00:00:00.000Z',
+        branch: 'hanekawa/t-t1',
+      },
+    ],
+  })
+  assert.deepEqual(h.client.getCoordinationThreads(h.entry.root), state)
+  assert.deepEqual(pushed, [h.entry.root])
+  assert.deepEqual(await h.client.threadStop(h.entry.root, 't1'), { ok: true })
+  assert.deepEqual(await h.client.threadResolve(h.entry.root, 't1'), { ok: true })
+  assert.deepEqual(calls, [`threads:${cwd}`, `stop:${cwd}:t1`, `resolve-thread:${cwd}:t1`])
+})
+
+test('broadcastCoordinationThreads coalesces a burst per open project and stops on dispose', async () => {
+  const calls: string[] = []
+  const h = createHarness({ coordination: fakeCoordination(() => h.project.store, calls) })
+  const pushed: string[] = []
+  h.client.onCoordinationThreads((state) => pushed.push(state.projectRoot))
+
+  h.host.broadcastCoordinationThreads(h.entry.cwd)
+  h.host.broadcastCoordinationThreads(h.entry.cwd)
+  h.host.broadcastCoordinationThreads(h.entry.cwd)
+  h.host.broadcastCoordinationThreads(fixturePath('repo', 'not-open'))
+  assert.deepEqual(pushed, [], 'nothing before the delay')
+  await wait(COORDINATION_BROADCAST_DELAY_MS + 30)
+  await settle()
+  assert.deepEqual(pushed, [h.entry.root], 'one push for the burst, none for a closed project')
+  assert.deepEqual(calls, [`threads:${h.entry.cwd}`])
+  assert.equal(h.client.getCoordinationThreads(h.entry.root)?.threads[0]?.threadId, 't1')
+
+  h.host.broadcastCoordinationThreads(h.entry.cwd)
+  h.host.dispose()
+  await wait(COORDINATION_BROADCAST_DELAY_MS + 30)
+  await settle()
+  assert.equal(pushed.length, 1, 'dispose cancels the pending push')
 })
 
 test('coordination commands reject when the shell has no coordination', async () => {

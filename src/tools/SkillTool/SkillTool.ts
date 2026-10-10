@@ -32,7 +32,7 @@ export function createSkillTool(): Tool {
     },
     async execute(input, context) {
       const parsed = parseSkillInput(input)
-      const service = new SkillsService(context.cwd)
+      const service = new SkillsService(context.projectDir ?? context.cwd)
       const skill = await service.load(parsed.skill)
       const skillContent = withSkillDir(skill.skillDir, skill.content)
       context.invokedSkills ??= new Map()

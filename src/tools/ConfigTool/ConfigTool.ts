@@ -181,7 +181,7 @@ export const configTool: Tool = {
 }
 
 async function handleList(context: ToolContext): Promise<ToolResult> {
-  const merged = await loadMergedSettings(context.cwd)
+  const merged = await loadMergedSettings(context.projectDir ?? context.cwd)
   const entries = SUPPORTED_SETTINGS.map((def) => {
     const currentValue = def.get(merged)
     const displayValue = currentValue === undefined ? '(not set)' : JSON.stringify(currentValue)
@@ -219,7 +219,7 @@ async function handleGet(key: string | undefined, context: ToolContext): Promise
     }
   }
 
-  const merged = await loadMergedSettings(context.cwd)
+  const merged = await loadMergedSettings(context.projectDir ?? context.cwd)
   const currentValue = def.get(merged)
   const displayValue = currentValue === undefined ? '(not set)' : JSON.stringify(currentValue)
 

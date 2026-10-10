@@ -464,7 +464,7 @@ export class AgentLoop {
         // Rewind summaries share the compaction image projection (design
         // §11.3): images in the summarized range become text placeholders.
         ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
-        cwd: this.options.toolContext.cwd,
+        cwd: this.dataRoot(),
       })
       return {
         summary: result.content,
@@ -646,7 +646,7 @@ export class AgentLoop {
       const tokenBudget = this.options.tokenBudget
       const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
       const cacheSource = this.options.cacheSource
-        ?? agentCacheSource(this.options.toolContext.sessionId, this.options.toolContext.cwd)
+        ?? agentCacheSource(this.options.toolContext.sessionId, this.dataRoot())
 
       let lastRequestId: string | undefined
       let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
@@ -734,7 +734,7 @@ export class AgentLoop {
           promptCacheRetention: this.activeModel.promptCacheRetention,
           turnId,
           circuitKey: this.options.toolContext.sessionId,
-          cwd: this.options.toolContext.cwd,
+          cwd: this.dataRoot(),
           ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
           getCompactFailureCount: this.options.getCompactFailureCount,
           setCompactFailureCount: this.options.setCompactFailureCount,
@@ -1172,10 +1172,16 @@ export class AgentLoop {
    * current task list. The returned context omits transient fields
    * (abortSignal, appendRecord) which the ToolRunner installs per-call.
    */
+  /** Key for project data dirs (spill, diagnostics): the project, not a worktree. */
+  private dataRoot(): string {
+    return this.options.toolContext.projectDir ?? this.options.toolContext.cwd
+  }
+
   private forkToolContext(): ToolContext {
     const source = this.options.toolContext
     const fork: ToolContext = {
       cwd: source.cwd,
+      ...(source.projectDir ? { projectDir: source.projectDir } : {}),
       sessionId: source.sessionId,
       readFiles: new Set(source.readFiles),
     }
@@ -1384,7 +1390,7 @@ export class AgentLoop {
         repairToolPairing: !this.recordsCacheHasCleanToolProtocol,
         imageTokenStrategy,
         trimState: this.trimState,
-        spillDir: getToolResultSpillDir(this.options.toolContext.cwd, this.options.toolContext.sessionId),
+        spillDir: getToolResultSpillDir(this.dataRoot(), this.options.toolContext.sessionId),
         ...(turnId ? { turnId } : {}),
         ...(this.stripAllThinkingBlocksFromRequests ? { stripAllThinkingBlocks: true } : {}),
       },
@@ -1576,7 +1582,7 @@ export class AgentLoop {
         model: runtime.model,
         promptCacheRetention: runtime.promptCacheRetention,
         toolResults: summarizableResults,
-        cwd: this.options.toolContext.cwd,
+        cwd: this.dataRoot(),
       }),
     }
     entry.promise.then((summary) => {
@@ -1760,7 +1766,7 @@ export class AgentLoop {
       records,
       turnId,
       userMessageId,
-      compactCacheSource(this.options.toolContext.cwd),
+      compactCacheSource(this.dataRoot()),
       { includeUserContext: false },
     )
     const message: ChatMessage = {

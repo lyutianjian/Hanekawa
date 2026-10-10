@@ -209,6 +209,8 @@ export interface CreateAgentToolOptions {
   /** `permissions.additionalDirectories`, inherited from the parent gate. */
   getAdditionalDirectories?(): string[]
   cwd: string
+  /** Key for project data dirs (transcripts, plans); absent means `cwd`. */
+  projectDir?: string
   system?: string
   projectContext?: string
   skills?: SkillDefinition[]
@@ -351,7 +353,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
         const subAgentId = allocateSubagentId(options, context.sessionId, parsed.subagent_type)
         const runInBackground = parsed.run_in_background ?? agentDefinition.background ?? false
         if (runInBackground) {
-          const transcriptPath = getSubagentTranscriptPath(options.cwd, context.sessionId, subAgentId)
+          const transcriptPath = getSubagentTranscriptPath(options.projectDir ?? options.cwd, context.sessionId, subAgentId)
           const plannedModel = resolveSubagentModelLabel(options, parsed.subagent_type, agentDefinition)
           await appendSubagentTaskRecord(context, parsed, subAgentId, 'running', {
             transcriptPath,
@@ -404,7 +406,7 @@ export function createAgentTool(options: CreateAgentToolOptions): Tool {
 
         // On disk like a background run's, so the desktop can show what the
         // sub-agent did while it runs and after.
-        const transcriptPath = getSubagentTranscriptPath(options.cwd, context.sessionId, subAgentId)
+        const transcriptPath = getSubagentTranscriptPath(options.projectDir ?? options.cwd, context.sessionId, subAgentId)
         // Registered up front so the user can stop this one agent while the
         // parent's turn goes on.
         const stopAbort = new AbortController()
@@ -514,6 +516,7 @@ class SubagentSession implements AgentContinuation {
       // The sub-agent's tool context, and so its spill directory, is keyed by its own id.
       sessionId: subAgentId,
       cwd: effectiveCwd,
+      projectDir: options.projectDir ?? options.cwd,
       additionalDirectories: options.getAdditionalDirectories?.() ?? [],
       sessionRuleStore,
     })
@@ -541,7 +544,7 @@ class SubagentSession implements AgentContinuation {
       await recordStream.append({ id: randomUUID(), type: 'message', role: 'user', content, createdAt: new Date().toISOString() })
     }
     const preloadRecords = isForkAgent && !inheritedRequest ? await loadForkPreloadRecords(options) : undefined
-    const cacheSource = isForkAgent ? forkCacheSource(subAgentId, context.cwd) : agentCacheSource(subAgentId, context.cwd)
+    const cacheSource = isForkAgent ? forkCacheSource(subAgentId, context.projectDir ?? context.cwd) : agentCacheSource(subAgentId, context.projectDir ?? context.cwd)
     const createLoop = () => new AgentLoop({
       provider: subagentRuntime.provider,
       model: subagentRuntime.model,
@@ -740,7 +743,7 @@ function allocateSubagentId(options: CreateAgentToolOptions, sessionId: string, 
   if (!options.backgroundTasks) return randomUUID()
   for (;;) {
     const id = options.backgroundTasks.allocateAgentId(sessionId, agentType)
-    if (!existsSync(getSubagentTranscriptPath(options.cwd, sessionId, id))) return id
+    if (!existsSync(getSubagentTranscriptPath(options.projectDir ?? options.cwd, sessionId, id))) return id
   }
 }
 
@@ -1354,6 +1357,8 @@ function createSubAgentToolContext(
 ): ToolContext {
   return {
     cwd,
+    // Data dirs (plans, memory, spill) stay keyed to the project even when `cwd` is a worktree.
+    projectDir: parent.projectDir ?? parent.cwd,
     sessionId: subAgentId,
     readFiles: new Set(),
     readFileState: new Map(),

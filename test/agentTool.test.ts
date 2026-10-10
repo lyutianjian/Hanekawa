@@ -803,6 +803,7 @@ test('custom agent worktree isolation runs child tools in the isolated cwd and r
     const worktreePath = path.join(root, 'worktree')
     const seenCwds: string[] = []
     let tracksParentHistory: boolean | undefined
+    const seenProjectDirs: Array<string | undefined> = []
     const provider: ModelProvider = {
       name: 'fake',
       async createMessage(request) {
@@ -822,6 +823,7 @@ test('custom agent worktree isolation runs child tools in the isolated cwd and r
       riskLevel: 'safe',
       async execute(_input, context) {
         seenCwds.push(context.cwd)
+        seenProjectDirs.push(context.projectDir)
         tracksParentHistory = context.trackFileEdit !== undefined
         return { ok: true, content: `cwd=${context.cwd}` }
       },
@@ -869,6 +871,8 @@ test('custom agent worktree isolation runs child tools in the isolated cwd and r
 
     assert.equal(result.ok, true)
     assert.equal(seenCwds[0], path.join(worktreePath, 'pkg'))
+    // Data dirs (spill, plans, memory) stay keyed to the project, not the worktree.
+    assert.equal(seenProjectDirs[0], testCwd)
     assert.equal(tracksParentHistory, false)
     assert.match(result.content, /Worktree:/)
     const subagent = result.metadata?.subagent as Record<string, unknown> | undefined

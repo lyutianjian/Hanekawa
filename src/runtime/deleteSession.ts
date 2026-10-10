@@ -1,7 +1,11 @@
+import { execFile } from 'node:child_process'
 import { rm } from 'node:fs/promises'
+import { promisify } from 'node:util'
 import { getToolResultSpillDir } from '../utils/paths.js'
 import { getSubagentTranscriptDir } from '../harness/sidechainRecordStream.js'
 import { GitSubagentWorktreeManager } from '../services/agents/subagentWorktree.js'
+import { CoordinationStore } from '../services/coordination/threadStore.js'
+import type { ThreadRecord } from '../services/coordination/types.js'
 import { removeFileHistory } from '../services/fileHistory/fileHistoryService.js'
 import { removeSessionAttachmentsAt } from '../services/imageAttachments/imageAttachmentService.js'
 import { assertSafeSessionId, type SessionMeta } from '../sessions/service.js'
@@ -62,6 +66,7 @@ export async function deleteSessionArtifacts(
   // `attachments/`: the files the user imported *from* are theirs and
   // are never touched.
   await removeSessionAttachmentsAt(cwd, sessionId)
+  await cleanupCoordination(cwd, sessionId)
   // Last: the only removal here that runs git, so the one most likely to throw.
   await new GitSubagentWorktreeManager().cleanupSession({ cwd, parentSessionId: sessionId })
 }
@@ -79,3 +84,32 @@ export async function removeSubagentTranscripts(cwd: string, sessionId: string):
 
 /** Re-exported so a caller resolving before deleting has the type to hand. */
 export type { SessionMeta }
+
+const execFileAsync = promisify(execFile)
+
+/**
+ * A deleted thread session stays in the table as `stale` so `message_thread`
+ * can say why it is gone; a deleted coordinator just loses the pointer, and the
+ * next entry creates a new one. A project without a coordination file is left
+ * untouched — `read()` does not create it and nothing is written.
+ */
+async function cleanupCoordination(cwd: string, sessionId: string): Promise<void> {
+  const store = new CoordinationStore(cwd)
+  const file = await store.read()
+  if (file.coordinator?.sessionId === sessionId) await store.clearCoordinator()
+  const thread = file.threads.find((t) => t.sessionId === sessionId)
+  if (!thread) return
+  await store.patchThread(thread.threadId, { status: 'stale', statusLine: 'session deleted' })
+  if (thread.worktree) await removeThreadWorktree(cwd, thread.worktree)
+}
+
+async function removeThreadWorktree(cwd: string, worktree: NonNullable<ThreadRecord['worktree']>): Promise<void> {
+  const git = (args: string[]) => execFileAsync('git', args, { cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })
+  try {
+    await git(['worktree', 'remove', '--force', worktree.path])
+  } catch {
+    await rm(worktree.path, { recursive: true, force: true })
+    await git(['worktree', 'prune']).catch(() => {})
+  }
+  await git(['branch', '-D', worktree.branch]).catch(() => {})
+}

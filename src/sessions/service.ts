@@ -53,6 +53,14 @@ export interface SessionMeta {
   messageCount: number
   compactFailureCount?: number
   checkpoints?: CheckpointMapping[]
+  /** Set when the session belongs to a project's coordination (see `services/coordination/`). */
+  coordination?: SessionCoordination
+}
+
+export interface SessionCoordination {
+  role: 'coordinator' | 'thread'
+  projectKey: string
+  threadId?: string
 }
 
 interface SessionState {
@@ -606,6 +614,17 @@ export class SessionStore {
     }, session ?? this.defaultMeta(sessionId))
   }
 
+  async setCoordination(sessionIdOrPrefix: string, value: SessionCoordination | undefined): Promise<void> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    const sessionId = session?.id ?? sessionIdOrPrefix
+    await this.updateIndexSession(sessionId, (current) => {
+      const next: SessionMeta = { ...current }
+      if (value) next.coordination = { ...value }
+      else delete next.coordination
+      return next
+    }, session ?? this.defaultMeta(sessionId))
+  }
+
   /**
    * Removes a session's three files and its index entry.
    *
@@ -1032,6 +1051,7 @@ export class SessionStore {
       messageCount: messages.length,
       ...(existing?.checkpoints ? { checkpoints: existing.checkpoints } : {}),
       ...(existing?.compactFailureCount ? { compactFailureCount: existing.compactFailureCount } : {}),
+      ...(existing?.coordination ? { coordination: existing.coordination } : {}),
     }
   }
 

@@ -328,7 +328,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
             if ((await coordStore.read()).coordinator?.sessionId !== runtimeSession.id) return undefined
             const update = await coordStore.peekCoordinationUpdate()
             if (!update) return undefined
-            const content = formatCoordinationUpdate({ ...(update.snapshot ? { snapshot: update.snapshot } : {}), notes: update.notes.map((n) => n.text) })
+            const content = formatCoordinationUpdate({ ...(update.snapshot ? { snapshot: update.snapshot } : {}), notes: update.notes.map((n) => ({ threadId: n.threadId, text: n.text })) })
             if (!content) return undefined
             return { content, ack: () => coordStore.ackCoordinationUpdate(update) }
           },

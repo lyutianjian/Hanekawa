@@ -32,6 +32,7 @@ class FakeLane implements CoordinationLaneControl, WakeLaneController {
   requestWake(text: string) { this.wakes.push(text) }
   async stop() {}
   setModel() {}
+  setEffort() {}
   state() { return { streaming: this.streaming, pendingApproval: this.pendingApproval, pendingDialog: false } }
   onStateChange(l: () => void) { this.states.add(l); return () => this.states.delete(l) }
   // drivers

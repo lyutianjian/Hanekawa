@@ -375,7 +375,7 @@ export class CoordinationWakeEngine {
     const notes = await store.drainNotes()
     const count = nextAutoWakeCount(coord.autoWakeCount, 'auto-wake')
     await store.setAutoWakeCount(count)
-    const text = formatWakeMessage({ reason: verdict.reason, notes: notes.map((n) => n.text), count })
+    const text = formatWakeMessage({ reason: verdict.reason, notes: notes.map((n) => ({ threadId: n.threadId, text: n.text })), count })
     try {
       const lane = control ?? await this.port.openLane(cwd, coord.sessionId, { activate: false })
       lane.requestWake(text)

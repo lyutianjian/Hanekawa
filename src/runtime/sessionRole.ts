@@ -30,3 +30,13 @@ export function toolAvailableForRole(
   if (role === 'coordinator' && COORDINATOR_HIDDEN.has(tool.name)) return false
   return true
 }
+
+/**
+ * Whether a session of `role` may switch to another session (`/clear`, `/resume`,
+ * `create-session`, `retarget`). A coordinator or thread is named by id from the
+ * coordination store, so moving its lane to a different session would orphan that
+ * pointer.
+ */
+export function sessionSwitchBlocked(role: CoordinationRole | undefined): boolean {
+  return role === 'thread' || role === 'coordinator'
+}

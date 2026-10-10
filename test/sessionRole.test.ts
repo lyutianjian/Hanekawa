@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
-import { initialPermissionMode, sessionRoleOf, toolAvailableForRole } from '../src/runtime/sessionRole.js'
+import { initialPermissionMode, sessionRoleOf, sessionSwitchBlocked, toolAvailableForRole } from '../src/runtime/sessionRole.js'
 
 const tool = (name: string, sessionRoles?: readonly ('coordinator' | 'thread')[]) =>
   ({
@@ -35,4 +35,10 @@ test('toolAvailableForRole', () => {
   assert.equal(toolAvailableForRole(tool('EnterPlanMode'), 'coordinator'), false)
   assert.equal(toolAvailableForRole(tool('ExitPlanMode'), 'coordinator'), false)
   assert.equal(toolAvailableForRole(tool('EnterPlanMode'), 'thread'), true)
+})
+
+test('sessionSwitchBlocked for coordination roles only', () => {
+  assert.equal(sessionSwitchBlocked('thread'), true)
+  assert.equal(sessionSwitchBlocked('coordinator'), true)
+  assert.equal(sessionSwitchBlocked(undefined), false)
 })

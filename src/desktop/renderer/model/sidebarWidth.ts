@@ -13,13 +13,13 @@
  * preference, not project state, so it never rides the wire.
  */
 
-export const SIDEBAR_WIDTH_STORAGE_KEY = 'hanekawa.sidebarWidth'
+export const SIDEBAR_WIDTH_STORAGE_KEY = 'hanekawa.sidebarWidth.v2'
 
 /**
  * The resting width, and the value the stylesheet falls back to when nothing has
  * been stored. Pinned against `styles.css` by `rendererStyleTokens.test.ts`.
  */
-export const SIDEBAR_WIDTH_DEFAULT = 240
+export const SIDEBAR_WIDTH_DEFAULT = 256
 /**
  * The narrow end. Below this the session rows stop being able to show a title
  * *and* its badge, so the rail would be draggable into uselessness.

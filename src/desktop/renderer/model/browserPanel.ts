@@ -19,7 +19,7 @@ import type { WireBrowserTabInfo } from '../../shellProtocol.js'
 // because it is the same kind of thing: a local view preference that never rides
 // the wire and never enters project state.
 
-export const BROWSER_WIDTH_STORAGE_KEY = 'hanekawa.browserPanelWidth'
+export const BROWSER_WIDTH_STORAGE_KEY = 'hanekawa.browserPanelWidth.v2'
 
 /**
  * The resting width, and the stylesheet's own fallback.
@@ -30,9 +30,9 @@ export const BROWSER_WIDTH_STORAGE_KEY = 'hanekawa.browserPanelWidth'
  * breakpoint and the panel stops showing what the user is actually building —
  * which is what `BROWSER_WIDTH_MIN` marks.
  */
-export const BROWSER_WIDTH_DEFAULT = 340
+export const BROWSER_WIDTH_DEFAULT = 264
 /** Under this the address bar cannot show a host *and* its controls. */
-export const BROWSER_WIDTH_MIN = 300
+export const BROWSER_WIDTH_MIN = 240
 /**
  * The wide end. Past this the transcript, not the browser, is the cramped
  * column — the same reasoning `SIDEBAR_WIDTH_MAX` uses, from the other side.

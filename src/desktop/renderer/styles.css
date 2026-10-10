@@ -197,14 +197,14 @@
      the default and the range. Declared here so a first run — and every test
      that never touches localStorage — resolves to the resting width.
      `#sidebar` and `.sidebar-shell` both resolve from it; they are one axis. */
-  --sidebar-width: 240px;
+  --sidebar-width: 256px;
   /* The browser panel's width, the third layout number the renderer writes and
      declared here for the same reason the rail's is: `app.ts` re-declares it on
      `documentElement` when the handle between the canvas and the panel is
      dragged, while `model/browserPanel.ts` owns the default and the range.
      Declared so a first run — and every test that never touches localStorage —
      resolves to the resting width. */
-  --browser-panel-width: 340px;
+  --browser-panel-width: 264px;
   /* The seam from the sidebar's content edge to the canvas, and the part of it
      the sidebar's scrollbar is allowed to occupy. The overhang is the 10px seam
      minus 2px of air and the 1px sash line, so the scrollbar owns 7px and the

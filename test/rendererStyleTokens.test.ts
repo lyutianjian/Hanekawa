@@ -386,11 +386,11 @@ test('the palette is the one that was agreed, value for value', () => {
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
-      '--sidebar-width': '240px',
+      '--sidebar-width': '256px',
       // The browser panel's resting width, the same kind of exception as the
       // rail's above: a layout number `app.ts` re-declares on the document
       // element when the handle between the canvas and the panel is dragged.
-      '--browser-panel-width': '340px',
+      '--browser-panel-width': '264px',
       '--titlebar-inset-left': '0px',
       '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
@@ -499,11 +499,11 @@ test('the palette is the one that was agreed, value for value', () => {
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
-      '--sidebar-width': '240px',
+      '--sidebar-width': '256px',
       // The browser panel's resting width, the same kind of exception as the
       // rail's above: a layout number `app.ts` re-declares on the document
       // element when the handle between the canvas and the panel is dragged.
-      '--browser-panel-width': '340px',
+      '--browser-panel-width': '264px',
       '--titlebar-inset-left': '0px',
       '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air

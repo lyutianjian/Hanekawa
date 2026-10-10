@@ -45,6 +45,8 @@ import { buildStartupNotices, resolveInitialQueuedPrompt, type StartupNotice } f
 import type { AgentSession, ProjectRuntime, SessionScope } from '../types.js'
 import type { SessionPane } from '../sessionWorkspace.js'
 import type { RuntimeChannel } from './channel.js'
+import type { CoordinationLaneControl } from './coordinationHost.js'
+import { sessionSwitchBlocked } from '../sessionRole.js'
 import { createHostCommandContext } from './commandContext.js'
 import { parseHostCommand, type HostCommandParseFailure } from './commandSchema.js'
 import { PendingRequests } from './pendingRequests.js'
@@ -262,7 +264,7 @@ export interface PaneRegistry {
  * `PermissionGate.approve`, so cancelling a turn leaves a pending prompt
  * pending, and the agent loop waits forever.
  */
-export class SessionHost {
+export class SessionHost implements CoordinationLaneControl {
   private readonly channel: RuntimeChannel
   private readonly controller: SessionController
   private readonly runtimeSlot: RuntimeSlot
@@ -306,6 +308,11 @@ export class SessionHost {
    */
   private queueBlock: { messageId: string; session: AgentSession | undefined } | undefined
   private pendingConfigScope: ProviderConfigChangeScope | undefined
+  /** A wake turn's text, waiting for the pump to let it through. See `requestWake`. */
+  private pendingWake: string | undefined
+  private readonly stateListeners = new Set<() => void>()
+  /** The last lane state announced, so listeners fire on change only. */
+  private lastStateKey = ''
   private readonly teardown: Array<() => void> = []
   private session: SessionMeta
   private disposed = false
@@ -361,6 +368,7 @@ export class SessionHost {
     for (const off of this.teardown.splice(0)) off()
     this.detachBridges()
     this.settleAllUiRequests()
+    this.stateListeners.clear()
   }
 
   // --- outbound ---------------------------------------------------------
@@ -417,6 +425,7 @@ export class SessionHost {
       subagentProgress: [...this.controller.getSubagentProgress()],
       ...(cost ? { cost } : {}),
     })
+    this.notifyStateChange()
     this.pumpQueue()
   }
 
@@ -529,7 +538,7 @@ export class SessionHost {
         const response = await this.askUi({
           kind: 'permission',
           requestId,
-          payload: toPermissionDto(request, { cwd: this.project.cwd }),
+          payload: toPermissionDto(request, { cwd: this.scope.workingDir }),
         })
         if (response.kind !== 'permission') return false
         // Must run before we resolve: PermissionGate reads the captured
@@ -586,9 +595,11 @@ export class SessionHost {
     if (this.disposed) return Promise.resolve(UI_REQUEST_FALLBACKS[request.kind]())
     const pending = this.pendingUi.create(request.requestId)
     this.pendingKinds.set(request.requestId, request.kind)
+    this.notifyStateChange()
     this.post({ type: 'ui-request', request })
     return pending.finally(() => {
       this.pendingKinds.delete(request.requestId)
+      this.notifyStateChange()
       // A dialog closing can unblock the pump; nothing else notices that.
       this.pumpQueue()
     })
@@ -637,6 +648,24 @@ export class SessionHost {
         : {}),
     }
     const tasks = this.project.backgroundTasks
+    // Queued messages go first (`canWakeForNotifications` needs an empty queue);
+    // a coordinator wake goes before background notes and takes any that are
+    // waiting, so the two never start back-to-back turns.
+    if (this.pendingWake !== undefined && canWakeForNotifications(state, true)) {
+      const notes = tasks.hasParentNotifications(this.session.id)
+        ? tasks.consumeParentNotifications(this.session.id)
+        : []
+      const text = [this.pendingWake, ...notes].join('\n\n')
+      this.pendingWake = undefined
+      this.pumping = true
+      void this.controller.submit({ text }, { origin: 'wake' })
+        .catch((error: unknown) => this.postQueueNotice(`Failed to start a wake turn: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(() => {
+          this.pumping = false
+          this.pumpQueue()
+        })
+      return
+    }
     if (canWakeForNotifications(state, tasks.hasParentNotifications(this.session.id))) {
       this.pumping = true
       void this.controller.submit(notificationInput(tasks.consumeParentNotifications(this.session.id)))
@@ -661,7 +690,7 @@ export class SessionHost {
             // is still queued here, so it survives the window closing instead
             // of being lost.
             if (this.disposed) throw new Error('the window closed before the message was sent')
-            return this.controller.submit(input, undefined, context)
+            return this.controller.submit(input, context.origin ? { origin: context.origin } : undefined, context)
           },
         })
         if (outcome.kind === 'blocked') {
@@ -826,6 +855,7 @@ export class SessionHost {
       }
 
       case 'retarget':
+        this.assertSessionSwitchAllowed()
         return this.applySessionSwitch(await switchToExistingSession(
           // `reset`, not `migrateTo`: `/resume` goes *to* an existing session,
           // which has a queue of its own replayed from its own log. Carrying this
@@ -836,6 +866,7 @@ export class SessionHost {
         ))
 
       case 'create-session':
+        this.assertSessionSwitchAllowed()
         return this.applySessionSwitch(await switchToNewSession(
           // `migrateTo`, because `/clear` is the same conversation continuing in a
           // fresh log: anything queued but unsent still means what it meant, and
@@ -939,16 +970,8 @@ export class SessionHost {
         return withToolDisplays({ records: await this.afterRewind() }) satisfies WireRewindResult
       }
 
-      case 'set-model': {
-        const next = this.scope.createRuntime(command.modelKey, this.session, this.ledger.list())
-        // Clearing before the swap: the cached Environment section embeds the
-        // model name, so a stale prefix would survive into the next request.
-        this.runtimeSlot.current?.loop.clearCachedSections()
-        this.runtimeSlot.replace(next)
-        const effort = this.runtimeSlot.reapplyEffort()
-        this.postRuntimeSnapshot()
-        return { modelKey: command.modelKey, effort }
-      }
+      case 'set-model':
+        return { modelKey: command.modelKey, effort: this.applyModel(command.modelKey) }
 
       case 'set-effort': {
         const applied = this.runtimeSlot.setEffort(command.level)
@@ -1169,6 +1192,13 @@ export class SessionHost {
     if (name === 'exit') return { handled: true, exit: true }
 
     const command = this.project.commands.get(name)
+    if (command && (command.name === 'clear' || command.name === 'resume') && sessionSwitchBlocked(this.scope.role)) {
+      this.emitCommandEffect({
+        kind: 'write-line',
+        text: `/${command.name} is not available in a ${this.scope.role} session.`,
+      })
+      return { handled: true }
+    }
     if (!command) {
       this.emitCommandEffect({
         kind: 'write-line',
@@ -1186,6 +1216,79 @@ export class SessionHost {
       })
     }
     return { handled: true }
+  }
+
+  private assertSessionSwitchAllowed(): void {
+    if (sessionSwitchBlocked(this.scope.role)) {
+      throw new Error(`A ${this.scope.role} session cannot switch to another session`)
+    }
+  }
+
+  /** The `set-model` body, shared with `CoordinationLaneControl.setModel`. Returns the effort reapplied. */
+  private applyModel(modelKey: string): string {
+    const next = this.scope.createRuntime(modelKey, this.session, this.ledger.list())
+    // Clearing before the swap: the cached Environment section embeds the
+    // model name, so a stale prefix would survive into the next request.
+    this.runtimeSlot.current?.loop.clearCachedSections()
+    this.runtimeSlot.replace(next)
+    const effort = this.runtimeSlot.reapplyEffort()
+    this.postRuntimeSnapshot()
+    return effort
+  }
+
+  // --- CoordinationLaneControl ------------------------------------------
+
+  async enqueueFromCoordinator(text: string): Promise<void> {
+    // The queue subscription announces it and asks the pump; an idle lane sends it now.
+    await this.messages.enqueue({ text }, 'next', { origin: 'coordinator' })
+  }
+
+  /** Not gated on `hello`: a lane opened without a window still wakes. */
+  requestWake(text: string): void {
+    this.pendingWake = this.pendingWake === undefined ? text : `${this.pendingWake}\n\n${text}`
+    this.pumpQueue()
+  }
+
+  /**
+   * "Stop generation": drops what was queued before the stop, then interrupts.
+   * Discarding first, or the pump would resend them at `turn-end`.
+   */
+  async stop(): Promise<void> {
+    const ids = this.messages.getSnapshot().map((message) => message.id)
+    this.pendingWake = undefined
+    await this.messages.discard(ids)
+    this.controller.interrupt('coordinator-stop')
+  }
+
+  setModel(key: string): void {
+    this.applyModel(key)
+  }
+
+  setEffort(level: EffortLevel): void {
+    this.runtimeSlot.setEffort(level)
+  }
+
+  state(): { streaming: boolean; pendingApproval: boolean; pendingDialog: boolean } {
+    let pendingApproval = false
+    let pendingDialog = false
+    for (const kind of this.pendingKinds.values()) {
+      if (kind === 'permission') pendingApproval = true
+      else pendingDialog = true
+    }
+    return { streaming: this.controller.getSnapshot().isStreaming, pendingApproval, pendingDialog }
+  }
+
+  onStateChange(listener: () => void): () => void {
+    this.stateListeners.add(listener)
+    return () => { this.stateListeners.delete(listener) }
+  }
+
+  private notifyStateChange(): void {
+    const { streaming, pendingApproval, pendingDialog } = this.state()
+    const key = `${streaming}|${pendingApproval}|${pendingDialog}`
+    if (key === this.lastStateKey) return
+    this.lastStateKey = key
+    for (const listener of [...this.stateListeners]) listener()
   }
 
   private emitCommandEffect = (effect: CommandEffect): void => {

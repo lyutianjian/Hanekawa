@@ -181,6 +181,18 @@ export interface CompactAttemptFailedRecord {
   turnId?: string
 }
 
+/**
+ * Coordinator board snapshot / pending notes, appended by the loop at the start
+ * of a step. Durable: replayed on every later request as a system reminder.
+ */
+export interface CoordinationUpdateRecord {
+  id: string
+  type: 'coordination_update'
+  content: string
+  createdAt: string
+  turnId?: string
+}
+
 export interface ToolUseSummaryRecord {
   id: string
   type: 'tool_use_summary'
@@ -339,6 +351,9 @@ export interface TurnInterruptionRecord {
   turnId?: string
 }
 
+/** Who drove a turn: the user, a coordinator session, or an automatic wake. */
+export type TurnOrigin = 'user' | 'coordinator' | 'wake'
+
 export type MessageQueuePriority = 'now' | 'next' | 'later'
 
 export interface PersistedQueuedMessage {
@@ -348,6 +363,8 @@ export interface PersistedQueuedMessage {
   createdAt: string
   /** Image refs queued with the text; restored intact across a restart. */
   images?: ImageAttachmentRef[]
+  /** Absent = the user. A coordinator message is only steered into a coordinator-driven turn. */
+  origin?: 'coordinator'
 }
 
 /**
@@ -395,6 +412,7 @@ export type SessionRecord =
   | CompactBoundaryRecord
   | CompactAttemptFailedRecord
   | ToolUseSummaryRecord
+  | CoordinationUpdateRecord
   | SubagentTranscriptRecord
   | SubagentTaskRecord
   | BackgroundTaskRecord
@@ -500,8 +518,13 @@ export interface AttachmentBytesLoader {
   >
 }
 
+/** A session's part in a project's coordination (see `services/coordination/`). */
+export type CoordinationRole = 'coordinator' | 'thread'
+
 export interface ToolContext {
   cwd: string
+  /** Key for per-project data dirs (plans, memory, spill, transcripts). Absent means `cwd`. */
+  projectDir?: string
   sessionId: string
   readFiles: Set<string>
   readFileState?: Map<string, ReadFileState>
@@ -640,6 +663,8 @@ export interface TaskDisplayCounts {
 
 export interface Tool {
   name: string
+  /** When set, the tool is offered only to sessions with one of these roles. Absent means available to everyone. */
+  sessionRoles?: readonly CoordinationRole[]
   description: string
   inputSchema: ZodTypeAny
   apiInputSchema?: JsonSchema

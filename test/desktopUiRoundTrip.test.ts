@@ -71,6 +71,8 @@ async function createHarness(): Promise<Harness> {
 
   const scope = {
     session,
+    projectDir: cwd,
+    workingDir: cwd,
     bridges,
     permissionGate: {
       getMode: () => 'default',

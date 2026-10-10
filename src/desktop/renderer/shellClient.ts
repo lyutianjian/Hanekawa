@@ -22,6 +22,11 @@ import type {
   WireBrowserTabInfo,
   WireShellBrowserCreateTabResult,
   WireShellBrowserOkResult,
+  WireShellCoordinationOkResult,
+  WireShellOpenCoordinatorResult,
+  WireShellThreadMergeResult,
+  WireShellThreadMergesResult,
+  WireCoordinationThreads,
 } from '../shellProtocol.js'
 
 /**
@@ -46,6 +51,9 @@ export class ShellClient {
   private readonly laneListeners = new Set<(lanes: readonly WireLaneInfo[]) => void>()
   private readonly activateListeners = new Set<(lane: string) => void>()
   private readonly browserListeners = new Set<(tabs: readonly WireBrowserTabInfo[]) => void>()
+  private readonly coordinationListeners = new Set<(state: WireCoordinationThreads) => void>()
+  /** Project root -> its latest thread table, from pull replies and pushes alike. */
+  private readonly coordinationThreadsByRoot = new Map<string, WireCoordinationThreads>()
   private lanes: readonly WireLaneInfo[] = Object.freeze([])
   private browserTabs: readonly WireBrowserTabInfo[] = Object.freeze([])
   private readonly teardown: Array<() => void> = []
@@ -218,6 +226,104 @@ export class ShellClient {
     }) as Promise<WireShellPickImagesResult>
   }
 
+  // --- coordination ----------------------------------------------------------
+
+  /** Opens the project's coordinator session as the active lane, creating it the first time. */
+  async openCoordinator(projectRoot: string): Promise<WireShellOpenCoordinatorResult> {
+    return this.send({
+      type: 'open-coordinator',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellOpenCoordinatorResult>
+  }
+
+  /** Stops the coordinator and every running thread of the project. */
+  async stopAllCoordination(projectRoot: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'coordination-stop-all',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  async threadMerges(projectRoot: string): Promise<WireShellThreadMergesResult> {
+    return this.send({
+      type: 'thread-merges',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellThreadMergesResult>
+  }
+
+  async mergeThread(projectRoot: string, threadId: string): Promise<WireShellThreadMergeResult> {
+    return this.send({
+      type: 'thread-merge',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellThreadMergeResult>
+  }
+
+  async dismissThreadMerge(projectRoot: string, threadId: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'thread-merge-dismiss',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  /** Hands a conflicting merge back to the thread to resolve on its branch. */
+  async resolveThreadMerge(projectRoot: string, threadId: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'thread-merge-resolve',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  /** Pulls a project's thread table; the reply also lands in the cache and wakes the listeners. */
+  async coordinationThreads(projectRoot: string): Promise<WireCoordinationThreads> {
+    const state = (await this.send({
+      type: 'coordination-threads',
+      id: crypto.randomUUID(),
+      projectRoot,
+    })) as WireCoordinationThreads
+    this.applyCoordinationThreads(state)
+    return state
+  }
+
+  /** The user's stop of one thread. */
+  async threadStop(projectRoot: string, threadId: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'thread-stop',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  /** The user's 结案 of one thread. */
+  async threadResolve(projectRoot: string, threadId: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'thread-resolve',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  /** The latest thread table for a project root, or `undefined` before the first pull or push. */
+  getCoordinationThreads = (projectRoot: string): WireCoordinationThreads | undefined =>
+    this.coordinationThreadsByRoot.get(projectRoot)
+
+  onCoordinationThreads(listener: (state: WireCoordinationThreads) => void): () => void {
+    this.coordinationListeners.add(listener)
+    return () => {
+      this.coordinationListeners.delete(listener)
+    }
+  }
+
   // --- browser ---------------------------------------------------------------
 
   /** The most recent tab list the host announced, across every lane. */
@@ -298,6 +404,8 @@ export class ShellClient {
     this.laneListeners.clear()
     this.activateListeners.clear()
     this.browserListeners.clear()
+    this.coordinationThreadsByRoot.clear()
+    this.coordinationListeners.clear()
   }
 
   // --- internals -----------------------------------------------------------
@@ -317,6 +425,9 @@ export class ShellClient {
         this.browserTabs = Object.freeze([...event.tabs])
         for (const listener of [...this.browserListeners]) listener(this.browserTabs)
         return
+      case 'coordination-threads':
+        this.applyCoordinationThreads(event.state)
+        return
       case 'reply':
         this.replies.settle(event.id, { ok: true, result: event.result })
         return
@@ -334,6 +445,11 @@ export class ShellClient {
     if (sameLaneList(this.lanes, next)) return
     this.lanes = Object.freeze([...next])
     for (const listener of [...this.laneListeners]) listener(this.lanes)
+  }
+
+  private applyCoordinationThreads(state: WireCoordinationThreads): void {
+    this.coordinationThreadsByRoot.set(state.projectRoot, state)
+    for (const listener of [...this.coordinationListeners]) listener(state)
   }
 
   private async send(command: ShellCommand): Promise<unknown> {
@@ -370,7 +486,8 @@ function sameLaneList(current: readonly WireLaneInfo[], next: readonly WireLaneI
       a.sessionId !== b.sessionId ||
       a.projectRoot !== b.projectRoot ||
       a.projectName !== b.projectName ||
-      a.sessionTitle !== b.sessionTitle
+      a.sessionTitle !== b.sessionTitle ||
+      a.coordinationRole !== b.coordinationRole
     ) {
       return false
     }

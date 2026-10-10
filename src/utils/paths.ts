@@ -190,6 +190,20 @@ export function getProjectMemoryDir(cwd: string): string {
   return path.join(getProjectDataDir(cwd), 'memory')
 }
 
+/** Shared notes of a project's coordination threads. */
+export function getCoordinationNotesDir(projectDir: string): string {
+  return path.join(getProjectDataDir(projectDir), 'coordination', 'notes')
+}
+
+/**
+ * Where a coordination thread's git worktree lives. Outside `~/.myagent` (the
+ * file tools' hard wall), outside the project, and not in tmpdir (swept while a
+ * thread is still alive).
+ */
+export function getThreadWorktreeDir(projectDir: string, threadId: string): string {
+  return path.join(userHome(), '.myagent-worktrees', projectDataKey(projectDir), threadId)
+}
+
 /**
  * The file tools' path guard. The workspace boundary is not decided here: the
  * risk classifier grades a path outside it and the permission gate rules on
@@ -199,11 +213,12 @@ export function getProjectMemoryDir(cwd: string): string {
  * to Read), the project's plan files (plan mode has it Write them) and its
  * memory directory. The session transcripts least of all.
  */
-export function resolveToolPath(context: { cwd: string; sessionId?: string }, filePath: string): string {
+export function resolveToolPath(context: { cwd: string; projectDir?: string; sessionId?: string }, filePath: string): string {
   const absolute = path.resolve(context.cwd, filePath)
   if (!isUnderRoot(getGlobalMyAgentDir(), absolute)) return absolute
-  const roots = [getProjectPlansDir(context.cwd), getProjectMemoryDir(context.cwd)]
-  if (context.sessionId) roots.push(getToolResultSpillDir(context.cwd, context.sessionId))
+  const projectDir = context.projectDir ?? context.cwd
+  const roots = [getProjectPlansDir(projectDir), getProjectMemoryDir(projectDir), getCoordinationNotesDir(projectDir)]
+  if (context.sessionId) roots.push(getToolResultSpillDir(projectDir, context.sessionId))
   if (roots.some((root) => isUnderRoot(root, absolute))) return absolute
   throw new Error(`Path "${filePath}" is inside Hanekawa's runtime data (~/.myagent), which file tools cannot reach`)
 }

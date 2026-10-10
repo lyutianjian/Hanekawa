@@ -8,9 +8,12 @@ import type {
   TaskDisplaySnapshot,
   TokenUsage,
   ToolProgressEvent,
+  TurnOrigin,
 } from '../harness/types.js'
 import { getRecordsAfterLastCompact } from '../harness/requestPrep.js'
 import { promptTokens } from '../harness/usage.js'
+import { promptCacheTtlMs } from '../harness/cacheControl.js'
+import { shouldIdleCompact } from './coordination/contextPolicy.js'
 import { isSystemReminderBlock } from '../harness/systemReminder.js'
 import { countSessionRecordsTokens } from '../prompts/budget.js'
 import { generateSessionTitle } from '../harness/sessionTitle.js'
@@ -53,7 +56,7 @@ import type { AgentSession } from './types.js'
  */
 export type SessionEvent =
   /** A turn is beginning. Emitted synchronously before any I/O. */
-  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[]; queuedMessageId?: string }
+  | { type: 'turn-start'; messageId: string; displayInput: string; createdAt: string; images?: ImageAttachmentRef[]; queuedMessageId?: string; origin?: TurnOrigin }
   /** A record reached the UI. `approvalToolUseId`/`subagentProgress` are the correlations the controller tracks. */
   | { type: 'record'; record: SessionRecord; approvalToolUseId?: string; subagentProgress?: string }
   /**
@@ -85,7 +88,7 @@ export type SessionEvent =
    * The turn finished. `aborted` mirrors `AbortSignal.aborted`, *not* "did it
    * throw" — a failed turn is not aborted and still gets a duration summary.
    */
-  | { type: 'turn-end'; aborted: boolean; rolledBack: boolean; durationMs: number; usage?: TokenUsage }
+  | { type: 'turn-end'; origin?: TurnOrigin; failed?: boolean; aborted: boolean; rolledBack: boolean; durationMs: number; usage?: TokenUsage }
 
 /**
  * A submission that came from the message queue (design §12.2).
@@ -192,6 +195,8 @@ export class SessionController {
   private readonly ledger: SessionRecordLedger
   /** Last record the most recent request carried; everything after it is estimated. */
   private usageAnchorRecordId: string | undefined
+  /** When the last provider response landed; idle compaction measures from here. */
+  private lastRequestAt: number | undefined
   /** Memo for {@link contextUsed}, invalidated by either input that feeds it. */
   private contextUsedMemo:
     | { anchor: string | undefined; size: number; base: number | undefined; tokens: number }
@@ -293,9 +298,12 @@ export class SessionController {
     const agentSession = this.getSession()
     const loop = agentSession.loop
     const messageId = randomUUID()
-    const runOverrides: AgentRunOverrides | undefined = handoff
+    const origin: TurnOrigin = options?.origin ?? 'user'
+    let runOverrides: AgentRunOverrides | undefined = handoff
       ? { ...options, sourceQueuedMessageId: handoff.queuedMessageId }
       : options
+    if (this.shouldCompactIdle(loop)) runOverrides = { ...runOverrides, compactBeforeSend: true }
+    let failed = false
 
     // Submission preparation (design §9.2): the new-image gate runs before
     // turn-start is emitted and before any record exists, so a blocked input
@@ -307,6 +315,7 @@ export class SessionController {
     this.emit({
       type: 'turn-start',
       messageId,
+      origin,
       displayInput: options?.displayInput ?? input.text,
       createdAt: new Date().toISOString(),
       ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -374,6 +383,7 @@ export class SessionController {
           })
         }
       } else {
+        failed = true
         // A mid-turn image block (a fallback or plan route onto a text-only
         // model, the provider's final check) leaves the notice as its only
         // trace, so it arrives with its exit attached (design §13, S24). A
@@ -400,6 +410,8 @@ export class SessionController {
 
       this.emit({
         type: 'turn-end',
+        origin,
+        failed,
         aborted: ac.signal.aborted,
         rolledBack: this.didRollback,
         durationMs: Date.now() - this.loopStartMs,
@@ -538,7 +550,33 @@ export class SessionController {
     this.runReportedUsage = addTokenUsage(this.runReportedUsage, usage)
     this.usage = { lastRequest: usage, total: addTokenUsage(this.usage.total, usage) }
     this.usageAnchorRecordId = anchorRecordId
+    this.lastRequestAt = Date.now()
     this.publish()
+  }
+
+  /** Coordinator sessions only: the prompt cache went cold while idle and the context is big enough to compact. */
+  private shouldCompactIdle(loop: AgentSession['loop']): boolean {
+    if (this.session.coordination?.role !== 'coordinator') return false
+    let at = this.lastRequestAt
+    if (at === undefined) {
+      const records = this.ledger.list()
+      for (let i = records.length - 1; i >= 0; i--) {
+        const record = records[i]!
+        if (record.type === 'message' && record.role === 'assistant') {
+          const parsed = Date.parse(record.createdAt)
+          if (Number.isFinite(parsed)) at = parsed
+          break
+        }
+      }
+    }
+    if (at === undefined) return false
+    const lastRequest = this.usage.lastRequest
+    return shouldIdleCompact({
+      idleMs: Date.now() - at,
+      cacheTtlMs: promptCacheTtlMs(),
+      ...(lastRequest ? { occupiedTokens: promptTokens(lastRequest) } : {}),
+      usableContextWindow: loop.getContextBudget().usableContextWindow,
+    })
   }
 
   /**

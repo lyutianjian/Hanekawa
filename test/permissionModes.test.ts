@@ -468,3 +468,17 @@ test('memory files: no prompt in any mode, but only direct *.md and only with me
   assert.equal(await gateFor('default', {}, false)(bashTool, bash(`ls ${memoryDir}`)), 'ask')
   assert.equal(await gateFor('default', { deny: [`Read(${memoryDir}/**)`] })(bashTool, bash(`cat ${note}`)), 'deny')
 })
+
+test('a locked readonly gate denies a normal write without prompting', async (t) => {
+  const cwd = await scratch(t)
+  const requests: PermissionRequest[] = []
+  const gate = new PermissionGate(async (request) => { requests.push(request); return true }, [], {
+    mode: 'readonly',
+    cwd,
+    lockMode: true,
+  })
+  gate.setMode('bypass')
+  const decision = await gate.approveDetailed(writeTool, { filePath: path.join(cwd, 'a.txt') })
+  assert.equal(decision.approved, false)
+  assert.equal(requests.length, 0)
+})

@@ -1,4 +1,5 @@
-import type { Tool } from '../harness/types.js'
+import type { CoordinationRole, Tool } from '../harness/types.js'
+import { toolAvailableForRole } from './sessionRole.js'
 
 /** The per-runtime Agent tool is not part of `baseTools`; see `refresh`. */
 const AGENT_TOOL_NAME = 'Agent'
@@ -17,7 +18,7 @@ const AGENT_TOOL_NAME = 'Agent'
 export class ToolRegistry {
   private readonly baseTools: readonly Tool[]
   private readonly toolsByServer = new Map<string, Tool[]>()
-  private readonly runtimeToolSets = new Set<Tool[]>()
+  private readonly runtimeToolSets = new Map<Tool[], CoordinationRole | undefined>()
 
   constructor(baseTools: readonly Tool[]) {
     this.baseTools = baseTools
@@ -27,13 +28,13 @@ export class ToolRegistry {
    * A fresh array of the currently known tools. The caller appends its
    * per-runtime Agent tool and then calls `register` to keep it in sync.
    */
-  buildRuntimeTools(): Tool[] {
-    return [...this.baseTools, ...this.toolsByServer.values()].flat()
+  buildRuntimeTools(role?: CoordinationRole): Tool[] {
+    return [...this.baseFor(role), ...[...this.toolsByServer.values()].flat()]
   }
 
   /** Starts tracking `tools`; later MCP changes rewrite it in place. */
-  register(tools: Tool[]): void {
-    this.runtimeToolSets.add(tools)
+  register(tools: Tool[], role?: CoordinationRole): void {
+    this.runtimeToolSets.set(tools, role)
   }
 
   /** Stops tracking `tools`. Called from `AgentSession.dispose`. */
@@ -67,9 +68,13 @@ export class ToolRegistry {
     this.refresh()
   }
 
+  private baseFor(role: CoordinationRole | undefined): Tool[] {
+    return this.baseTools.filter((tool) => toolAvailableForRole(tool, role))
+  }
+
   private refresh(): void {
     const mcpTools = [...this.toolsByServer.values()].flat()
-    for (const tools of this.runtimeToolSets) {
+    for (const [tools, role] of this.runtimeToolSets) {
       // The Agent tool is built per runtime, so it is not in `baseTools` and has
       // to be lifted out and put back.
       //
@@ -81,7 +86,7 @@ export class ToolRegistry {
       // before a server connected, and tool order is part of the prompt-cache
       // key — the two runtimes would then cache differently.
       const agentTool = tools.find((tool) => tool.name === AGENT_TOOL_NAME)
-      tools.splice(0, tools.length, ...this.baseTools, ...mcpTools)
+      tools.splice(0, tools.length, ...this.baseFor(role), ...mcpTools)
       if (agentTool) tools.push(agentTool)
     }
   }

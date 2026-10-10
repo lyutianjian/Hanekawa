@@ -22,21 +22,21 @@
      canvas and in dark it reads *lighter*, which is not a contradiction but the
      same rule: the frame recedes, the canvas is where the eye lands.
 
-     The ladder is warm-neutral end to end (r > g > b in both themes): the
-     paper metaphor does not survive a cool frame around a warm canvas, so the
-     old warm-canvas/cool-frame split is gone along with the wash it carried.
+     The ladder is near-neutral grey end to end: at most a whisper of warmth (channels
+     within 1-2 steps, saturation <= 2%) shared by every rung of both themes,
+     so frame and canvas never disagree about temperature.
      Everything stays far inside the ≤20 saturation the neutrality guard
      enforces. */
-  --surface-base: #262523;
-  --surface-canvas: #1c1b19;
-  --surface-card: #232220;
+  --surface-base: #242424;
+  --surface-canvas: #1c1c1c;
+  --surface-card: #262626;
   /* Pointer-over. Its own step because the four-layer ladder has no room for
      one: rows inside a panel sit *on* --surface-card, so hovering them to
      --surface-card would be invisible, and hovering them to --surface-active
      would make hover indistinguishable from selection. */
-  --surface-hover: #2e2c29;
+  --surface-hover: #2e2e2d;
   /* The row the keyboard is on, in either list. */
-  --surface-active: #383530;
+  --surface-active: #393938;
 
   /* The knob of a switch that is on. Its own token because it is the one
      surface that must NOT follow the theme: it sits on a saturated accent fill
@@ -46,7 +46,7 @@
   /* What a modal dims the app with. A token because both #overlay and #rewind
      draw it, and they must dim by the same amount or stacking them reads as a
      bug. Follows the theme: dark dims harder with plain black, light dims less
-     and with the paper's own warm cast. */
+     and with the graphite's own cast. */
   --surface-scrim: rgba(0, 0, 0, 0.55);
   /* The image viewer's own, and the reason it is a second token: the two modal
      layers dim *so the app stays readable behind the question they ask*, while
@@ -55,13 +55,13 @@
   --surface-scrim-strong: rgba(0, 0, 0, 0.88);
 
   /* --- text: three levels plus the one interactive colour --- */
-  --text-primary: #ede9e3;
-  --text-secondary: #a19a90;
+  --text-primary: #ebebea;
+  --text-secondary: #a6a6a5;
   /* Metadata, and only metadata: anything the user can click asks for one of
      the two rungs above. */
-  --text-tertiary: #857e74;
+  --text-tertiary: #858584;
   /* Links are brand-coloured text, and the *strong* brand rung is the one
-     cleared for text — `--accent-brand` itself carries only 3.9:1 on the paper
+     cleared for text — `--accent-brand` itself carries only 4.0:1 on the paper
      (design_guidance 二.2). An alias, so the equality cannot drift. */
   --link: var(--accent-brand-strong);
 
@@ -71,25 +71,24 @@
      colour means something when it does appear.
      `test/rendererStyleTokens.test.ts` enforces the property list.
 
-     The brand is two tokens, not one. `--accent-brand` is the clay orange for
-     glyphs, hairlines and indicator bars — 3.9:1 on the paper, enough for a
+     The brand is two tokens, not one. `--accent-brand` is the clay for
+     glyphs, hairlines and indicator bars — 4.0:1 on the paper, enough for a
      rule, not for text. `--accent-brand-strong` is the rung cleared for text
-     and fills (5.6:1 on paper, 5.8:1 under its own white). Dark keeps both at
-     the lighter clay: on charcoal the deep variant would read as mud, and the
+     and fills (5.5:1 on paper, 5.7:1 under its own white). Dark keeps both at
+     the lighter clay: on graphite the deep variant would read as mud, and the
      fill pairs with dark text instead (design_guidance 二.2/二.3). */
-  --accent-brand: #d97757;
-  --accent-brand-strong: #d97757;
+  --accent-brand: #d4806a;
+  --accent-brand-strong: #d4806a;
   /* The colour cleared to sit *on* a brand fill. Not `--surface-knob`: the knob
      is white in both themes, while this flips — white on clay in light, the
      canvas's own near-black in dark. */
-  --on-brand: #1c1b19;
-  /* The five semantic states, Flexoki-tinted to sit on warm paper rather than
-     on a cool one. */
-  --accent-info: #4385be;
-  --accent-tool: #8b7ec8;
-  --accent-review: #879a39;
-  --accent-warn: #d0a215;
-  --accent-danger: #d14d41;
+  --on-brand: #1c1c1c;
+  /* The five semantic states, tuned to sit on soft graphite. */
+  --accent-info: #6fa5dc;
+  --accent-tool: #a690d8;
+  --accent-review: #8dbd6a;
+  --accent-warn: #d5ad4c;
+  --accent-danger: #e5707f;
 
   /* Text that has to carry a state colour asks for it by *its own* name, so no
      rule ever spells `--accent-*` on a paragraph and the rule above stays
@@ -100,13 +99,13 @@
 
   /* --- lines ---
      Hairlines, and few of them: grouping is done with cards and spacing. */
-  --border-subtle: #322f2b;
-  --border-strong: #45413b;
+  --border-subtle: #2f2f2e;
+  --border-strong: #414140;
   /* The focus ring *is* the brand colour (design_guidance 二.2「焦点环 = 品牌色」)
      — the brand's one permitted appearance at hairline weight. An alias for
      the same reason `--link` is: the decision is the equality itself. */
   --focus-ring: var(--accent-brand);
-  --caret: #ede9e3;
+  --caret: #ebebea;
 
   /* --- elevation ---
      Two depths, and shadows for nothing else: only things that float over
@@ -115,7 +114,7 @@
      pill from the paper it covers, in dark the border does most of that work.
      `--shadow-modal` is the modal panels' depth: they sit above a dimmed app,
      not above text, and need the wider spread to read as above rather than in.
-     Both follow the theme — light shadows carry the paper's warm cast. */
+     Both follow the theme — light shadows carry the neutral cast. */
   --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.45);
   --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.6);
 
@@ -197,14 +196,14 @@
      the default and the range. Declared here so a first run — and every test
      that never touches localStorage — resolves to the resting width.
      `#sidebar` and `.sidebar-shell` both resolve from it; they are one axis. */
-  --sidebar-width: 280px;
+  --sidebar-width: 256px;
   /* The browser panel's width, the third layout number the renderer writes and
      declared here for the same reason the rail's is: `app.ts` re-declares it on
      `documentElement` when the handle between the canvas and the panel is
      dragged, while `model/browserPanel.ts` owns the default and the range.
      Declared so a first run — and every test that never touches localStorage —
      resolves to the resting width. */
-  --browser-panel-width: 408px;
+  --browser-panel-width: 264px;
   /* The seam from the sidebar's content edge to the canvas, and the part of it
      the sidebar's scrollbar is allowed to occupy. The overhang is the 10px seam
      minus 2px of air and the 1px sash line, so the scrollbar owns 7px and the
@@ -299,12 +298,12 @@
   /* --- diff ---
      Content colours, not interface colours, and exempt from the neutrality rule
      for the same reason `theme.markdown` and `theme.syntax` are exempt in
-     `src/tui/theme.ts`: red and green *are* the meaning here. Flexoki values,
-     tuned for the warm paper rather than a neutral one (design_guidance 二.3). */
-  --diff-add-fg: #a8c06a;
-  --diff-add-bg: #1f2618;
-  --diff-del-fg: #e08a7f;
-  --diff-del-bg: #2a1c1a;
+     `src/tui/theme.ts`: red and green *are* the meaning here. Values
+     tuned for the graphite ladder (design_guidance 二.3). */
+  --diff-add-fg: #93c77a;
+  --diff-add-bg: #1f2a20;
+  --diff-del-fg: #e98a94;
+  --diff-del-bg: #33201f;
 }
 
 /* --- light theme ---
@@ -321,45 +320,45 @@
    enforces (so #e3ded5, not #d9d4c9 — chroma, not lightness, is what the guard
    bounds). */
 :root[data-theme="light"] {
-  --surface-base: #f2efe9;
-  --surface-canvas: #fdfcf9;
-  --surface-card: #f7f4ef;
-  --surface-hover: #ede9e2;
-  --surface-active: #e3ded5;
+  --surface-base: #f3f3f2;
+  --surface-canvas: #fdfdfd;
+  --surface-card: #f8f8f7;
+  --surface-hover: #eeeeed;
+  --surface-active: #e6e6e5;
 
-  /* The paper dims with its own warm cast, and less hard than dark's black. */
-  --surface-scrim: rgba(28, 25, 21, 0.32);
+  /* The paper dims with the neutral cast, and less hard than dark's black. */
+  --surface-scrim: rgba(26, 26, 26, 0.3);
   /* The viewer still goes almost opaque in light: a picture needs its own
-     field whatever the paper behind it is. Warm, not black, like the one above. */
-  --surface-scrim-strong: rgba(28, 25, 21, 0.92);
+     field whatever the paper behind it is. Tinted, not black, like the one above. */
+  --surface-scrim-strong: rgba(26, 26, 26, 0.92);
 
-  --text-primary: #1a1815;
-  --text-secondary: #6b655c;
-  --text-tertiary: #8f887d;
+  --text-primary: #1a1a1a;
+  --text-secondary: #575756;
+  --text-tertiary: #777776;
 
-  /* Here the two brand rungs split: #C96442 is the icon/hairline clay, #A8492B
-     the text-and-fill clay (5.6:1 on the paper). Dark has no use for the split
+  /* Here the two brand rungs split: #c2603f is the icon/hairline clay, #a44d30
+     the text-and-fill clay (5.7:1 on the paper). Dark has no use for the split
      and keeps both at the lighter value. */
-  --accent-brand: #c96442;
-  --accent-brand-strong: #a8492b;
+  --accent-brand: #c2603f;
+  --accent-brand-strong: #a44d30;
   --on-brand: #ffffff;
-  --accent-info: #205ea6;
-  --accent-tool: #5e409d;
-  --accent-review: #66800b;
-  --accent-warn: #ad8301;
-  --accent-danger: #af3029;
+  --accent-info: #33689f;
+  --accent-tool: #6e4fa3;
+  --accent-review: #44752a;
+  --accent-warn: #8a6604;
+  --accent-danger: #b02e46;
 
-  --border-subtle: #e6e1d8;
-  --border-strong: #d5cfc4;
-  --caret: #1a1815;
+  --border-subtle: #e5e5e4;
+  --border-strong: #d3d3d2;
+  --caret: #1a1a1a;
 
-  --shadow-float: 0 6px 20px rgba(28, 25, 21, 0.08), 0 1px 2px rgba(28, 25, 21, 0.06);
-  --shadow-modal: 0 16px 48px rgba(28, 25, 21, 0.16);
+  --shadow-float: 0 6px 20px rgba(26, 26, 26, 0.08), 0 1px 2px rgba(26, 26, 26, 0.06);
+  --shadow-modal: 0 16px 48px rgba(26, 26, 26, 0.16);
 
-  --diff-add-fg: #3a6b22;
-  --diff-add-bg: #edf3e2;
-  --diff-del-fg: #9e2b25;
-  --diff-del-bg: #f8eae8;
+  --diff-add-fg: #3c6e26;
+  --diff-add-bg: #e7f1e3;
+  --diff-del-fg: #a3283f;
+  --diff-del-bg: #f7e8e8;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -449,7 +448,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  flex: 0 0 calc(var(--sidebar-width) + var(--sidebar-gutter) - max(var(--space-3), var(--titlebar-inset-left)) - var(--space-1));
+  flex: 0 0 calc(var(--sidebar-width) + var(--sidebar-scrollbar-overhang) - max(var(--space-3), var(--titlebar-inset-left)) - var(--space-1));
   min-width: max-content;
   transition: flex-basis var(--motion-layout) var(--ease-standard);
 }
@@ -756,28 +755,13 @@ body:has(#sidebar.collapsed) .titlebar-lead {
      what keeps the pumping above from coming back. Here it is the 3px remainder
      of the sidebar seam; the sash reaches across it with its negative right
      margin, so its hover line lands on the canvas edge. */
-  margin: var(--space-2);
-  margin-left: calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang));
+  /* Flush, not a floating card: no margin, no radius. A 1px outer shadow on the
+     left edge is the divider to the sidebar; unlike a border it takes no layout,
+     so `#overlay`/`#rewind` still match the canvas edge for edge. */
+  margin: 0;
   background: var(--surface-canvas);
-  border-radius: var(--radius-lg);
   overflow: hidden;
-  /* The hairline that makes the panel *float* (todo V1). In dark the canvas is
-     eight luminance steps off the base and the two columns read as one black
-     rectangle; the token ladder holds symbolically and not in pixels.
-
-     An `outline` and not a `border`, deliberately, twice over:
-     - `#overlay`/`#rewind` are `absolute; inset: 0` since S6, which positions
-       them against the *padding* box. A border would inset them by 1px on every
-       side and break smoke S2's per-edge equality with `#canvas` — a judgement
-       D7 already decided must stay exact rather than be loosened.
-     - An inset `box-shadow` paints above this element's background but *below*
-       its descendants, so `#canvas-header` would cover the top edge. An outline
-       is painted after all in-flow descendants, and never enters
-       `getBoundingClientRect()`.
-     `overflow: hidden` does not clip an element's own outline, and the outline
-     follows `border-radius`. Same idiom as `.sidebar-list:focus` below. */
-  outline: 1px solid var(--border-subtle);
-  outline-offset: -1px;
+  box-shadow: -1px 0 0 var(--border-strong);
 }
 
 /* --- sidebar --- */
@@ -892,12 +876,12 @@ body.resizing #sidebar { transition: none; }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: var(--space-2) var(--space-2) 0 0;
-  background: var(--surface-canvas);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  margin: 0;
+  /* Same tone as the sidebar (the frame), so both columns read as chrome
+     around the lighter canvas, with a stronger hairline on its edge. */
+  background: var(--surface-base);
   overflow: hidden;
-  outline: 1px solid var(--border-subtle);
-  outline-offset: -1px;
+  box-shadow: -1px 0 0 var(--border-strong);
 }
 #browser-panel[hidden] { display: none; }
 /* The hole. No padding, no border, no transform — it is a measurement, and
@@ -1310,7 +1294,8 @@ body.settings-open #browser-resizer { display: none; }
   color: var(--text-primary);
   border: 0;
   border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
+  min-height: 28px;
   font: inherit;
   font-size: var(--type-meta);
   white-space: nowrap;
@@ -1337,7 +1322,8 @@ body.settings-open #browser-resizer { display: none; }
 .sidebar-empty { color: var(--text-secondary); font-size: var(--type-meta); padding: var(--space-2) var(--space-3); }
 .sidebar-footer {
   flex: 0 0 auto;
-  padding: var(--space-2) var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -1719,6 +1705,13 @@ body.settings-open #browser-resizer { display: none; }
    screen anywhere else — and an 8px dot is only findable by someone already
    looking for it. Text, not a filled pill: `--accent-*` fills exactly three
    named spots in this sheet and this is not one of them. */
+.session-role {
+  flex: 0 0 auto;
+  margin-right: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
 .session-badge-label {
   flex: 0 0 auto;
   font-size: var(--type-meta);
@@ -5432,3 +5425,337 @@ body.settings-open #canvas-header,
     display: none;
   }
 }
+
+/* --- coordination: sidebar, canvas header, thread panel, merge bar, note cards ---
+   Every colour here is a token. The five thread tones are one vocabulary
+   (`ThreadTone` in model/coordinationStatus.ts) shared by the sidebar status,
+   the canvas crumb, the thread rows and the note cards; each state gets the
+   same rung wherever it appears. Text carries the state through its own name
+   (`--text-warn`, `--text-danger`), and `running` takes the strong brand rung,
+   as `.session-badge.running` does. */
+.session-status.running,
+.canvas-status.tone-running,
+.thread-status.tone-running,
+.thread-note-status.tone-running { color: var(--accent-brand-strong); }
+.session-status.attention,
+.canvas-status.tone-attention,
+.thread-status.tone-attention,
+.thread-note-status.tone-attention { color: var(--text-warn); }
+.session-status.danger,
+.canvas-status.tone-danger,
+.thread-status.tone-danger,
+.thread-note-status.tone-danger { color: var(--text-danger); }
+.session-status.neutral,
+.canvas-status.tone-neutral,
+.thread-status.tone-neutral,
+.thread-note-status.tone-neutral { color: var(--text-secondary); }
+.session-status.muted,
+.canvas-status.tone-muted,
+.thread-status.tone-muted,
+.thread-note-status.tone-muted { color: var(--text-tertiary); }
+
+/* Sidebar: coordination rows sit inside their project group and reuse
+   `.session-row`'s box; counts and the folded line follow the rows. */
+.coord-counts {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.coord-hidden {
+  margin: 0 var(--space-2);
+  padding: var(--space-1) var(--space-3) var(--space-2) calc(var(--space-3) + 14px + var(--space-2));
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+}
+.session-row.nested { margin-left: calc(var(--space-2) + var(--space-4)); }
+.session-status {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+  white-space: nowrap;
+}
+
+/* Canvas header: the breadcrumb replaces the title while a thread is open. */
+.canvas-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--type-ui);
+  white-space: nowrap;
+}
+.canvas-back-coordinator {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+.canvas-back-coordinator:hover { color: var(--text-primary); background: var(--surface-hover); }
+.canvas-breadcrumb-thread {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+}
+.canvas-breadcrumb-sep { flex: 0 0 auto; color: var(--text-tertiary); }
+.canvas-status { flex: 0 0 auto; font-size: var(--type-meta); }
+.canvas-stop-thread,
+.thread-row-stop,
+.thread-row-resolve {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.canvas-stop-thread:hover:enabled,
+.thread-row-stop:hover:enabled,
+.thread-row-resolve:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+.thread-row-stop:hover:enabled { color: var(--text-danger); }
+.canvas-stop-thread:disabled,
+.thread-row-stop:disabled,
+.thread-row-resolve:disabled { opacity: 0.5; cursor: default; }
+.canvas-threads-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.canvas-threads-open:hover { color: var(--text-primary); background: var(--surface-hover); }
+
+/* Thread panel: a card like the task panel, rows inside it like session rows. */
+.thread-panel {
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.thread-panel-head {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.thread-panel-stop-all {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.thread-panel-stop-all:hover:enabled { color: var(--text-danger); background: var(--surface-hover); }
+.thread-panel-stop-all:disabled { opacity: 0.5; cursor: default; }
+.thread-panel-active { display: flex; flex-direction: column; padding: var(--space-1); }
+.thread-panel-empty {
+  margin: 0;
+  padding: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+}
+.thread-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+.thread-row:hover { background: var(--surface-hover); }
+.thread-row.current { background: var(--surface-active); }
+.thread-row.pending { opacity: 0.7; }
+.thread-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.thread-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--type-ui);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.thread-status { flex: 0 0 auto; font-size: var(--type-micro); white-space: nowrap; }
+.thread-row-time {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.thread-row-line {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-row-actions { display: flex; justify-content: flex-end; gap: var(--space-1); }
+.thread-fold { border-top: 1px solid var(--border-subtle); }
+.thread-fold-head {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  text-align: left;
+  cursor: pointer;
+}
+.thread-fold-head:hover { background: var(--surface-hover); color: var(--text-primary); }
+.thread-fold-body { display: flex; flex-direction: column; padding: 0 var(--space-1) var(--space-1); }
+.thread-fold.quiet .thread-row-title { color: var(--text-secondary); }
+.thread-fold.resolved .thread-row-title { color: var(--text-tertiary); }
+
+/* Merge bar: the same pill vocabulary as `.process-chip`, stacked above the
+   composer in the strip's place. */
+#merge-bar { display: flex; flex-direction: column; gap: var(--space-1); margin-bottom: var(--space-2); }
+#merge-bar[hidden] { display: none; }
+.merge-bar-toggle,
+.merge-bar-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: var(--surface-card);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  font: inherit;
+  font-size: var(--type-meta);
+}
+.merge-bar-toggle { align-self: flex-start; padding: var(--space-1) var(--space-3); cursor: pointer; }
+.merge-bar-toggle:hover { color: var(--text-primary); background: var(--surface-hover); }
+.merge-bar-toggle[aria-expanded="true"] { color: var(--text-primary); }
+.merge-bar-row {
+  display: flex;
+  min-width: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+}
+/* The branch absorbs the squeeze; a long project name is capped instead of shrunk with it. */
+.merge-bar-project { flex: 0 0 auto; max-width: 35%; min-width: 0; overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
+.merge-bar-branch {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.merge-bar-stat { flex: 0 0 auto; color: var(--text-secondary); font-family: var(--font-mono); white-space: nowrap; }
+.merge-bar-conflict { flex: 0 0 auto; color: var(--text-warn); white-space: nowrap; }
+.merge-bar-merge,
+.merge-bar-resolve {
+  flex: 0 0 auto;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.merge-bar-merge:hover:enabled,
+.merge-bar-resolve:hover:enabled { background: var(--surface-hover); }
+.merge-bar-merge:disabled,
+.merge-bar-resolve:disabled { color: var(--text-tertiary); cursor: default; }
+.merge-bar-dismiss {
+  flex: 0 0 auto;
+  padding: 0 var(--space-1);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  font: inherit;
+  cursor: pointer;
+}
+.merge-bar-dismiss:hover { color: var(--text-primary); background: var(--surface-hover); }
+.merge-bar-list { display: flex; flex-direction: column; gap: var(--space-1); margin: 0; padding: 0; list-style: none; }
+.merge-bar-item { min-width: 0; }
+
+/* Note cards in the transcript: title and status on one line, the report
+   clipped to one line beneath, and 查看 at the right. */
+.thread-notes-head {
+  margin-bottom: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--type-meta);
+}
+.thread-note-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px var(--space-2);
+  margin-top: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+.thread-note-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--type-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-note-status {
+  justify-self: end;
+  color: var(--text-secondary);
+  font-size: var(--type-micro);
+  white-space: nowrap;
+}
+.thread-note-report {
+  grid-column: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--type-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-note-open {
+  grid-column: 2;
+  justify-self: end;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--type-meta);
+  cursor: pointer;
+}
+.thread-note-open:hover:enabled { color: var(--text-primary); background: var(--surface-hover); }
+.thread-note-open:disabled { opacity: 0.5; cursor: default; }

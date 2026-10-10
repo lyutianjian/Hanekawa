@@ -56,6 +56,8 @@ interface Harness {
   sessionId: string
   calls: {
     submits: string[]
+    /** `origin` of each submit, parallel to `submits`. */
+    submitOrigins: Array<string | undefined>
     interrupts: unknown[]
     createdRuntimes: Array<{ modelKey: string; recordCount: number }>
     defaultModels: string[]
@@ -98,6 +100,10 @@ interface HarnessOptions {
   describePanes?: () => WirePaneInfo[]
   /** What this host's *own* workspace lists, for the fallback projection. */
   workspacePanes?: SessionMeta[]
+  /** Records the session was reopened with; a queue is replayed from these. */
+  existingRecords?: SessionRecord[]
+  /** The scope's coordination role. */
+  role?: 'coordinator' | 'thread'
 }
 
 async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -122,6 +128,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
   const bridges = createUiBridges()
   const calls: Harness['calls'] = {
     submits: [],
+    submitOrigins: [],
     interrupts: [],
     createdRuntimes: [],
     defaultModels: [],
@@ -175,7 +182,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     // `onAccepted` when the user record lands; this stub writes no records, so
     // it stands in for that moment explicitly — and, like the real one, only
     // after the point where a refused submission would already have thrown.
-    submit: async (input: UserInput, _options?: unknown, handoff?: { onAccepted: () => void }) => {
+    submit: async (input: UserInput, options?: { origin?: string }, handoff?: { onAccepted: () => void }) => {
       if (submitFailure !== undefined) {
         const message = submitFailure
         submitFailure = undefined
@@ -184,6 +191,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
       }
       handoff?.onAccepted()
       calls.submits.push(input.text)
+      calls.submitOrigins.push(options?.origin)
     },
     // The queue's accept-time gate. Nothing in this file queues images, so the
     // stub accepts; `desktopUiRoundTrip.test.ts` covers the refusing side.
@@ -255,7 +263,8 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     // resolves `/help` and `list-commands` through, and the `as unknown as`
     // below would happily hide its absence until the first slash command threw.
     commands: new CommandRegistry(),
-    existingRecords: [] as SessionRecord[],
+    existingRecords: options.existingRecords ?? [],
+    role: options.role,
     diagnostics: [],
     mcp: { connected: [], failed: [] },
     hasRecoverableInterruption: false,
@@ -1590,6 +1599,40 @@ test('an idle host sends a queued message immediately', async () => {
   harness.dispose()
 })
 
+test('a reopened session with an unsent queued message sends it once a renderer attaches', async () => {
+  const queued = {
+    id: 'reopened-1',
+    type: 'message_queue',
+    operation: 'enqueue',
+    message: {
+      id: 'queued-before-close',
+      content: 'left over from last time',
+      createdAt: '2026-10-10T00:00:00.000Z',
+      priority: 'next',
+    },
+    createdAt: '2026-10-10T00:00:00.000Z',
+  } as SessionRecord
+  const harness = await createHarness({ existingRecords: [queued] })
+
+  // Constructing the host replays the queue but does not pump it: nothing
+  // attaches a renderer yet, so nothing may be sent.
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'no send before a renderer says hello')
+
+  harness.send({ type: 'hello', id: 'reopen-hello' })
+  await waitFor(
+    () => (harness.calls.submits.length > 0 ? true : undefined),
+    'the reopened queue to be sent after hello',
+  )
+  assert.deepEqual(harness.calls.submits, ['left over from last time'])
+
+  await waitFor(
+    () => (latestQueue(harness.received).length === 0 ? true : undefined),
+    'the queue to empty once the message is sent',
+  )
+  harness.dispose()
+})
+
 test('a background agent note wakes an idle host, and waits out a running turn', async () => {
   const harness = await createHarness()
   harness.notifyParent('<system-reminder>\nagent one done\n</system-reminder>')
@@ -2147,5 +2190,97 @@ test('a rebuild clears the cached system sections, because Environment names the
     harness.calls.clearedSections > before,
     'a runtime swap that keeps the cached `# Environment` block serves the old model name',
   )
+  harness.dispose()
+})
+
+// --- CoordinationLaneControl ---------------------------------------------
+
+test('a coordinator message enqueued on an idle lane is pumped with its origin', async () => {
+  const harness = await createHarness({ role: 'thread' })
+  await harness.host.enqueueFromCoordinator('from the coordinator')
+  await waitFor(() => (harness.calls.submits.length > 0 ? true : undefined), 'the coordinator message')
+  assert.deepEqual(harness.calls.submits, ['from the coordinator'])
+  assert.deepEqual(harness.calls.submitOrigins, ['coordinator'])
+  harness.dispose()
+})
+
+test('CoordinationLaneControl.setEffort applies through the runtime slot', async () => {
+  const harness = await createHarness({ role: 'thread' })
+  harness.host.setEffort('low')
+  harness.send({ type: 'set-effort', id: 'e2', level: 'low' })
+  const reply = await waitFor(
+    () => harness.received.find((e) => e.type === 'reply' && e.id === 'e2'), 'set-effort')
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual(reply.result, { effort: 'low', persisted: false })
+  harness.dispose()
+})
+
+test('stop discards what was queued, then interrupts', async () => {
+  const harness = await createHarness({ role: 'thread' })
+  harness.setStreaming(true)
+  await harness.host.enqueueFromCoordinator('one')
+  await harness.host.enqueueFromCoordinator('two')
+  await harness.host.stop()
+  assert.deepEqual(latestQueue(harness.received), [])
+  assert.deepEqual(harness.calls.interrupts, ['coordinator-stop'])
+  harness.setStreaming(false)
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'nothing queued before the stop is sent after it')
+  harness.dispose()
+})
+
+test('requestWake before hello runs a wake turn, once, folding in background notes', async () => {
+  const harness = await createHarness({ role: 'coordinator' })
+  harness.setStreaming(true)
+  harness.host.requestWake('wake up')
+  harness.notifyParent('note')
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'a running turn holds the wake')
+  harness.setStreaming(false)
+  harness.send({ type: 'hello', id: 'h1' })
+  await waitFor(() => (harness.calls.submits.length > 0 ? true : undefined), 'the wake turn')
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, ['wake up\n\nnote'], 'one turn, not a second notification wake')
+  assert.deepEqual(harness.calls.submitOrigins, ['wake'])
+  harness.dispose()
+})
+
+test('a thread scope refuses /clear and retarget', async () => {
+  const harness = await createHarness({ role: 'thread' })
+  registerBuiltinCommands(harness.commands)
+  harness.send({ type: 'run-command', id: 'c1', input: '/clear' })
+  await waitFor(() => harness.received.find((event) => event.type === 'reply' && event.id === 'c1'), 'the reply')
+  assert.equal(harness.received.some((event) => event.type === 'session-changed'), false)
+  const line = harness.received.find((event) => event.type === 'command-effect')
+  assert.ok(line?.type === 'command-effect' && line.effect.kind === 'write-line')
+
+  harness.send({ type: 'retarget', id: 'r1', sessionId: harness.sessionId })
+  const failure = await waitFor(
+    () => harness.received.find((event) => event.type === 'fail' && event.id === 'r1'),
+    'a fail reply',
+  )
+  assert.ok(failure.type === 'fail')
+  assert.match(failure.message, /cannot switch/)
+  harness.dispose()
+})
+
+test('state flips while a permission prompt is open', async () => {
+  const harness = await createHarness({ role: 'thread' })
+  let changes = 0
+  harness.host.onStateChange(() => { changes += 1 })
+  const pending = harness.bridges.prompt.prompt(permissionRequest())
+  await settle()
+  assert.deepEqual(harness.host.state(), { streaming: false, pendingApproval: true, pendingDialog: false })
+  const request = harness.received.find((event) => event.type === 'ui-request')
+  assert.ok(request && request.type === 'ui-request')
+  harness.send({
+    type: 'ui-response',
+    requestId: request.request.requestId,
+    response: { kind: 'permission', approved: true },
+  })
+  await pending
+  await settle()
+  assert.deepEqual(harness.host.state(), { streaming: false, pendingApproval: false, pendingDialog: false })
+  assert.ok(changes >= 2)
   harness.dispose()
 })

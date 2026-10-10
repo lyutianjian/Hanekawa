@@ -147,3 +147,14 @@ test('a removal that cannot be persisted stops the pump instead of resending', a
   assert.equal(outcome.kind, 'blocked')
   assert.match(outcome.kind === 'blocked' ? outcome.reason : '', /disk full/)
 })
+
+test('a coordinator message hands its origin to deliver', async () => {
+  const message = { ...queued('m1'), origin: 'coordinator' as const }
+  const queue = fakeQueue([message])
+  let seen: unknown
+  await handOffQueuedMessage({
+    ...queue,
+    deliver: async (_input, context) => { seen = context.origin; context.onAccepted() },
+  })
+  assert.equal(seen, 'coordinator')
+})

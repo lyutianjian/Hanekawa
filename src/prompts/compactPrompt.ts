@@ -81,6 +81,46 @@ When you are using compact - please focus on test output and code changes. Inclu
 </example>
 `
 
+const COORDINATOR_COMPACT_PROMPT = `Your task is to create a summary of this coordination conversation so that you can keep coordinating the user's project without losing what was agreed. You direct threads (separate sessions); this conversation holds the user's intent and your commitments, not the work itself.
+
+Your summary should include the following sections:
+
+1. Goals and Instructions: The user's long-term goals and every standing instruction, quoted verbatim where wording matters (preferences, constraints, things not to do).
+2. Decisions: Decisions made and why, including options that were rejected.
+3. Assignments and Commitments: Which goal was handed to which thread (by id and name) and why, and anything you promised the user.
+4. Questions Waiting on the User: Questions you asked that are still unanswered, with the options offered.
+5. Pending Follow-ups: Things still to do, check or report that have not been handled yet.
+6. All user messages: List the user's messages that are not tool results, briefly, to preserve their changing intent.
+
+Do not record thread status. A fresh board is restored after compaction, and anything you write about running, finished or blocked threads would be stale. Reference threads only by id and name where an assignment or commitment needs them.
+
+Format the output as:
+
+<summary>
+1. Goals and Instructions:
+   [...]
+
+2. Decisions:
+   [...]
+
+3. Assignments and Commitments:
+   [...]
+
+4. Questions Waiting on the User:
+   [...]
+
+5. Pending Follow-ups:
+   [...]
+
+6. All user messages:
+   [...]
+</summary>
+
+There may be additional summarization instructions provided in the included context. If so, follow them when creating the summary.
+`
+
+export type CompactPromptVariant = 'default' | 'coordinator'
+
 /**
  * Returns the full structured compact prompt for LLM-based summarization.
  * The text-path summarization request is built with `tools: []`, so the
@@ -89,8 +129,11 @@ When you are using compact - please focus on test output and code changes. Inclu
  * @param customInstructions - Optional user-provided instructions appended after the
  *   base prompt (e.g. from CLI args `/compact [instructions]` or pre-compact hook output).
  */
-export function getCompactPrompt(customInstructions?: string): string {
-  let prompt = BASE_COMPACT_PROMPT
+export function getCompactPrompt(
+  customInstructions?: string,
+  variant: CompactPromptVariant = 'default',
+): string {
+  let prompt = variant === 'coordinator' ? COORDINATOR_COMPACT_PROMPT : BASE_COMPACT_PROMPT
   if (customInstructions && customInstructions.trim() !== '') {
     prompt += `\n\nAdditional Instructions:\n${customInstructions}`
   }
@@ -103,8 +146,11 @@ export function getCompactPrompt(customInstructions?: string): string {
  * cached prefix instead of paying for the conversation again as text. The
  * tools are there only to keep that prefix identical, hence the instruction.
  */
-export function getSharedPrefixCompactPrompt(customInstructions?: string): string {
-  return `${getCompactPrompt(customInstructions)}
+export function getSharedPrefixCompactPrompt(
+  customInstructions?: string,
+  variant: CompactPromptVariant = 'default',
+): string {
+  return `${getCompactPrompt(customInstructions, variant)}
 
 Respond with the summary as plain text. Do not call any tools.`
 }

@@ -120,6 +120,12 @@ import {
 import { bindWindowChrome, type WindowControlsOverlay } from './dom/windowChrome.js'
 import { REDUCED_MOTION_QUERY } from './model/reducedMotion.js'
 import { finishPresenceWithin } from './dom/presence.js'
+import type { WireCoordinationThreads, WireThreadMerge, WireThreadStatus } from '../shellProtocol.js'
+import { THREAD_STATUS_LABEL, coordinationCounts, threadBySession, threadTone } from './model/coordinationStatus.js'
+import { threadPanelView, type ThreadFold, type ThreadPanelIntent } from './model/threadPanel.js'
+import { mergeBarView, type MergeBarIntent } from './model/mergeBar.js'
+import { createThreadPanelView } from './dom/threadPanelView.js'
+import { createMergeBarView } from './dom/mergeBarView.js'
 
 const bridge = window.hanekawa
 if (!bridge) {
@@ -325,7 +331,16 @@ function attachPaneSession(lane: string): void {
     // the host knows.
     onOpenFile: (path, line) => openInEditor(lane, path, line),
     onOpenSubagent: (id) => openSubagent(id),
+    // A wake note's [查看]: the thread table of this lane's project names the
+    // thread's session, which then opens like any other.
+    onOpenThread: (threadId) => {
+      const root = shellClient.getLanes().find((info) => info.lane === lane)?.projectRoot
+      if (root === undefined) return
+      const thread = coordinationByRoot.get(root)?.threads.find((candidate) => candidate.threadId === threadId)
+      if (thread) openSessionById(root, thread.sessionId)
+    },
     onSubagentsChanged: () => renderSubagents(),
+    isCoordinator: () => shellClient.getLanes().find((info) => info.lane === lane)?.coordinationRole === 'coordinator',
     onExit: () => {
       // `/exit` closes this pane, not the window: the single window holds every
       // other lane, and `window.close()` would take them all down.
@@ -412,6 +427,10 @@ function activateLane(lane: string): void {
   // The panel follows the lane: a switch changes which tabs exist and which one
   // is on screen, so the native view has to be repositioned or hidden.
   renderBrowser()
+  // The merge bar belongs to the lane's project and role: hide what the last
+  // lane showed now, and pull this one's after the debounce.
+  renderMergeBar()
+  scheduleMergePull()
   openModelSetupIfNeeded()
 }
 
@@ -472,6 +491,7 @@ function laneStatuses(): Map<string, SidebarLaneStatus> {
 function applyPaneBudget(): void {
   const statuses = laneStatuses()
   const tabs = shellClient.getBrowserTabs()
+  const laneInfos = shellClient.getLanes()
   const entries: PaneBudgetEntry[] = [...paneSessions.keys()].map((lane) => ({
     lane,
     active: lane === activeLane,
@@ -479,6 +499,7 @@ function applyPaneBudget(): void {
     blocked: statuses.get(lane)?.blocked ?? false,
     processes: statuses.get(lane)?.processes ?? false,
     tabs: tabsForLane(tabs, lane).length > 0,
+    coordinator: laneInfos.find((info) => info.lane === lane)?.coordinationRole === 'coordinator',
     lastActiveTick: lastActiveTick.get(lane) ?? 0,
   }))
 
@@ -561,6 +582,7 @@ function currentSidebarState(): SidebarState {
     collapsedProjects,
     helpOpen,
     recentOnly,
+    coordination: coordinationByRoot,
   })
 }
 
@@ -625,6 +647,9 @@ async function refreshSessions(): Promise<void> {
       // repaints an idle pane — a project added while the Hero is up would
       // otherwise be missing from the popover until the next keystroke.
       activePane()?.refreshWelcome()
+      // The thread tables ride on the same occasions: a delete, a project added
+      // or removed, a turn that started a thread.
+      pullCoordination()
     } while (sessionsAgain)
   } catch (error) {
     // Keep the last good list: a sidebar that empties itself on a transient
@@ -741,6 +766,13 @@ function runSidebarIntent(intent: SidebarIntent): void {
       pendingRemoveProject = undefined
       renderSidebar()
       return
+    case 'open-coordinator':
+      projectMenu = undefined
+      renderSidebar()
+      void shellClient.openCoordinator(intent.projectRoot).catch((error) => {
+        activePane()?.note(`Failed to open coordinator: ${describe(error)}`, 'error')
+      })
+      return
     case 'confirm-remove-project':
       void removeProject(intent.projectRoot)
       return
@@ -842,6 +874,210 @@ async function removeProject(projectRoot: string): Promise<void> {
   await refreshSessions()
 }
 
+// --- project coordination ---------------------------------------------------------
+
+/**
+ * Each project's thread table, as last pulled or pushed. The shell client fires
+ * `onCoordinationThreads` for both, so this map is written in one place.
+ */
+const coordinationByRoot = new Map<string, WireCoordinationThreads>()
+/** Thread ids with a stop or resolve in flight, from the panel or the breadcrumb. */
+const pendingThreads = new Set<string>()
+/** The thread panel's open folds. View state; nothing persists it. */
+let threadFolds: ReadonlySet<ThreadFold> = new Set()
+
+/** Statuses a user stop applies to — the same set the thread panel offers 停止 on. */
+const STOPPABLE_THREAD: ReadonlySet<WireThreadStatus> = new Set(['running', 'needs-you', 'awaiting-coordinator'])
+
+/** Pulls every project's thread table; replies land through `onCoordinationThreads`. */
+function pullCoordination(): void {
+  for (const project of projects) {
+    if (project.isGlobal === true) continue
+    void shellClient.coordinationThreads(project.projectRoot).catch(() => {})
+  }
+}
+
+function activeCoordination(): WireCoordinationThreads | undefined {
+  const root = activeLaneInfo()?.projectRoot
+  return root === undefined ? undefined : coordinationByRoot.get(root)
+}
+
+/** The active project has a coordinator or threads, so the 线程 tab has something to say. */
+function hasCoordination(state: WireCoordinationThreads | undefined): boolean {
+  return state !== undefined && (state.coordinatorSessionId !== undefined || state.threads.length > 0)
+}
+
+/** Puts a session on screen: its live lane when it has one, otherwise the host opens it. */
+function openSessionById(projectRoot: string, sessionId: string): void {
+  const live = shellClient.getLanes().find((info) => info.sessionId === sessionId)
+  if (live) {
+    activateLane(live.lane)
+    return
+  }
+  runSidebarIntent({ kind: 'open', sessionId, projectRoot })
+}
+
+/** A user stop or 结案 of one thread; the push that follows repaints its status. */
+function runThreadCommand(projectRoot: string, threadId: string, kind: 'stop' | 'resolve'): void {
+  if (pendingThreads.has(threadId)) return
+  pendingThreads.add(threadId)
+  renderSubagents()
+  const request = kind === 'stop' ? shellClient.threadStop(projectRoot, threadId) : shellClient.threadResolve(projectRoot, threadId)
+  void request
+    .catch((error) => activePane()?.note(`Failed to ${kind} thread: ${describe(error)}`, 'error'))
+    .finally(() => {
+      pendingThreads.delete(threadId)
+      renderSubagents()
+      renderCanvasHeader()
+    })
+}
+
+function runThreadPanelIntent(intent: ThreadPanelIntent): void {
+  const root = activeLaneInfo()?.projectRoot
+  switch (intent.kind) {
+    case 'open':
+      if (root !== undefined) openSessionById(root, intent.sessionId)
+      return
+    case 'stop':
+    case 'resolve':
+      if (root !== undefined) runThreadCommand(root, intent.threadId, intent.kind)
+      return
+    case 'stop-all':
+      if (root === undefined) return
+      void shellClient.stopAllCoordination(root).catch((error) => {
+        activePane()?.note(`Failed to stop threads: ${describe(error)}`, 'error')
+      })
+      return
+    case 'toggle-fold': {
+      const next = new Set(threadFolds)
+      if (!next.delete(intent.fold)) next.add(intent.fold)
+      threadFolds = next
+      renderSubagents()
+      return
+    }
+    default:
+      assertNeverIntent(intent)
+  }
+}
+
+// --- the merge bar ------------------------------------------------------------------
+
+const mergeBarNode = required('merge-bar')
+/** The active project's pending branches, as last pulled, and the root they belong to. */
+let merges: readonly WireThreadMerge[] = []
+let mergesRoot: string | undefined
+/** Bumped per pull; a reply whose number is no longer current is dropped. */
+let mergeSeq = 0
+let mergeTimer: ReturnType<typeof setTimeout> | undefined
+let mergeExpanded = false
+/** Thread ids whose merge, resolve or dismiss is in flight. */
+const pendingMerges = new Set<string>()
+
+/**
+ * Pulls the merges after a 200ms quiet period. `pendingMerges` runs git per
+ * thread host-side, so a burst of pushes is folded into one pull.
+ */
+function scheduleMergePull(): void {
+  if (mergeTimer !== undefined) clearTimeout(mergeTimer)
+  mergeTimer = setTimeout(() => {
+    mergeTimer = undefined
+    void pullMerges()
+  }, 200)
+}
+
+async function pullMerges(): Promise<void> {
+  const seq = ++mergeSeq
+  const info = activeLaneInfo()
+  // Only a coordination canvas draws the bar; anything else has nothing to pull.
+  if (!info || info.coordinationRole === undefined) {
+    merges = []
+    mergesRoot = undefined
+    renderMergeBar()
+    return
+  }
+  try {
+    const result = await shellClient.threadMerges(info.projectRoot)
+    if (seq !== mergeSeq) return
+    merges = result.merges
+    mergesRoot = info.projectRoot
+  } catch {
+    // A failed pull keeps the last answer: the bar is a reminder, not a gate.
+    return
+  }
+  renderMergeBar()
+}
+
+function renderMergeBar(): void {
+  const info = activeLaneInfo()
+  const role = info?.coordinationRole
+  const view = !info || role === undefined || mergesRoot !== info.projectRoot
+    ? { kind: 'hidden' as const }
+    : mergeBarView({
+        role,
+        ...(role === 'thread'
+          ? { threadId: threadBySession(coordinationByRoot.get(info.projectRoot), info.sessionId)?.threadId }
+          : {}),
+        projectName: info.projectName,
+        merges,
+        expanded: mergeExpanded,
+        pending: pendingMerges,
+      })
+  // A paint can remove the button the user just pressed (a merge that landed
+  // takes its row with it). Focus goes back to the composer, after the paint.
+  const hadFocus = mergeBarNode.contains(document.activeElement)
+  mergeBar.render(view)
+  if (hadFocus && !mergeBarNode.contains(document.activeElement)) composer.focus()
+}
+
+function runMergeIntent(intent: MergeBarIntent): void {
+  if (intent.kind === 'toggle-expanded') {
+    mergeExpanded = !mergeExpanded
+    renderMergeBar()
+    return
+  }
+  const root = mergesRoot
+  const threadId = intent.threadId
+  if (root === undefined || pendingMerges.has(threadId)) return
+  pendingMerges.add(threadId)
+  renderMergeBar()
+  const run = async (): Promise<void> => {
+    switch (intent.kind) {
+      case 'merge': {
+        const result = await shellClient.mergeThread(root, threadId)
+        if (result.kind !== 'merged') {
+          activePane()?.note(result.message ?? `合并未完成（${result.kind}）`, result.kind === 'conflict' || result.kind === 'error' ? 'error' : 'system')
+        }
+        return
+      }
+      case 'resolve':
+        await shellClient.resolveThreadMerge(root, threadId)
+        return
+      case 'dismiss':
+        await shellClient.dismissThreadMerge(root, threadId)
+        return
+      default:
+        assertNeverIntent(intent)
+    }
+  }
+  void run()
+    .catch((error) => activePane()?.note(describe(error), 'error'))
+    .finally(() => {
+      pendingMerges.delete(threadId)
+      renderMergeBar()
+      scheduleMergePull()
+    })
+}
+
+const mergeBar = createMergeBarView(mergeBarNode, (intent) => runMergeIntent(intent))
+
+shellClient.onCoordinationThreads((state) => {
+  coordinationByRoot.set(state.projectRoot, state)
+  renderSidebar()
+  renderCanvasHeader()
+  renderSubagents()
+  if (state.projectRoot === activeLaneInfo()?.projectRoot) scheduleMergePull()
+})
+
 // --- the canvas header ----------------------------------------------------------
 
 /**
@@ -863,9 +1099,29 @@ function activeLaneInfo() {
     : shellClient.getLanes().find((info) => info.lane === activeLane)
 }
 
+/** The thread the active lane runs, when it is a coordination thread. */
+function activeThread() {
+  const info = activeLaneInfo()
+  if (info?.coordinationRole !== 'thread') return undefined
+  return threadBySession(coordinationByRoot.get(info.projectRoot), info.sessionId)
+}
+
 function renderCanvasHeader(): void {
+  const info = activeLaneInfo()
+  const thread = activeThread()
   canvasHeader.render(canvasHeaderView({
-    lane: activeLaneInfo(),
+    lane: info,
+    ...(info?.coordinationRole === undefined ? {} : { role: info.coordinationRole }),
+    ...(thread === undefined
+      ? {}
+      : {
+          thread: {
+            title: thread.title,
+            statusLabel: THREAD_STATUS_LABEL[thread.status],
+            tone: threadTone(thread.status),
+            canStop: STOPPABLE_THREAD.has(thread.status) && !pendingThreads.has(thread.threadId),
+          },
+        }),
     menuOpen: headerMenuOpen,
     renaming: headerRenaming,
     pendingDelete: headerPendingDelete,
@@ -944,6 +1200,19 @@ const canvasHeader = createCanvasHeaderView(required('canvas-header'), {
       .openInEditor(lane.projectRoot)
       .catch((error) => activePane()?.note(describe(error), 'error'))
   },
+  onBackToCoordinator: () => {
+    const lane = activeLaneInfo()
+    if (!lane) return
+    void shellClient.openCoordinator(lane.projectRoot).catch((error) => {
+      activePane()?.note(`Failed to open coordinator: ${describe(error)}`, 'error')
+    })
+  },
+  onStopThread: () => {
+    const lane = activeLaneInfo()
+    const thread = activeThread()
+    if (lane && thread) runThreadCommand(lane.projectRoot, thread.threadId, 'stop')
+  },
+  onOpenThreads: () => showSideTab('threads'),
 })
 
 // --- settings ---------------------------------------------------------------
@@ -1051,6 +1320,8 @@ async function runSettingsChangesNow(batch: readonly PendingMutation[]): Promise
   // re-posted from `refreshAfterConfigChange`. Nothing to pull here; the
   // sidebar is repainted only because the project list may have moved.
   renderSidebar()
+  // Coordination settings (quiet / auto-resolve days) move effective statuses.
+  pullCoordination()
 }
 
 /**
@@ -1107,7 +1378,7 @@ let browserOpen = false
  * Which view the side panel shows while `browserOpen`. The panel is shared: the
  * browser and the session's sub-agents take turns in it.
  */
-let sideTab: 'browser' | 'subagents' = 'browser'
+let sideTab: 'browser' | 'subagents' | 'threads' = 'browser'
 /** The sub-agent on its own page in the panel; `undefined` is the list. */
 let selectedSubagent: string | undefined
 /** Which tab each lane last had on screen, so switching back restores it. */
@@ -1177,6 +1448,8 @@ const subagentPanel = createSubagentPanelView(required('subagent-view'), {
     if (task) void client!.killTask(task.id).catch(() => {})
   },
 })
+const threadView = required('thread-view')
+const threadPanel = createThreadPanelView(threadView, (intent) => runThreadPanelIntent(intent))
 /** The strip's last paint, so a stream delta does not rebuild buttons under the pointer. */
 let sideTabsDrawn: string | undefined
 
@@ -1187,11 +1460,17 @@ function renderSubagents(): void {
   const pane = activePane()
   const entries = visible ? pane?.subagents() ?? [] : []
   const onSubagents = visible && sideTab === 'subagents'
+  const onThreads = visible && sideTab === 'threads'
+  const coordination = activeCoordination()
+  const threadsTab = hasCoordination(coordination) || onThreads
   // The strip exists once there is something to switch to; the browser alone needs none.
-  const withTabs = visible && (entries.length > 0 || onSubagents)
+  const withTabs = visible && (entries.length > 0 || onSubagents || threadsTab)
   show(sideTabs, withTabs)
   const running = entries.filter((entry) => entry.status === 'running' || entry.status === 'awaiting-approval').length
-  const strip = `${withTabs}|${sideTab}|${running}`
+  const threadsLabel = hasCoordination(coordination)
+    ? `线程 · ${coordinationCounts(coordination!.threads).running} 运行中`
+    : '线程'
+  const strip = `${withTabs}|${sideTab}|${running}|${threadsTab ? threadsLabel : ''}`
   if (strip !== sideTabsDrawn) {
     sideTabsDrawn = strip
     const tab = (label: string, which: typeof sideTab, onClick: () => void): HTMLElement => {
@@ -1207,6 +1486,7 @@ function renderSubagents(): void {
         selectedSubagent = undefined
         showSideTab('subagents')
       }),
+      threadsTab ? tab(threadsLabel, 'threads', () => showSideTab('threads')) : undefined,
       button('side-tab-close', '✕', '关闭侧栏', () => {
         browserOpen = false
         renderSidebar()
@@ -1216,6 +1496,16 @@ function renderSubagents(): void {
   }
   show(required('subagent-view'), onSubagents)
   if (onSubagents) subagentPanel.render({ entries, selected: selectedSubagent })
+  show(threadView, onThreads)
+  if (onThreads) {
+    threadPanel.render(threadPanelView({
+      state: coordination,
+      now: Date.now(),
+      activeSessionId: activeLaneInfo()?.sessionId,
+      expanded: threadFolds,
+      pending: pendingThreads,
+    }))
+  }
   pane?.setSelectedSubagent(onSubagents ? selectedSubagent : undefined)
 }
 
@@ -1658,6 +1948,9 @@ shellClient.onLanes((lanes) => {
   void refreshSessions()
   // A lane that went away took its tabs with it, host-side.
   renderBrowser()
+  // The active lane's coordination role can move with the topology.
+  renderMergeBar()
+  scheduleMergePull()
 })
 
 shellClient.onActivate((lane) => activateLane(lane))

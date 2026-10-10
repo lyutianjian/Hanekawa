@@ -332,35 +332,35 @@ test('the palette is the one that was agreed, value for value', () => {
   assert.deepEqual(
     Object.fromEntries([...tokens].filter(([name]) => !name.startsWith('--diff-'))),
     {
-      '--surface-base': '#262523',
-      '--surface-canvas': '#1c1b19',
-      '--surface-card': '#232220',
-      '--surface-hover': '#2e2c29',
-      '--surface-active': '#383530',
+      '--surface-base': '#242424',
+      '--surface-canvas': '#1c1c1c',
+      '--surface-card': '#262626',
+      '--surface-hover': '#2e2e2d',
+      '--surface-active': '#393938',
       '--surface-knob': '#ffffff',
       '--surface-scrim': 'rgba(0, 0, 0, 0.55)',
       // The image viewer's own dim: a viewer asks nothing, so nothing behind it
       // needs to stay readable. See `#lightbox.modal-layer::before`.
       '--surface-scrim-strong': 'rgba(0, 0, 0, 0.88)',
-      '--text-primary': '#ede9e3',
-      '--text-secondary': '#a19a90',
-      '--text-tertiary': '#857e74',
+      '--text-primary': '#ebebea',
+      '--text-secondary': '#a6a6a5',
+      '--text-tertiary': '#858584',
       '--link': 'var(--accent-brand-strong)',
-      '--accent-brand': '#d97757',
-      '--accent-brand-strong': '#d97757',
-      '--on-brand': '#1c1b19',
-      '--accent-info': '#4385be',
-      '--accent-tool': '#8b7ec8',
-      '--accent-review': '#879a39',
-      '--accent-warn': '#d0a215',
-      '--accent-danger': '#d14d41',
+      '--accent-brand': '#d4806a',
+      '--accent-brand-strong': '#d4806a',
+      '--on-brand': '#1c1c1c',
+      '--accent-info': '#6fa5dc',
+      '--accent-tool': '#a690d8',
+      '--accent-review': '#8dbd6a',
+      '--accent-warn': '#d5ad4c',
+      '--accent-danger': '#e5707f',
       '--text-danger': 'var(--accent-danger)',
       '--text-warn': 'var(--accent-warn)',
       '--text-success': 'var(--accent-review)',
-      '--border-subtle': '#322f2b',
-      '--border-strong': '#45413b',
+      '--border-subtle': '#2f2f2e',
+      '--border-strong': '#414140',
       '--focus-ring': 'var(--accent-brand)',
-      '--caret': '#ede9e3',
+      '--caret': '#ebebea',
       '--shadow-float': '0 6px 20px rgba(0, 0, 0, 0.45)',
       '--shadow-modal': '0 16px 48px rgba(0, 0, 0, 0.6)',
       '--space-1': '4px',
@@ -386,11 +386,11 @@ test('the palette is the one that was agreed, value for value', () => {
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
-      '--sidebar-width': '280px',
+      '--sidebar-width': '256px',
       // The browser panel's resting width, the same kind of exception as the
       // rail's above: a layout number `app.ts` re-declares on the document
       // element when the handle between the canvas and the panel is dragged.
-      '--browser-panel-width': '408px',
+      '--browser-panel-width': '264px',
       '--titlebar-inset-left': '0px',
       '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
@@ -445,37 +445,37 @@ test('the palette is the one that was agreed, value for value', () => {
   assert.deepEqual(
     Object.fromEntries([...lightTokens].filter(([name]) => !name.startsWith('--diff-'))),
     {
-      '--surface-base': '#f2efe9',
-      '--surface-canvas': '#fdfcf9',
-      '--surface-card': '#f7f4ef',
-      '--surface-hover': '#ede9e2',
-      '--surface-active': '#e3ded5',
+      '--surface-base': '#f3f3f2',
+      '--surface-canvas': '#fdfdfd',
+      '--surface-card': '#f8f8f7',
+      '--surface-hover': '#eeeeed',
+      '--surface-active': '#e6e6e5',
       // Carried through from `:root`, deliberately: the knob sits on the
       // accent track in both themes, so it is white in both.
       '--surface-knob': '#ffffff',
-      '--surface-scrim': 'rgba(28, 25, 21, 0.32)',
-      '--surface-scrim-strong': 'rgba(28, 25, 21, 0.92)',
-      '--text-primary': '#1a1815',
-      '--text-secondary': '#6b655c',
-      '--text-tertiary': '#8f887d',
+      '--surface-scrim': 'rgba(26, 26, 26, 0.3)',
+      '--surface-scrim-strong': 'rgba(26, 26, 26, 0.92)',
+      '--text-primary': '#1a1a1a',
+      '--text-secondary': '#575756',
+      '--text-tertiary': '#777776',
       '--link': 'var(--accent-brand-strong)',
-      '--accent-brand': '#c96442',
-      '--accent-brand-strong': '#a8492b',
+      '--accent-brand': '#c2603f',
+      '--accent-brand-strong': '#a44d30',
       '--on-brand': '#ffffff',
-      '--accent-info': '#205ea6',
-      '--accent-tool': '#5e409d',
-      '--accent-review': '#66800b',
-      '--accent-warn': '#ad8301',
-      '--accent-danger': '#af3029',
+      '--accent-info': '#33689f',
+      '--accent-tool': '#6e4fa3',
+      '--accent-review': '#44752a',
+      '--accent-warn': '#8a6604',
+      '--accent-danger': '#b02e46',
       '--text-danger': 'var(--accent-danger)',
       '--text-warn': 'var(--accent-warn)',
       '--text-success': 'var(--accent-review)',
-      '--border-subtle': '#e6e1d8',
-      '--border-strong': '#d5cfc4',
+      '--border-subtle': '#e5e5e4',
+      '--border-strong': '#d3d3d2',
       '--focus-ring': 'var(--accent-brand)',
-      '--caret': '#1a1815',
-      '--shadow-float': '0 6px 20px rgba(28, 25, 21, 0.08), 0 1px 2px rgba(28, 25, 21, 0.06)',
-      '--shadow-modal': '0 16px 48px rgba(28, 25, 21, 0.16)',
+      '--caret': '#1a1a1a',
+      '--shadow-float': '0 6px 20px rgba(26, 26, 26, 0.08), 0 1px 2px rgba(26, 26, 26, 0.06)',
+      '--shadow-modal': '0 16px 48px rgba(26, 26, 26, 0.16)',
       '--space-1': '4px',
       '--space-2': '8px',
       '--space-3': '12px',
@@ -499,11 +499,11 @@ test('the palette is the one that was agreed, value for value', () => {
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
-      '--sidebar-width': '280px',
+      '--sidebar-width': '256px',
       // The browser panel's resting width, the same kind of exception as the
       // rail's above: a layout number `app.ts` re-declares on the document
       // element when the handle between the canvas and the panel is dragged.
-      '--browser-panel-width': '408px',
+      '--browser-panel-width': '264px',
       '--titlebar-inset-left': '0px',
       '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
@@ -930,32 +930,15 @@ test('the serif is display-only, and only in the whitelisted spots', () => {
   }
 })
 
-test('the canvas is a clipped rounded panel', () => {
-  // `overflow: hidden` is load-bearing, not tidiness: the transcript scrolls
-  // inside this panel and its scrollbar would otherwise square off the corner
-  // the whole layout is built around.
+test('the canvas is a flush clipped pane divided by a hairline', () => {
   const canvas = blockFor('#canvas')
-  assert.ok(
-    declares(canvas, 'border-radius', 'var(--radius-lg)'),
-    '#canvas must carry the large radius; it is the panel the design nests everything in',
-  )
   assert.ok(declares(canvas, 'overflow', 'hidden'), '#canvas must clip its scrolling contents')
-
-  // The hairline that makes it float (todo V1), and the reason it is an outline.
-  // `#overlay`/`#rewind` are `absolute; inset: 0` since S6 — positioned against
-  // the padding box — so a scrim must match `#canvas` edge for edge. A border
-  // would inset it by 1px on all four sides, and D7 already decided that
-  // judgement stays exact rather than being loosened. An outline takes no layout
-  // at all, so this assertion *is* that decision. (Since the permission request
-  // moved into the composer no smoke step raises a scrim at all, which is why the
-  // claim is pinned here rather than there.)
-  const outline = canvas.decls.find((decl) => decl.prop === 'outline')
-  assert.ok(outline, '#canvas must carry a hairline; in dark it is otherwise flush with the base')
-  assert.match(outline.value, /var\(--border-subtle\)/)
-  assert.ok(
-    declares(canvas, 'outline-offset', '-1px'),
-    '#canvas draws its hairline inside itself, or the panel grows past its margin',
-  )
+  assert.ok(declares(canvas, 'margin', '0'), '#canvas must not float as a card')
+  assert.ok(!canvas.decls.some((decl) => decl.prop === 'border-radius'))
+  // A shadow, not a border: a border would inset the `absolute; inset: 0` scrims.
+  const line = canvas.decls.find((decl) => decl.prop === 'box-shadow')
+  assert.ok(line, '#canvas needs the divider against the sidebar')
+  assert.match(line.value, /var\(--border-strong\)/)
   assert.ok(
     !canvas.decls.some((decl) => decl.prop === 'border' || decl.prop.startsWith('border-width')),
     '#canvas must not use a border: it would move the modal scrim off the canvas edge',
@@ -1417,18 +1400,7 @@ test('a collapsed sidebar is gone, and the column inside it does not resize with
     'the overhang is the gutter minus the 2px gap and the 1px sash line',
   )
   const canvasPanel = blockFor('#canvas')
-  assert.ok(
-    declares(canvasPanel, 'margin', 'var(--space-2)'),
-    '#canvas keeps its uniform margin; the left one is an override, not a replacement',
-  )
-  assert.ok(
-    declares(
-      canvasPanel,
-      'margin-left',
-      'calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang))',
-    ),
-    "#canvas's left inset is the seam the sash crosses to reach the canvas edge",
-  )
+  assert.ok(declares(canvasPanel, 'margin', '0'), '#canvas is flush against the sidebar')
   const resizer = blockFor('#sidebar-resizer')
   assert.ok(
     declares(

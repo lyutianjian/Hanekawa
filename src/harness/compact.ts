@@ -13,14 +13,14 @@ import { getRecordsAfterLastCompact } from './requestPrep.js'
 import type { ImageTokenStrategy } from '../media/imageTokens.js'
 import { compactCacheSource } from './cacheBreakDetection.js'
 import { wrapInSystemReminder } from './systemReminder.js'
-import { getCompactPrompt, getSharedPrefixCompactPrompt, formatCompactSummary } from '../prompts/compactPrompt.js'
+import { getCompactPrompt, getSharedPrefixCompactPrompt, formatCompactSummary, type CompactPromptVariant } from '../prompts/compactPrompt.js'
 import {
   projectRecordsImagesToText,
   resolveAttachmentFactsForRecords,
   type AttachmentFactsResolver,
 } from './turnImages.js'
 
-const COMPACT_FAILURE_LIMIT = 3
+export const COMPACT_FAILURE_LIMIT = 3
 const compactFailuresByKey = new Map<string, number>()
 const compactRunsByKey = new Map<string, Promise<CompactCheckResult>>()
 
@@ -46,6 +46,10 @@ export interface CompactCheckInput {
   discoveredToolNames?: Set<string>
   /** Custom instructions to append to the compact prompt (from CLI args or hook output). */
   compactInstructions?: string
+  /** Prompt variant for the summary request; defaults to the standard prompt. */
+  compactPromptVariant?: CompactPromptVariant
+  /** Skips only the threshold check; the circuit breaker and history checks still apply. */
+  force?: boolean
   /**
    * Resolves attachment facts so summarized images name their cache location
    * (design §11.3). Optional: without it the placeholder names the attachment
@@ -94,6 +98,7 @@ export interface ContinuationSummaryInput {
   preTokens?: number
   /** Custom instructions to append to the compact prompt. */
   compactInstructions?: string
+  compactPromptVariant?: CompactPromptVariant
   /** See {@link CompactCheckInput.attachmentFacts}; also used by rewind summaries. */
   attachmentFacts?: AttachmentFactsResolver
   /**
@@ -135,7 +140,7 @@ async function autoCompactIfNeededOnce(input: CompactCheckInput, circuitKey: str
   const tokenCount = countCurrentTokens(input, compactableRecords)
   const threshold = getAutoCompactThreshold(input.contextManagement)
 
-  if (tokenCount < threshold) {
+  if (!input.force && tokenCount < threshold) {
     return { compacted: false, usage: { ...EMPTY_TOKEN_USAGE } }
   }
 
@@ -202,7 +207,7 @@ async function summarizeForAutoCompact(
   let sharedUsage: TokenUsage | undefined
   if (input.summarizeWithSharedPrefix) {
     try {
-      const response = await input.summarizeWithSharedPrefix(getSharedPrefixCompactPrompt(input.compactInstructions))
+      const response = await input.summarizeWithSharedPrefix(getSharedPrefixCompactPrompt(input.compactInstructions, input.compactPromptVariant))
       const content = formatCompactSummary(response.content.trim())
       if (content) return { content, usage: response.usage, preTokens: tokenCount }
       sharedUsage = response.usage
@@ -222,6 +227,7 @@ async function summarizeForAutoCompact(
     promptCacheRetention: input.promptCacheRetention,
     preTokens: tokenCount,
     compactInstructions: input.compactInstructions,
+    compactPromptVariant: input.compactPromptVariant,
     ...(input.attachmentFacts ? { attachmentFacts: input.attachmentFacts } : {}),
     cwd: input.cwd,
   })
@@ -373,7 +379,7 @@ export async function summarizeRecordsForContinuation(input: ContinuationSummary
   // that cannot see images is still a valid compact model.
   const facts = await resolveAttachmentFactsForRecords(input.records, input.attachmentFacts)
   const content = [
-    getCompactPrompt(input.compactInstructions),
+    getCompactPrompt(input.compactInstructions, input.compactPromptVariant),
     '',
     `<pre_compact_tokens>${tokenCount}</pre_compact_tokens>`,
     '<conversation>',
@@ -439,6 +445,10 @@ function formatRecordsForSummary(records: SessionRecord[]): string {
 
     if (record.type === 'tool_use_summary') {
       return `<tool_use_summary tool_use_ids="${record.toolUseIds.join(',')}">\n${record.summary}\n</tool_use_summary>`
+    }
+
+    if (record.type === 'coordination_update') {
+      return `<coordination_update>\n${record.content}\n</coordination_update>`
     }
 
     if (record.type === 'tool_approval') {

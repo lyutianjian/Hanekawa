@@ -45,6 +45,9 @@ import {
   type WaitingInput,
   type WaitingRow,
 } from '../model/waiting.js'
+import { THREAD_STATUS_LABEL, threadTone } from '../model/coordinationStatus.js'
+import type { ThreadNoteCard } from '../model/threadNotes.js'
+import type { WireThreadStatus } from '../../shellProtocol.js'
 import { button } from './controls.js'
 import { diffNode } from './diffView.js'
 import { append, el, reconcile, show, type Child } from './dom.js'
@@ -164,6 +167,8 @@ export interface TranscriptHandlers {
    * checkpoint. Absent (the sub-agent panel) draws no button.
    */
   onRewind?(messageId: string): void
+  /** A thread note card's 查看: open that thread's session. Absent draws the button inert. */
+  onOpenThread?(threadId: string): void
 }
 
 export function createTranscriptView(
@@ -757,6 +762,7 @@ function createPainter(
     imageThumbUrl: handlers.imageThumbUrl,
     onCopy: handlers.onCopy,
     onRewind: handlers.onRewind,
+    onOpenThread: handlers.onOpenThread,
     node(key, className, signature, fill, create) {
       filling.at(-1)?.push(key)
       const cached = cache.get(key)
@@ -1572,6 +1578,7 @@ function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
     ])
   }
   if (item.kind === 'thinking') return looseThinkingNode(painter, item, classes, key)
+  if (item.kind === 'thread-notes' && item.threadNotes) return threadNotesNode(painter, item, classes, key)
   if (item.kind === 'user') {
     // The item is the *column* here, not the bubble: the bubble is its own node,
     // so the meta row sits under it rather than inside it — a control tucked in
@@ -1608,6 +1615,37 @@ function itemNode(painter: Painter, item: TranscriptItem): HTMLElement {
     )
   }
   return painter.node(key, classes.join(' '), [item.text], () => [item.text])
+}
+
+/**
+ * An automatic wake or coordination update: a muted 「自动唤醒 · n/limit」 line,
+ * then one compact card per thread note. 查看 is inert without a thread id.
+ */
+function threadNotesNode(painter: Painter, item: TranscriptItem, classes: string[], key: string): HTMLElement {
+  const data = item.threadNotes!
+  return painter.node(key, classes.join(' '), [item.text], () => [
+    data.wake === undefined
+      ? undefined
+      : el('div', 'thread-notes-head', `自动唤醒 · ${data.wake.count}/${data.wake.limit}`),
+    ...data.cards.map((card) => threadNoteCard(painter, card)),
+  ])
+}
+
+function threadNoteCard(painter: Painter, card: ThreadNoteCard): HTMLElement {
+  const known = Object.hasOwn(THREAD_STATUS_LABEL, card.status)
+  const status = card.status as WireThreadStatus
+  const open = card.threadId
+  return el(
+    'div',
+    'thread-note-card',
+    el('span', 'thread-note-title', card.title),
+    el('span', known ? `thread-note-status tone-${threadTone(status)}` : 'thread-note-status',
+      known ? THREAD_STATUS_LABEL[status] : card.status),
+    card.report === undefined ? undefined : el('span', 'thread-note-report', card.report),
+    button('thread-note-open', '查看', '查看该线程', () => {
+      if (open !== undefined) painter.onOpenThread?.(open)
+    }, { enabled: open !== undefined }),
+  )
 }
 
 /**

@@ -195,6 +195,36 @@ Two consequences worth knowing:
 - The six context-management numbers are read once when a project starts, so changing them takes effect
   after a restart. Everything else on the screen applies to open sessions immediately.
 
+### Project coordination (desktop only)
+
+Choose 「项目调度」 in a project's menu to open that project's coordinator, one long-lived session per
+project. The coordinator is read-only plus dispatch (its permission mode is locked to `readonly`): it can
+read and search code and start, message, stop and resolve **threads**, which are ordinary sessions that do
+the work. Threads default to `auto` permission mode and cannot start threads themselves. A thread that
+writes code gets its own git worktree under `~/.myagent-worktrees/<key>/<threadId>` on branch
+`hanekawa/<slug>-<threadId>`; read-only threads share the project directory.
+
+- **Sidebar**: the 「项目调度」 section at the top lists each project's coordinator with running / needs-you
+  counts, and its threads indented below with status chips.
+- **Thread view**: the header shows 「← 协调 · 线程名 [状态] [停止]」. The right panel's 「线程」 tab lists
+  threads with stop / resolve, 「全部停止」, and folded counts of quiet and resolved ones.
+- **Reports**: when a thread's turn ends, a short sanitized note (data, not instructions) appears in the
+  coordinator transcript as a card. The coordinator wakes once all dispatched threads have stopped; a
+  thread's `AskCoordinator` question wakes it immediately. At most 10 automatic wakes happen after you last
+  spoke in the coordinator. Permission prompts are never forwarded to the model: a thread waiting on
+  one shows as 「需要你」 with a desktop notification.
+- **Merging**: above the input, a thread shows 「项目名 分支名 +N −M [合并] ×」; the coordinator shows
+  「N 个线程分支待合并」, expandable. The app runs `git merge` itself. It refuses while the main working tree
+  has uncommitted changes. On conflict it aborts the merge and shows 「有冲突 [让线程解决]」, which asks the
+  thread to update its branch. A successful merge removes the worktree and branch and resolves the thread.
+- **Long sessions**: the coordinator receives a board snapshot of thread states and uses a coordinator
+  compaction prompt; after compaction the latest board is restored. It is compacted early when idle past
+  the cache TTL with over 40% context used, and if compaction keeps failing a new coordinator session is
+  seeded from the summary and board.
+- **Settings**: the 「项目调度」 card in the agent category sets the coordinator and thread model and effort,
+  and 安静天数 (default 3) and 自动结案天数 (default 7) after which idle threads are marked quiet or resolved;
+  0 disables either. Threads interrupted by a restart are marked, not resumed.
+
 ### Desktop shortcuts on macOS
 
 The desktop title bar reserves space for the native traffic lights, including after resizing,

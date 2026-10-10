@@ -38,8 +38,9 @@ import type { SkillDefinition } from '../services/skills/skillsService.js'
 import type { CacheRuntime } from './cacheControl.js'
 import type { PermissionMode } from './permissions.js'
 import type { PlanModeManager } from './planModeManager.js'
-import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, SteerSource, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage } from './types.js'
+import type { AgentRunResult, AttachmentBytesLoader, ChatMessage, ModelProvider, ModelRequest, ModelResponse, ModelStreamEvent, RequestImageBytes, SessionRecord, SteerSource, Tool, ToolCall, ToolContext, ToolResultRecord, ToolUseSummaryRecord, TokenUsage, TurnOrigin } from './types.js'
 import type { ThinkingConfig } from '../config/service.js'
+import type { CompactPromptVariant } from '../prompts/compactPrompt.js'
 import { remainingTasksFromState } from '../tools/taskFormat.js'
 import { describeShell } from '../tools/BashTool/BashTool.js'
 import { ENTER_PLAN_MODE_TOOL_NAME, EXIT_PLAN_MODE_TOOL_NAME } from '../tools/toolNames.js'
@@ -132,9 +133,14 @@ export interface AgentRunOverrides {
    * `ChatMessage.sourceQueuedMessageId`.
    */
   sourceQueuedMessageId?: string
+  /** Who drives this turn. Defaults to 'user'. */
+  origin?: TurnOrigin
+  /** Force a compaction check on iteration 0, ignoring the threshold (idle compaction). */
+  compactBeforeSend?: boolean
 }
 
 interface ActiveRunOverrides {
+  compactBeforeSend?: boolean
   allowedTools?: Set<string>
   tools?: Tool[]
   model?: ActiveModelRuntime
@@ -142,6 +148,7 @@ interface ActiveRunOverrides {
   hooks?: Hooks
   displayInput?: string
   sourceQueuedMessageId?: string
+  origin?: TurnOrigin
   skillInvocation?: {
     skillName: string
     skillArgs: string
@@ -242,6 +249,16 @@ export interface AgentLoopOptions {
   consumePendingUserMessages?(): string[]
   /** The user's mid-turn messages, recorded into the running turn at each step. */
   steer?: SteerSource
+  /** Fixed role segment for the static system prompt (coordinator lanes). */
+  rolePrompt?: string
+  compactPromptVariant?: CompactPromptVariant
+  /**
+   * A pending coordination update, taken at the start of each step. The loop
+   * appends it as a durable record, then acks; a failed append leaves it pending.
+   */
+  consumeCoordinationUpdate?(): Promise<{ content: string; ack(): Promise<void> } | undefined>
+  /** Leading block of the post-compact restore (the coordinator board). */
+  coordinationRestore?(): Promise<string | undefined>
 }
 
 const MAX_RECOVERY_COUNT = 3
@@ -464,7 +481,8 @@ export class AgentLoop {
         // Rewind summaries share the compaction image projection (design
         // §11.3): images in the summarized range become text placeholders.
         ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
-        cwd: this.options.toolContext.cwd,
+        cwd: this.dataRoot(),
+        ...(this.options.compactPromptVariant ? { compactPromptVariant: this.options.compactPromptVariant } : {}),
       })
       return {
         summary: result.content,
@@ -514,6 +532,8 @@ export class AgentLoop {
     if (overrides.displayInput !== undefined && overrides.displayInput !== userInput.text) {
       normalized.displayInput = overrides.displayInput
     }
+    if (overrides.origin) normalized.origin = overrides.origin
+    if (overrides.compactBeforeSend) normalized.compactBeforeSend = true
     if (overrides.sourceQueuedMessageId) normalized.sourceQueuedMessageId = overrides.sourceQueuedMessageId
     if (overrides.skillName) {
       normalized.skillInvocation = {
@@ -607,6 +627,9 @@ export class AgentLoop {
       // The message this turn started from; its removal may still be in flight.
       if (message.id === this.activeRunOverrides?.sourceQueuedMessageId) continue
       if (message.content.trimStart().startsWith('/')) return
+      // A coordinator message never joins a turn someone else is driving; it
+      // stays queued (and keeps the order) for the pump.
+      if (message.origin === 'coordinator' && this.activeRunOverrides?.origin !== 'coordinator') return
       let userMessage: ChatMessage & { type: 'message' }
       try {
         userMessage = await this.recordUserInput(
@@ -619,6 +642,48 @@ export class AgentLoop {
       }
       await steer.consume(message.id)
       await this.runUserPromptSubmitHooks(userMessageInput(userMessage), turnId, signal)
+    }
+  }
+
+  /**
+   * A pending coordination update joins the turn as a durable record at a step
+   * boundary — after the previous step's tool results, never between a
+   * tool_use and its result. Appended first, then acked: a failed ack only
+   * means the same update may arrive again. Fail-open throughout.
+   */
+  private async takeCoordinationUpdate(turnId: string): Promise<void> {
+    const consume = this.options.consumeCoordinationUpdate
+    if (!consume) return
+    let taken: { content: string; ack(): Promise<void> } | undefined
+    try {
+      taken = await consume()
+    } catch {
+      return
+    }
+    if (!taken?.content) return
+    try {
+      await this.appendRecord({
+        type: 'coordination_update',
+        id: randomUUID(),
+        content: taken.content,
+        turnId,
+        createdAt: new Date().toISOString(),
+      })
+    } catch {
+      return
+    }
+    try {
+      await taken.ack()
+    } catch {
+      // The record is in place; the update stays pending and may repeat.
+    }
+  }
+
+  private async coordinationRestore(): Promise<string | undefined> {
+    try {
+      return await this.options.coordinationRestore?.()
+    } catch {
+      return undefined
     }
   }
 
@@ -646,7 +711,7 @@ export class AgentLoop {
       const tokenBudget = this.options.tokenBudget
       const tokenWarnThreshold = this.options.tokenWarningThreshold ?? 0.8
       const cacheSource = this.options.cacheSource
-        ?? agentCacheSource(this.options.toolContext.sessionId, this.options.toolContext.cwd)
+        ?? agentCacheSource(this.options.toolContext.sessionId, this.dataRoot())
 
       let lastRequestId: string | undefined
       let maxOutputTokensOverride: number | undefined = this.options.maxOutputTokens
@@ -682,6 +747,7 @@ export class AgentLoop {
             createdAt: new Date().toISOString(),
           })
         }
+        await this.takeCoordinationUpdate(turnId)
         await this.takeSteerMessages(turnId, signal)
         await this.options.planModeManager?.beforeTurn()
         if (this.syncRoleModel(cacheSource)) {
@@ -734,7 +800,9 @@ export class AgentLoop {
           promptCacheRetention: this.activeModel.promptCacheRetention,
           turnId,
           circuitKey: this.options.toolContext.sessionId,
-          cwd: this.options.toolContext.cwd,
+          cwd: this.dataRoot(),
+          ...(iteration === 0 && this.activeRunOverrides?.compactBeforeSend === true ? { force: true } : {}),
+          ...(this.options.compactPromptVariant ? { compactPromptVariant: this.options.compactPromptVariant } : {}),
           ...(this.options.attachmentFacts ? { attachmentFacts: this.options.attachmentFacts } : {}),
           getCompactFailureCount: this.options.getCompactFailureCount,
           setCompactFailureCount: this.options.setCompactFailureCount,
@@ -1172,10 +1240,16 @@ export class AgentLoop {
    * current task list. The returned context omits transient fields
    * (abortSignal, appendRecord) which the ToolRunner installs per-call.
    */
+  /** Key for project data dirs (spill, diagnostics): the project, not a worktree. */
+  private dataRoot(): string {
+    return this.options.toolContext.projectDir ?? this.options.toolContext.cwd
+  }
+
   private forkToolContext(): ToolContext {
     const source = this.options.toolContext
     const fork: ToolContext = {
       cwd: source.cwd,
+      ...(source.projectDir ? { projectDir: source.projectDir } : {}),
       sessionId: source.sessionId,
       readFiles: new Set(source.readFiles),
     }
@@ -1384,7 +1458,7 @@ export class AgentLoop {
         repairToolPairing: !this.recordsCacheHasCleanToolProtocol,
         imageTokenStrategy,
         trimState: this.trimState,
-        spillDir: getToolResultSpillDir(this.options.toolContext.cwd, this.options.toolContext.sessionId),
+        spillDir: getToolResultSpillDir(this.dataRoot(), this.options.toolContext.sessionId),
         ...(turnId ? { turnId } : {}),
         ...(this.stripAllThinkingBlocksFromRequests ? { stripAllThinkingBlocks: true } : {}),
       },
@@ -1576,7 +1650,7 @@ export class AgentLoop {
         model: runtime.model,
         promptCacheRetention: runtime.promptCacheRetention,
         toolResults: summarizableResults,
-        cwd: this.options.toolContext.cwd,
+        cwd: this.dataRoot(),
       }),
     }
     entry.promise.then((summary) => {
@@ -1665,6 +1739,7 @@ export class AgentLoop {
       system: this.options.system,
       projectContext: this.options.projectContext,
       memoryPrompt: this.options.memoryPrompt,
+      rolePrompt: this.options.rolePrompt,
       criticalSystemReminder: this.options.criticalSystemReminder,
       skills: this.options.skills,
       contextManagement: this.activeContextManagement,
@@ -1760,7 +1835,7 @@ export class AgentLoop {
       records,
       turnId,
       userMessageId,
-      compactCacheSource(this.options.toolContext.cwd),
+      compactCacheSource(this.dataRoot()),
       { includeUserContext: false },
     )
     const message: ChatMessage = {
@@ -1790,7 +1865,10 @@ export class AgentLoop {
       .map((record) => record.id))
     if (pendingIds.size === 0) return records
 
-    const restoredContext = await this.options.contextBuilder.buildPostCompactRestore(this.options.toolContext)
+    const restoredContext = await this.options.contextBuilder.buildPostCompactRestore(
+      this.options.toolContext,
+      await this.coordinationRestore(),
+    )
     const consume = (record: SessionRecord): SessionRecord => {
       if (!pendingIds.has(record.id) || record.type !== 'compact_boundary' || record.postCompactRestore !== 'pending') return record
       return { ...record, postCompactRestore: 'consumed', ...(restoredContext ? { restoredContext } : {}) }

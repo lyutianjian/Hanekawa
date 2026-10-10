@@ -201,6 +201,28 @@ export type ShellCommand =
       rect: WireBrowserRect
       visible: boolean
     }
+  /**
+   * Opens the project's coordinator session as the active lane, creating the
+   * session the first time; every later call reuses the one the project's
+   * coordination pointer names.
+   */
+  | { type: 'open-coordinator'; id: string; projectRoot: string }
+  /** Stops the coordinator and every thread of the project that has a live lane. */
+  | { type: 'coordination-stop-all'; id: string; projectRoot: string }
+  /** Worktree threads whose branch has commits the project's branch lacks. */
+  | { type: 'thread-merges'; id: string; projectRoot: string }
+  /** Merges a thread's branch into the project's checked-out branch. */
+  | { type: 'thread-merge'; id: string; projectRoot: string; threadId: string }
+  /** Hides a thread's merge prompt until its branch gets a new commit. */
+  | { type: 'thread-merge-dismiss'; id: string; projectRoot: string; threadId: string }
+  /** Asks the thread itself to bring its branch up to date and resolve the conflict. */
+  | { type: 'thread-merge-resolve'; id: string; projectRoot: string; threadId: string }
+  /** The project's thread table (pull); the same payload the `coordination-threads` event pushes. */
+  | { type: 'coordination-threads'; id: string; projectRoot: string }
+  /** The user's stop of one thread: interrupts its lane, no coordinator involved. */
+  | { type: 'thread-stop'; id: string; projectRoot: string; threadId: string }
+  /** The user's 结案 of one thread. */
+  | { type: 'thread-resolve'; id: string; projectRoot: string; threadId: string }
 
 // --- browser -----------------------------------------------------------------
 
@@ -460,6 +482,19 @@ export type WireContextManagementField = (typeof CONTEXT_MANAGEMENT_FIELDS)[numb
 /** Merged over the defaults, so every field has a number to draw. */
 export type WireContextManagementInfo = Record<WireContextManagementField, number>
 
+/**
+ * Merged coordination settings. A model or effort that is absent inherits; the
+ * day counts always carry a number (the default filled in), 0 meaning off.
+ */
+export interface WireCoordinationSettingsInfo {
+  coordinatorModel?: string
+  coordinatorEffort?: EffortLevel
+  threadModel?: string
+  threadEffort?: EffortLevel
+  quietDays: number
+  autoResolveDays: number
+}
+
 export interface WireGeneralInfo {
   /** `localSettingsPath(cwd)`, `~/.myagent/projects/<key>/settings.local.json`, same file the permission groups use. */
   localPath: string
@@ -504,6 +539,7 @@ export interface WireSettingsSnapshot {
   /** From `config.json`, not the settings layers — see `setContextManagement`. */
   contextManagement: WireContextManagementInfo
   general: WireGeneralInfo
+  coordination: WireCoordinationSettingsInfo
   /** `~/.myagent/AGENTS.md`; empty when the file does not exist. Global, not per project. */
   userInstructions: string
 }
@@ -559,6 +595,12 @@ export type SettingsChange =
   | { scope: 'permissions'; kind: 'set-startup-permission-mode'; mode: 'default' | 'auto' | 'bypass' }
   /** An action, not a write: re-reads `.myagent/agents/` and rebuilds runtimes. */
   | { scope: 'agent'; kind: 'reload-agent-definitions' }
+  /** Local layer. `'inherit'` clears the setting; otherwise a model key from the snapshot. */
+  | { scope: 'agent'; kind: 'set-coordination-model'; role: 'coordinator' | 'thread'; value: string }
+  /** Local layer. `'inherit'` clears the setting. */
+  | { scope: 'agent'; kind: 'set-coordination-effort'; role: 'coordinator' | 'thread'; value: EffortLevel | 'inherit' }
+  /** Local layer; an integer >= 0, where 0 turns the rule off. */
+  | { scope: 'agent'; kind: 'set-coordination-days'; field: 'quietDays' | 'autoResolveDays'; value: number }
   | { scope: 'general'; kind: 'set-cache-ttl'; enabled: boolean }
   | { scope: 'general'; kind: 'set-thinking'; enabled: boolean }
   | { scope: 'personalization'; kind: 'set-user-instructions'; content: string }
@@ -618,6 +660,11 @@ export type ShellEvent =
    * would need its own ordering guarantees against the open/close events.
    */
   | { type: 'browser-state'; tabs: WireBrowserTabInfo[] }
+  /**
+   * One project's thread table changed. The whole list, like `browser-state`,
+   * coalesced per project on the host; only pushed for open projects.
+   */
+  | { type: 'coordination-threads'; state: WireCoordinationThreads }
   | { type: 'reply'; id: string; result: unknown }
   | { type: 'fail'; id: string; message: string }
 
@@ -649,6 +696,8 @@ export interface WireSessionSummary {
   title?: string
   updatedAt: string
   messageCount: number
+  /** The session's coordination role, when it belongs to a project's coordination. */
+  coordinationRole?: 'coordinator' | 'thread'
 }
 
 /** One project's session history. */
@@ -743,3 +792,69 @@ export interface WireShellBrowserOkResult {
   ok: true
 }
 
+/** `open-coordinator` answers like `open-session`: the lane it landed on. */
+export type WireShellOpenCoordinatorResult = WireShellOpenSessionResult
+
+/** `ok` means the command ran; a stop does not wait for the turns to drain. */
+export interface WireShellCoordinationOkResult {
+  ok: true
+}
+
+/** One thread branch waiting to be merged. */
+export interface WireThreadMerge {
+  threadId: string
+  title: string
+  branch: string
+  added: number
+  removed: number
+  /** The last merge attempt conflicted and was undone. */
+  conflict: boolean
+  /** The thread is still working (or waiting on the user): shown, but not mergeable yet. */
+  running: boolean
+}
+
+/** A thread's effective status (lifecycle already applied host-side). */
+export type WireThreadStatus =
+  | 'running'
+  | 'idle'
+  | 'awaiting-coordinator'
+  | 'needs-you'
+  | 'failed'
+  | 'interrupted'
+  | 'quiet'
+  | 'resolved'
+  | 'stale'
+
+/** One thread as the desktop shows it. Title and report text are already sanitized. */
+export interface WireThreadInfo {
+  threadId: string
+  sessionId: string
+  title: string
+  status: WireThreadStatus
+  statusLine?: string
+  lastReport?: string
+  /** ISO 8601. */
+  lastActivityAt: string
+  /** The worktree branch, for a thread that writes code. */
+  branch?: string
+}
+
+/** A project's whole thread table, newest activity first. */
+export interface WireCoordinationThreads {
+  projectRoot: string
+  coordinatorSessionId?: string
+  threads: WireThreadInfo[]
+}
+
+export interface WireShellThreadMergesResult {
+  merges: WireThreadMerge[]
+}
+
+/**
+ * A merge attempt's outcome. Only `merged` changed anything: `dirty` and
+ * `running` refused up front, `conflict` was rolled back.
+ */
+export interface WireShellThreadMergeResult {
+  kind: 'merged' | 'dirty' | 'conflict' | 'error' | 'running' | 'no-worktree'
+  message?: string
+}

@@ -1,4 +1,5 @@
 import type { WireLaneInfo } from '../../shellProtocol.js'
+import type { ThreadTone } from './coordinationStatus.js'
 
 /**
  * The canvas header bar (`design_guidance.md` 三.1).
@@ -25,6 +26,26 @@ export interface CanvasHeaderMenuItem {
   readonly danger?: boolean
 }
 
+/**
+ * The thread crumb that replaces the title on a thread session: 「← 协调 · 线程名 [状态] [停止]」.
+ * The caller has already labelled the status, so this only carries what to draw.
+ */
+export interface CanvasHeaderBreadcrumb {
+  readonly backLabel: string
+  readonly threadTitle: string
+  readonly statusLabel: string
+  readonly tone: ThreadTone
+  /** The 停止 button is offered only while a stop would apply. */
+  readonly canStop: boolean
+}
+
+export interface CanvasHeaderThread {
+  readonly title: string
+  readonly statusLabel: string
+  readonly tone: ThreadTone
+  readonly canStop: boolean
+}
+
 export interface CanvasHeaderView {
   /**
    * False when no lane is active, and false while the active pane is still a
@@ -42,6 +63,10 @@ export interface CanvasHeaderView {
   readonly renaming: boolean
   readonly openLocationLabel: string
   readonly openLocationTitle: string
+  /** The 线程 button, shown for either coordination role. */
+  readonly threadsButton: boolean
+  /** Present on a thread session; replaces the title while not renaming. */
+  readonly breadcrumb: CanvasHeaderBreadcrumb | undefined
 }
 
 /** The same fallback the sidebar rows use, so one session has one name. */
@@ -58,6 +83,8 @@ const EMPTY: CanvasHeaderView = {
   renaming: false,
   openLocationLabel: '',
   openLocationTitle: '',
+  threadsButton: false,
+  breadcrumb: undefined,
 }
 
 export function canvasHeaderView(input: {
@@ -81,6 +108,10 @@ export function canvasHeaderView(input: {
    * `onFirstContent` already repaints on.
    */
   hasConversation: boolean
+  /** The session's coordination role, when it belongs to a project's coordination. */
+  role?: 'coordinator' | 'thread'
+  /** The thread this session runs, already labelled by the caller. Used only with `role: 'thread'`. */
+  thread?: CanvasHeaderThread
 }): CanvasHeaderView {
   const { lane } = input
   if (!lane || !input.hasConversation) return EMPTY
@@ -114,6 +145,16 @@ export function canvasHeaderView(input: {
     // Names the editor it hands off to: 「打开位置」 read as "show in Finder".
     openLocationLabel: 'VS Code',
     openLocationTitle: `在 VS Code 中打开 ${lane.projectName}`,
+    threadsButton: input.role !== undefined,
+    breadcrumb: input.role === 'thread' && input.thread
+      ? {
+          backLabel: '← 协调',
+          threadTitle: input.thread.title,
+          statusLabel: input.thread.statusLabel,
+          tone: input.thread.tone,
+          canStop: input.thread.canStop,
+        }
+      : undefined,
   }
 }
 

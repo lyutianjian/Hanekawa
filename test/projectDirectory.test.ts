@@ -168,6 +168,24 @@ test('describe follows the order it is handed, not the project order', () => {
   assert.deepEqual(dir.describe([theirs, mine]).map((info) => info.paneId), ['s2', 's1'])
 })
 
+test('describe projects the coordination role, and omits it for an ordinary session', () => {
+  const dir = directory()
+  const a = `${process.cwd()}${sep}src`
+  const coordinator = {
+    getSession: () => ({ id: 'c1', coordination: { role: 'coordinator', projectKey: 'k' } }) as SessionMeta,
+  }
+  const thread = {
+    getSession: () => ({ id: 't1', coordination: { role: 'thread', projectKey: 'k', threadId: 'x' } }) as SessionMeta,
+  }
+  const plain = fakePane('p1')
+  dir.add(fakeProject(a), fakeWorkspace(a, [coordinator, thread, plain]))
+
+  const [c, t, p] = dir.describe([coordinator, thread, plain])
+  assert.equal(c!.coordinationRole, 'coordinator')
+  assert.equal(t!.coordinationRole, 'thread')
+  assert.equal('coordinationRole' in p!, false)
+})
+
 test('describe drops a pane no open project owns', () => {
   // A pane whose project was just closed must not be advertised as a tab.
   const dir = directory()

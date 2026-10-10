@@ -37,6 +37,12 @@ export interface CanvasHeaderActions {
   onRename: (title: string) => void
   onCancelRename: () => void
   onOpenLocation: () => void
+  /** 「← 协调」 on a thread session. Optional so callers that have no coordination compile unchanged. */
+  onBackToCoordinator?: () => void
+  /** 停止 on a thread session that a stop applies to. */
+  onStopThread?: () => void
+  /** 线程 — opens the side panel's threads tab, for either role. */
+  onOpenThreads?: () => void
 }
 
 export function createCanvasHeaderView(
@@ -66,6 +72,20 @@ export function createCanvasHeaderView(
   const locationLabel = el('span', 'btn-label')
   const openLocation = button('canvas-open-location', '', '', actions.onOpenLocation, { icon: 'external' })
   openLocation.appendChild(locationLabel)
+  const threadsLabel = el('span', 'btn-label', '线程')
+  const threadsButton = button('canvas-threads-open', '', '打开线程面板', () => actions.onOpenThreads?.())
+  threadsButton.appendChild(threadsLabel)
+  // The thread crumb is persistent for the same reason the title input is: it
+  // repaints with every snapshot. Its parts are built once and only updated.
+  const crumb = el('div', 'canvas-breadcrumb')
+  const backLabel = el('span', 'btn-label')
+  const backButton = button('canvas-back-coordinator', '', '返回协调会话', () => actions.onBackToCoordinator?.())
+  backButton.appendChild(backLabel)
+  const crumbThread = el('span', 'canvas-breadcrumb-thread')
+  const crumbStatus = el('span', 'canvas-status')
+  const crumbSep = el('span', 'canvas-breadcrumb-sep', '·')
+  const stopButton = button('canvas-stop-thread', '停止', '停止线程', () => actions.onStopThread?.())
+  crumb.setAttribute('aria-label', '协调路径')
   let lastSignature: string | undefined
 
   /** The title the input was seeded from, so a no-op commit sends nothing. */
@@ -159,7 +179,8 @@ export function createCanvasHeaderView(
       const returnFocus = !view.menuOpen && menu.contains(document.activeElement)
       menuPresence.set(view.menuOpen)
       if (title.textContent !== view.title) title.textContent = view.title
-      reconcile(identity, [view.renaming ? titleInput : title, menuShell])
+      const titleSlot = view.renaming ? titleInput : view.breadcrumb ? crumb : title
+      reconcile(identity, [titleSlot, menuShell])
 
       const startingRename = view.renaming && seededTitle === undefined
       if (view.renaming) {
@@ -176,7 +197,18 @@ export function createCanvasHeaderView(
       locationLabel.textContent = view.openLocationLabel
       openLocation.title = view.openLocationTitle
       openLocation.setAttribute('aria-label', view.openLocationTitle)
-      reconcile(rightControls, [openLocation])
+      reconcile(rightControls, [view.threadsButton ? threadsButton : undefined, openLocation])
+
+      // The crumb replaces the title, never the rename field: a rename is about
+      // the session title, and the input has to be where the caret was put.
+      if (view.breadcrumb) {
+        const b = view.breadcrumb
+        if (backLabel.textContent !== b.backLabel) backLabel.textContent = b.backLabel
+        if (crumbThread.textContent !== b.threadTitle) crumbThread.textContent = b.threadTitle
+        crumbStatus.textContent = b.statusLabel
+        crumbStatus.className = `canvas-status tone-${b.tone}`
+        reconcile(crumb, [backButton, crumbSep, crumbThread, crumbStatus, b.canStop ? stopButton : undefined])
+      }
 
       // Last, after every node this paint owns is in the page — `focus()` is the
       // one call here that runs other people's code. It fires `focusout` on

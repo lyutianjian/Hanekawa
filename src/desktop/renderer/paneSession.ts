@@ -205,6 +205,8 @@ import {
 } from './model/tasks.js'
 
 export interface PaneSessionDeps {
+  /** Whether this lane is a project coordinator (its permission pill is hidden). */
+  isCoordinator?: () => boolean
   /** The lane key. Stable across `/clear` and `/resume`; identifies this pane. */
   lane: string
   channel: RuntimeChannel
@@ -284,6 +286,8 @@ export interface PaneSessionDeps {
   onUserMessage?: () => void
   /** An `Agent` row was clicked: show that run in the window's side panel. */
   onOpenSubagent?: (id: string) => void
+  /** A thread note card's 查看: open that thread's session. */
+  onOpenThread?: (threadId: string) => void
   /** The active pane repainted its transcript, so the side panel's list may have moved. */
   onSubagentsChanged?: () => void
 }
@@ -409,6 +413,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   const transcriptView: TranscriptView = createTranscriptView(transcriptEl, paneEl, {
     onToggle: (id, expanded) => toggleDisclosureAt(id, expanded),
     onOpenSubagent: (id) => deps.onOpenSubagent?.(id),
+    onOpenThread: (id) => deps.onOpenThread?.(id),
     // The panel is a singleton the active pane drives, so a background pane
     // cannot reach it — and cannot be clicked either, since it does not paint.
     onTaskStep: () => {
@@ -918,6 +923,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
     deps.composer.renderRuntime(
       runtime,
       contextGaugeView(client.getContextUsedTokens(), runtime),
+      deps.isCoordinator?.() ?? false,
     )
     deps.processStrip.render(runningProcessCount(client.getBackgroundTasks()))
     // The strip's send-gate half follows the same snapshot: a model switch to

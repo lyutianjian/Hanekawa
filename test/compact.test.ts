@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { autoCompactIfNeeded, resetAutoCompactFailureState, summarizeRecordsForContinuation } from '../src/harness/compact.js'
+import { autoCompactIfNeeded, COMPACT_FAILURE_LIMIT, resetAutoCompactFailureState, summarizeRecordsForContinuation } from '../src/harness/compact.js'
 import type { ModelProvider, SessionRecord } from '../src/harness/types.js'
 import { makeImageAttachmentRef } from './helpers/imageFixtures.js'
 
@@ -1031,3 +1031,72 @@ test('without an attachment resolver the summary placeholder still names the att
   assert.match(seenPrompt, /a\.png, sent 64x64, cached in this session's attachment store \(attachment img-a\)/)
 })
 
+
+test('coordinator compact prompt variant is separate and forbids thread status', async () => {
+  const { getCompactPrompt, getSharedPrefixCompactPrompt } = await import('../src/prompts/compactPrompt.js')
+  const base = getCompactPrompt()
+  const coord = getCompactPrompt('extra', 'coordinator')
+  assert.notEqual(coord, base)
+  assert.match(coord, /Do not record thread status/)
+  assert.match(coord, /fresh board is restored after compaction/)
+  assert.match(coord, /Questions Waiting on the User/)
+  assert.match(coord, /Additional Instructions:\nextra/)
+  assert.equal(getCompactPrompt(undefined, 'default'), base)
+  assert.match(getSharedPrefixCompactPrompt(undefined, 'coordinator'), /Do not record thread status[\s\S]*Do not call any tools/)
+})
+
+test('force bypasses the threshold but not an open circuit breaker', async () => {
+  resetAutoCompactFailureState()
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      calls += 1
+      return { content: '<summary>forced</summary>', toolCalls: [] }
+    },
+  }
+  const records = compactableRecords()
+  const base = {
+    records,
+    provider,
+    model: 'fake-model',
+    tools: [],
+    contextManagement: { ...compactTestBudget(), contextWindow: 10_000_000 },
+    appendRecord: async () => {},
+  }
+  const unforced = await autoCompactIfNeeded({ ...base, circuitKey: 'force-a' })
+  assert.equal(unforced.compacted, false)
+  const forced = await autoCompactIfNeeded({ ...base, circuitKey: 'force-a', force: true })
+  assert.equal(forced.compacted, true)
+  const before = calls
+  const blocked = await autoCompactIfNeeded({
+    ...base,
+    circuitKey: 'force-b',
+    force: true,
+    getCompactFailureCount: async () => COMPACT_FAILURE_LIMIT,
+  })
+  assert.equal(blocked.compacted, false)
+  assert.equal(calls, before)
+})
+
+test('compactPromptVariant reaches the request and coordination_update is summarized', async () => {
+  let seen = ''
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(req) {
+      seen = String(req.messages[0]?.content)
+      return { content: '<summary>ok</summary>', toolCalls: [] }
+    },
+  }
+  await summarizeRecordsForContinuation({
+    records: [
+      { id: 'u1', type: 'message', role: 'user', content: 'hi', createdAt: new Date().toISOString() },
+      { id: 'c1', type: 'coordination_update', content: 'thread A finished', createdAt: new Date().toISOString() },
+    ] as SessionRecord[],
+    provider,
+    model: 'fake-model',
+    compactPromptVariant: 'coordinator',
+  })
+  assert.match(seen, /Do not record thread status/)
+  assert.match(seen, /<coordination_update>\nthread A finished\n<\/coordination_update>/)
+})

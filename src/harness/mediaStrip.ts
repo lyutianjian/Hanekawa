@@ -409,7 +409,7 @@ export function estimateRequestTextBytes(
 ): number {
   let bytes = Buffer.byteLength(options.system ?? '', 'utf8')
   for (const record of records) {
-    const content = record.type === 'message' || record.type === 'tool_result'
+    const content = record.type === 'message' || record.type === 'tool_result' || record.type === 'coordination_update'
       ? record.content
       : record.type === 'compact_boundary'
         ? record.summary

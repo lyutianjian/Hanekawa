@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { z } from 'zod/v3'
-import { AgentLoop } from '../src/harness/loop.js'
+import { AgentLoop, type AgentLoopOptions } from '../src/harness/loop.js'
 import { ContextBuilder } from '../src/harness/contextBuilder.js'
 import { PermissionGate } from '../src/harness/permissions.js'
 import { ToolRunner } from '../src/harness/toolRunner.js'
@@ -29,7 +29,13 @@ function steerFrom(pending: PersistedQueuedMessage[]): SteerSource {
   }
 }
 
-function loopFor(provider: ModelProvider, records: SessionRecord[], steer: SteerSource, onTool: () => void) {
+function loopFor(
+  provider: ModelProvider,
+  records: SessionRecord[],
+  steer: SteerSource,
+  onTool: () => void,
+  extra: Partial<AgentLoopOptions> = {},
+) {
   const tool: Tool = {
     name: 'noop',
     description: 'noop',
@@ -54,6 +60,7 @@ function loopFor(provider: ModelProvider, records: SessionRecord[], steer: Steer
     toolContext: { cwd: process.cwd(), sessionId: 's1', readFiles: new Set() },
     recordStream: recordStreamFor(records),
     steer,
+    ...extra,
   })
 }
 
@@ -108,4 +115,86 @@ test('the queued message a turn started from is not steered into it again', asyn
 
   assert.deepEqual(userTexts(records), ['fix the bug', 'use the new API'])
   assert.deepEqual(pending.map((message) => message.id), ['head'])
+})
+
+test('a coordinator message is steered only into a coordinator-driven turn', async () => {
+  for (const origin of ['user', 'coordinator'] as const) {
+    const records: SessionRecord[] = []
+    const pending: PersistedQueuedMessage[] = []
+    let calls = 0
+    const provider: ModelProvider = {
+      name: 'fake',
+      async createMessage() {
+        calls += 1
+        if (calls === 1) return { content: '', toolCalls: [{ id: 'noop-1', name: 'noop', input: {} }] }
+        return { content: 'done', toolCalls: [] }
+      },
+    }
+    await loopFor(provider, records, steerFrom(pending), () => {
+      pending.push({ ...queued('c1', 'from coordinator'), origin: 'coordinator' })
+    }).run({ text: 'go' }, undefined, undefined, { origin })
+    if (origin === 'user') {
+      assert.deepEqual(userTexts(records), ['go'])
+      assert.deepEqual(pending.map((message) => message.id), ['c1'])
+    } else {
+      assert.deepEqual(userTexts(records), ['go', 'from coordinator'])
+      assert.deepEqual(pending, [])
+    }
+  }
+})
+
+test('a coordination update taken mid-turn lands after the tool results, and survives a failed ack', async () => {
+  const records: SessionRecord[] = []
+  const requests: string[] = []
+  let pendingUpdate: string | undefined
+  let acks = 0
+  let calls = 0
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage(request) {
+      calls += 1
+      requests.push(JSON.stringify(request.messages))
+      if (calls === 1) return { content: '', toolCalls: [{ id: 'noop-1', name: 'noop', input: {} }] }
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+
+  await loopFor(provider, records, steerFrom([]), () => { pendingUpdate = 'thread t1 finished' }, {
+    consumeCoordinationUpdate: async () => {
+      if (!pendingUpdate) return undefined
+      const content = pendingUpdate
+      return {
+        content,
+        ack: async () => {
+          acks += 1
+          throw new Error('store unavailable')
+        },
+      }
+    },
+  }).run({ text: 'coordinate' })
+
+  assert.equal(calls, 2)
+  assert.equal(acks, 1)
+  const update = records.find((record) => record.type === 'coordination_update')
+  assert.ok(update && update.type === 'coordination_update')
+  assert.equal(update.content, 'thread t1 finished')
+  assert.equal(update.turnId, records[0]?.type === 'message' ? records[0].turnId : undefined)
+  assert.ok(records.findIndex((record) => record.type === 'tool_result') < records.indexOf(update))
+  assert.ok(requests[1]?.includes('thread t1 finished'))
+  assert.ok(!requests[0]?.includes('thread t1 finished'))
+})
+
+test('a failing coordination hook does not fail the turn', async () => {
+  const records: SessionRecord[] = []
+  const provider: ModelProvider = {
+    name: 'fake',
+    async createMessage() {
+      return { content: 'done', toolCalls: [] }
+    },
+  }
+  const result = await loopFor(provider, records, steerFrom([]), () => {}, {
+    consumeCoordinationUpdate: async () => { throw new Error('boom') },
+  }).run({ text: 'hi' })
+  assert.equal(result.content, 'done')
+  assert.ok(!records.some((record) => record.type === 'coordination_update'))
 })

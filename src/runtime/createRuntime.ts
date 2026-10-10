@@ -3,14 +3,17 @@ import { buildMemoryPrompt } from '../services/memory/memoryPrompt.js'
 import type { ConfigService, ModelConfig, ThinkingConfig } from '../config/service.js'
 import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
-import { validateSettings, type MyAgentSettings } from '../config/settings.js'
+import { coordinationSettings, validateSettings, type MyAgentSettings } from '../config/settings.js'
+import { COORDINATOR_ROLE_PROMPT } from '../prompts/coordinatorPrompt.js'
+import { CoordinationStore } from '../services/coordination/threadStore.js'
+import { formatCoordinationUpdate, formatCoordinatorRestore } from './coordination/messages.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { PlanModeManager } from '../harness/planModeManager.js'
 import { ToolRunner } from '../harness/toolRunner.js'
 import type { SystemPromptSectionCache } from '../harness/sections.js'
 import type { PermissionGate } from '../harness/permissions.js'
-import type { AttachmentBytesLoader, ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
+import type { AttachmentBytesLoader, CoordinationRole, ImageAttachmentImporter, SessionRecord } from '../harness/types.js'
 import type { AttachmentFactsResolver } from '../harness/turnImages.js'
 import { MODEL_CONTEXT_WINDOW_DEFAULT } from '../prompts/budget.js'
 import type { ContextManagementConfig } from '../prompts/budget.js'
@@ -82,7 +85,12 @@ export function createActiveModelRuntimeFactory(
 }
 
 export interface CreateRuntimeDeps {
+  /** The project root: keys data dirs (plans, memory, spill, transcripts). */
   cwd: string
+  /** Where tools run; a coordination thread's worktree. Defaults to `cwd`. */
+  workingDir?: string
+  /** The session's coordination role, which filters the tool set. */
+  role?: CoordinationRole
   config: ConfigService
   store: SessionStore
   /**
@@ -156,6 +164,8 @@ export type CreateRuntime = (
 export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
   const {
     cwd,
+    workingDir = cwd,
+    role,
     config,
     store,
     getSettings,
@@ -243,7 +253,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       ? { type: 'disabled' }
       : { type: 'adaptive' }
 
-    const runtimeTools = toolRegistry.buildRuntimeTools()
+    const runtimeTools = toolRegistry.buildRuntimeTools(role)
     runtimeTools.push(createAgentTool({
       provider: targetProvider,
       model: targetModelConfig.model,
@@ -260,7 +270,8 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       getSessionRules: () => permissionGate.getSessionRules(),
       getSessionRuleStore: () => permissionGate.getSessionRuleStore(),
       getAdditionalDirectories: () => permissionGate.getAdditionalDirectories(),
-      cwd,
+      cwd: workingDir,
+      projectDir: cwd,
       system: config.get().agent.system,
       projectContext: getProjectContext(),
       skills: getSkills(),
@@ -290,7 +301,7 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       ...(attachmentBytes ? { attachmentBytes } : {}),
     }))
 
-    toolRegistry.register(runtimeTools)
+    toolRegistry.register(runtimeTools, role)
     const runtimeToolRunner = new ToolRunner(runtimeTools, permissionGate, {
       onRecord: async (record) => {
         await recordStream.append(record)
@@ -304,7 +315,35 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       postToolUse: getSettings().hooks?.postToolUse,
     })
 
+    // Only the coordinator lane reads the board; a superseded coordinator
+    // (the pointer moved on) consumes nothing.
+    const coordStore = role === 'coordinator'
+      ? new CoordinationStore(cwd, { lifecycle: () => coordinationSettings(getSettings()) })
+      : undefined
+    const coordinatorHooks = coordStore
+      ? {
+          rolePrompt: COORDINATOR_ROLE_PROMPT,
+          compactPromptVariant: 'coordinator' as const,
+          consumeCoordinationUpdate: async () => {
+            if ((await coordStore.read()).coordinator?.sessionId !== runtimeSession.id) return undefined
+            const update = await coordStore.peekCoordinationUpdate()
+            if (!update) return undefined
+            const content = formatCoordinationUpdate({ ...(update.snapshot ? { snapshot: update.snapshot } : {}), notes: update.notes.map((n) => ({ threadId: n.threadId, text: n.text })) })
+            if (!content) return undefined
+            return { content, ack: () => coordStore.ackCoordinationUpdate(update) }
+          },
+          coordinationRestore: async () => {
+            const update = await coordStore.peekCoordinationUpdate()
+            const notes = update?.notes ?? []
+            const text = formatCoordinatorRestore({ board: await coordStore.currentBoard(), notes: notes.map((n) => n.text) })
+            if (notes.length > 0) await coordStore.ackCoordinationUpdate({ notes })
+            return text
+          },
+        }
+      : {}
+
     loop = new AgentLoop({
+      ...coordinatorHooks,
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,
@@ -313,7 +352,8 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       contextBuilder: new ContextBuilder(undefined, contextManagement, promptSections),
       toolRunner: runtimeToolRunner,
       toolContext: {
-        cwd,
+        cwd: workingDir,
+        projectDir: cwd,
         sessionId: runtimeSession.id,
         readFiles: new Set(),
         readFileState: new Map(),

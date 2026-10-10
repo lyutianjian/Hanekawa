@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { getSessionsDir } from '../utils/paths.js'
 import { migrateLegacyProjectData, type LegacyDataFinding } from './legacyProjectData.js'
 import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnostics } from '../utils/json.js'
-import type { SessionRecord, TokenUsage } from '../harness/types.js'
+import type { CoordinationRole, SessionRecord, TokenUsage } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
@@ -53,6 +53,16 @@ export interface SessionMeta {
   messageCount: number
   compactFailureCount?: number
   checkpoints?: CheckpointMapping[]
+  /** Set when the session belongs to a project's coordination (see `services/coordination/`). */
+  coordination?: SessionCoordination
+}
+
+export interface SessionCoordination {
+  role: CoordinationRole
+  projectKey: string
+  threadId?: string
+  /** The thread's worktree path. Absent means the project's cwd. */
+  workingDir?: string
 }
 
 interface SessionState {
@@ -606,6 +616,17 @@ export class SessionStore {
     }, session ?? this.defaultMeta(sessionId))
   }
 
+  async setCoordination(sessionIdOrPrefix: string, value: SessionCoordination | undefined): Promise<void> {
+    const session = await this.resolve(sessionIdOrPrefix)
+    const sessionId = session?.id ?? sessionIdOrPrefix
+    await this.updateIndexSession(sessionId, (current) => {
+      const next: SessionMeta = { ...current }
+      if (value) next.coordination = { ...value }
+      else delete next.coordination
+      return next
+    }, session ?? this.defaultMeta(sessionId))
+  }
+
   /**
    * Removes a session's three files and its index entry.
    *
@@ -1032,6 +1053,7 @@ export class SessionStore {
       messageCount: messages.length,
       ...(existing?.checkpoints ? { checkpoints: existing.checkpoints } : {}),
       ...(existing?.compactFailureCount ? { compactFailureCount: existing.compactFailureCount } : {}),
+      ...(existing?.coordination ? { coordination: existing.coordination } : {}),
     }
   }
 

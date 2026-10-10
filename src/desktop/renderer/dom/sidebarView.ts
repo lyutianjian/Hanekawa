@@ -7,6 +7,8 @@ import {
   CREATE_BLOCKED_HINT,
   SIDEBAR_RECENT_LABEL,
   activateRow,
+  coordinationCountsText,
+  coordinationHiddenText,
   newSessionIntent,
   sidebarContentMounted,
   sidebarRenderSignature,
@@ -351,8 +353,14 @@ export function createSidebarView(
     onIntent({ kind: 'open-project-menu', projectRoot: undefined })
   })
 
-  const rowNode = (row: SidebarRow, index: number, selected: boolean): HTMLElement => {
+  const rowNode = (
+    row: SidebarRow,
+    index: number,
+    selected: boolean,
+    trailing?: HTMLElement,
+  ): HTMLElement => {
     const classes = ['session-row']
+    if (row.nested) classes.push('nested')
     if (row.active) classes.push('active')
     if (selected) classes.push('selected')
     if (row.lane !== undefined) classes.push('open')
@@ -380,6 +388,7 @@ export function createSidebarView(
     // marquee runs, so at rest it costs the layout nothing and the measurement
     // below is the width of one copy; while the marquee runs it is what the loop
     // wraps onto, and it is `aria-hidden` because it is the same name again.
+    if (row.roleMarker !== undefined) open.appendChild(el('span', 'session-role', row.roleMarker))
     const title = el('span', 'session-title')
     const track = el('span', 'session-title-text')
     const echo = el('span', 'session-title-echo', row.title)
@@ -419,6 +428,10 @@ export function createSidebarView(
       if (hovered === row.sessionId) hovered = undefined
     })
     node.addEventListener('focusin', measure)
+    if (row.statusLabel !== undefined) {
+      open.appendChild(el('span', `session-status ${row.statusTone ?? 'neutral'}`, row.statusLabel))
+    }
+    if (trailing) open.appendChild(trailing)
     if (row.badge !== 'none') {
       const badge = el('span', `session-badge ${row.badge}`)
       badge.setAttribute('aria-label', BADGE_LABELS[row.badge])
@@ -604,6 +617,8 @@ export function createSidebarView(
     if (group.menuOpen !== entry.menuShown) {
       entry.menuShown = group.menuOpen
       if (group.menuOpen && !entry.menu.firstElementChild) {
+        entry.menu.appendChild(button('project-menu-item', '项目调度', '打开此项目的调度会话', () =>
+          onIntent({ kind: 'open-coordinator', projectRoot: group.projectRoot })))
         entry.menu.appendChild(button('project-menu-item', '移除项目并删除历史', '从侧边栏移除此项目，并删除它的全部会话记录', () =>
           onIntent({ kind: 'request-remove-project', projectRoot: group.projectRoot })))
       }
@@ -623,14 +638,27 @@ export function createSidebarView(
     // have a height to travel to. A collapsing group's rows are already out of
     // `view.rows`, so `indexOf` answers -1 for them — which must not read as the
     // "no cursor" index and paint every one of them selected.
-    const children: HTMLElement[] = group.rows.map((row) => {
+    const children: HTMLElement[] = []
+    const co = group.coordination
+    if (co) {
+      const counts = coordinationCountsText(co.running, co.needsYou)
+      const draw = (row: SidebarRow, trailing?: HTMLElement): void => {
+        const index = indexOf(row)
+        children.push(rowNode(row, index, index >= 0 && index === selectedIndex, trailing))
+      }
+      if (co.coordinator) draw(co.coordinator, counts ? el('span', 'coord-counts', counts) : undefined)
+      else if (counts) children.push(el('div', 'coord-counts', counts))
+      for (const row of co.threads) draw(row)
+      if (co.hiddenCount > 0) children.push(el('div', 'coord-hidden', coordinationHiddenText(co.hiddenCount)))
+    }
+    for (const row of group.rows) {
       const index = indexOf(row)
-      return rowNode(row, index, index >= 0 && index === selectedIndex)
-    })
+      children.push(rowNode(row, index, index >= 0 && index === selectedIndex))
+    }
     // A project kept for its own sake rather than for its sessions has to say
     // so; an empty group with nothing under the heading reads as a load that
     // has not finished.
-    if (group.rows.length === 0) children.push(el('div', 'project-empty', '还没有会话'))
+    if (children.length === 0) children.push(el('div', 'project-empty', '还没有会话'))
     replace(entry.rows, ...children)
     return entry.wrapper
   }
@@ -753,9 +781,11 @@ export function createSidebarView(
             ]
           : view.noMatches
             ? [el('div', 'sidebar-empty', SIDEBAR_NO_MATCHES_TEXT)]
-            : view.groups.map((group) =>
-                groupNode(group, indexOf, view.selectedIndex, view.canCreate),
-              ),
+            : [
+                ...view.groups.map((group) =>
+                  groupNode(group, indexOf, view.selectedIndex, view.canCreate),
+                ),
+              ],
       )
 
       // Workspaces that are no longer listed. Their nodes are detached by the

@@ -52,6 +52,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 ## Runtime and sessions
 
 - Share one `ProjectRuntime` per `cwd`; `ProjectDirectory` must not duplicate it. Settings and agent definitions are read live; MCP containers/tool arrays are mutated in place.
+- A session scope has a working dir (tools, Bash, permission workspace boundary) separate from its project dir (data dirs: plans, memory, spill, transcripts, diagnostics, sessions). `SessionMeta.coordination` carries role/threadId/workingDir and must be set before a lane opens.
 - Each conversation owns its scope, pane, bridge, permission gate, prompt cache, loop, tool runner, context builder, and record stream. Never share these across sessions or subagent runs.
 - `agent.contextManagement` and `permissions.mode` are snapshotted when a session scope is built; reloads do not change open sessions.
 - Lifecycle order: install a replacement runtime before disposing the old one; interrupt a pane before releasing its scope; close the workspace before the project; await already-closing projects in `shutdownAll`.
@@ -59,6 +60,16 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - The home directory is the global workspace (最近); use `projectIsGlobal`, never display-name matching. The sidebar reads the registry and global session index live; only `remove-project` removes an added project row.
 - Resolve root-keyed commands through `ShellHost.cwdForRoot` or `ensureEntryForRoot`, never `knownCwdForRoot` alone.
 - Closing a lane releases a runtime but does not delete the session or stop project background tasks. Use the dedicated session/project deletion paths so all artifacts are removed.
+
+## Coordination
+
+- One coordinator session per project (pointer in `<projectData>/coordination/coordination.json`, file-locked); threads are ordinary sessions. Thread worktrees live under `~/.myagent-worktrees/<projectDataKey>/<threadId>` on branch `hanekawa/<slug>-<threadId>`.
+- Coordination tools reach the host through the pure `CoordinationHost` interface (`runtime/protocol/coordinationHost.ts`), injected via `extraTools` and gated by `Tool.sessionRoles`.
+- Turn origins are `user|coordinator|wake`; coordinator messages are never steered into a user-driven turn. Wakes go only through the wake engine/`decideWake`, not background notifications.
+- Board snapshots and thread notes reach the coordinator as `coordination_update` records, delivered at step boundaries (and before a user/wake message) via `peekCoordinationUpdate` then `ackCoordinationUpdate` after the append; unsent snapshots coalesce, sent ones are never rewritten (cache prefix).
+- The shell pushes `coordination-threads` to the renderer, coalesced per root. Notes are wrapped in an app-added `<thread-note>` marker, parsed by `renderer/model/threadNotes.ts` into cards; keep the two in step.
+- Merges run in the app via git, never through the model: dirty main tree refuses, conflict runs `git merge --abort`.
+- Thread/coordinator sessions refuse `/clear`, `/resume` and session switches. Deleting a thread marks it stale; deleting the coordinator clears the pointer.
 
 ## Loop, tools, and context
 
@@ -73,7 +84,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 
 ## Permissions and configuration
 
-- Modes are `default`, `plan`, `auto`, `bypass`, plus internal `readonly` (built-in subagents only). `acceptEdits` is a legacy alias read as `auto` by `settings.ts` and `agentDefinitionLoader.ts`; never reintroduce it.
+- Modes are `default`, `plan`, `auto`, `bypass`, plus internal `readonly` (built-in subagents and the coordinator scope, whose mode is locked via `PermissionGate` `lockMode`); thread scopes start in `auto`. `acceptEdits` is a legacy alias read as `auto` by `settings.ts` and `agentDefinitionLoader.ts`; never reintroduce it.
 - A call is graded `readonly`/`normal`/`risky`/`critical` by the pure classifier in `src/harness/risk/`; `PermissionGate` only combines that grade with rules and mode (order and table in README "Permissions"). The gate never analyzes commands itself.
 - A deny rule is absolute in every mode and never becomes a prompt. `critical` never gets allow, except in `bypass`, which refuses only a mass delete (`MASS_DELETE_CODES`: a root, home or workspace directory, or a recursive delete whose target is only known at runtime). `bypass` and `readonly` never ask: `bypass` ignores ask rules, `readonly` denies on them. Persisted allow rules cover `normal` only; `risky` memory is per-session and exact; `critical` is never remembered.
 - Workspace boundaries use realpath of the nearest existing ancestor. File rules match resolved absolute paths; `Read`/`Edit` deny rules also apply to paths extracted from Bash. Cover new classifier behavior with the table-driven tests and the invariants in `test/permissionModes.test.ts`.
@@ -98,7 +109,7 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 
 ## Renderer invariants
 
-- `<cwd>/.myagent/` holds only user-written project configuration; nothing at runtime creates it. Runtime data (sessions, tool-result spills, attachments, plans, diagnostics) and personal settings (`settings.local.json`, `agents.local/`) live under `getProjectDataDir(cwd)` = `~/.myagent/projects/<key>/`; global settings/config under `~/.myagent/`. Sessions are append-only JSONL. File tools resolve paths through `resolveToolPath`, which admits only the session's own spill dir and the plans dir outside `cwd`. `SessionStore.init()` migrates legacy `<cwd>/.myagent/` runtime entries (`sessions/legacyProjectData.ts`): copy, verify, then delete; never overwrite.
+- `<cwd>/.myagent/` holds only user-written project configuration; nothing at runtime creates it. Runtime data (sessions, tool-result spills, attachments, plans, diagnostics) and personal settings (`settings.local.json`, `agents.local/`) live under `getProjectDataDir(cwd)` = `~/.myagent/projects/<key>/`; global settings/config under `~/.myagent/`. Sessions are append-only JSONL. File tools resolve paths through `resolveToolPath`, which admits only the session's own spill dir, the plans dir and the project's coordination notes dir outside `cwd`. `SessionStore.init()` migrates legacy `<cwd>/.myagent/` runtime entries (`sessions/legacyProjectData.ts`): copy, verify, then delete; never overwrite.
 - `/rewind` restores from per-session file history in `~/.myagent/file-history/`, never from the worktree: write tools call `trackFileEdit` *before* writing, `makeSnapshot` opens a snapshot per turn, and restores are addressed by `messageId`. Only files the agent's tools touched are captured. Keep backups deduplicated by version, collect a backup only once no surviving snapshot names it, and keep every per-file failure local — there is no session-wide disable.
 - Changes to `hasOverlay` or `isStreaming` call `onShellChanged`. Streaming turns post `session-event` and `snapshot`; keep frame/render-signature work bounded.
 - Every popover closes three ways: a press outside it (`dom/dismiss.ts`'s `onPressOutside`, scoped to the popover **and its trigger**, never to the bar around them), `focusout`, and Escape. A `focusout` with `relatedTarget === null` is the view's own repaint and must be ignored, and a `focus()` inside a paint goes last — it fires `focusout` synchronously, and a handler that repaints in answer re-enters the paint.

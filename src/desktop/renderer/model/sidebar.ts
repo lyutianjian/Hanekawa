@@ -1,5 +1,6 @@
-import type { WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
+import type { WireCoordinationThreads, WireLaneInfo, WireSessionSummary } from '../../shellProtocol.js'
 import type { DesktopPlatform } from '../../types.js'
+import { coordinationCounts, THREAD_STATUS_LABEL, threadBucket, threadTone, type ThreadTone } from './coordinationStatus.js'
 import { desktopShortcut } from './desktopShortcuts.js'
 
 /**
@@ -72,6 +73,8 @@ export type SidebarBadge = 'none' | 'running' | 'awaiting-input'
 export interface SidebarRow {
   readonly sessionId: string
   readonly title: string
+  /** Small prefix text for a coordination session; absent for an ordinary one. */
+  readonly roleMarker?: string
   readonly projectRoot: string
   /** The lane this session is open on, absent when it is only history. */
   readonly lane?: string
@@ -82,7 +85,43 @@ export interface SidebarRow {
   readonly messageCount: number
   /** This row is asking "delete?" and has replaced its actions with the answer. */
   readonly confirmingDelete: boolean
+  /** A coordination thread row: drawn indented under its coordinator. */
+  readonly nested?: boolean
+  /** A thread row's status word and colour tone; absent on every other row. */
+  readonly statusLabel?: string
+  readonly statusTone?: ThreadTone
 }
+
+/**
+ * One project's coordination entry: its coordinator session and the active
+ * threads hanging under it.
+ */
+export interface SidebarCoordinationGroup {
+  readonly projectRoot: string
+  readonly projectName: string
+  /** Absent when the project has threads but no coordinator session pointer. */
+  readonly coordinator?: SidebarRow
+  readonly running: number
+  readonly needsYou: number
+  /** Active-bucket threads only (search-filtered), newest activity first. */
+  readonly threads: readonly SidebarRow[]
+  /** Quiet and resolved threads, which are folded into one count. */
+  readonly hiddenCount: number
+}
+
+/** 「2 运行中 · 1 需要你」; empty when neither count is above zero. */
+export function coordinationCountsText(running: number, needsYou: number): string {
+  const parts: string[] = []
+  if (running > 0) parts.push(`${running} 运行中`)
+  if (needsYou > 0) parts.push(`${needsYou} 需要你`)
+  return parts.join(' · ')
+}
+
+export function coordinationHiddenText(hiddenCount: number): string {
+  return `+${hiddenCount} 已安静/结案`
+}
+
+export const SIDEBAR_COORDINATION_TITLE = '项目调度'
 
 /**
  * Where the rail is between its two resting widths.
@@ -195,6 +234,11 @@ export interface SidebarGroup {
   readonly collapsed: boolean
   /** The group's sessions, newest first. Populated even while collapsed. */
   readonly rows: readonly SidebarRow[]
+  /**
+   * The project's coordinator, its active threads and the folded count. Drawn
+   * first inside the group, above {@link rows}; absent while recent-only is on.
+   */
+  readonly coordination?: SidebarCoordinationGroup
 }
 
 export interface SidebarView {
@@ -336,6 +380,12 @@ export interface SidebarState {
    * filter that survived a restart would look like every project had vanished.
    */
   readonly recentOnly: boolean
+  /**
+   * Each project's thread table, by project root. Sessions named here (the
+   * coordinator and every thread) are drawn in the 「项目调度」 section and left
+   * out of the ordinary project groups.
+   */
+  readonly coordination: ReadonlyMap<string, WireCoordinationThreads>
 }
 
 export function createSidebarState(overrides: Partial<SidebarState> = {}): SidebarState {
@@ -358,6 +408,7 @@ export function createSidebarState(overrides: Partial<SidebarState> = {}): Sideb
     collapsedProjects: new Set(),
     helpOpen: false,
     recentOnly: false,
+    coordination: new Map(),
     ...overrides,
   }
 }
@@ -434,6 +485,13 @@ export function sidebarView(state: SidebarState): SidebarView {
   // it on screen the moment its pane has content, without waiting for the next
   // pull.
   const seen = new Set<string>()
+  // Coordinator and thread sessions live in the 「项目调度」 section only.
+  const coordinationSessions = new Set<string>()
+  const summaryById = new Map<string, WireSessionSummary>()
+  for (const table of state.coordination.values()) {
+    if (table.coordinatorSessionId !== undefined) coordinationSessions.add(table.coordinatorSessionId)
+    for (const thread of table.threads) coordinationSessions.add(thread.sessionId)
+  }
   // Whether the pane on screen got a row at all. Set on the built row rather than
   // on the search-filtered one: a query that hides the active session has not
   // moved the user anywhere, so it must not hand the highlight back to the
@@ -442,6 +500,11 @@ export function sidebarView(state: SidebarState): SidebarView {
   for (const project of state.projects) {
     const bucket = bucketFor(project.projectRoot, project.projectName, project.isGlobal ?? false)
     for (const session of project.sessions) {
+      summaryById.set(session.id, session)
+      if (coordinationSessions.has(session.id)) {
+        seen.add(session.id)
+        continue
+      }
       // A session with no input and no output stays invisible — that is the
       // whole rule for new sessions, and history with nothing in it (a
       // not-yet-cleaned empty session) gets the same answer.
@@ -468,7 +531,7 @@ export function sidebarView(state: SidebarState): SidebarView {
   // constructor: badge, active and confirming are one decision each, and two
   // constructors is two places for them to drift.
   for (const lane of state.lanes) {
-    if (seen.has(lane.paneId)) continue
+    if (seen.has(lane.paneId) || coordinationSessions.has(lane.paneId)) continue
     if (state.deletingSessions.has(lane.paneId)) continue
     if (!laneHasConversation(lane.lane)) continue
     const draft: WireSessionSummary = {
@@ -483,6 +546,17 @@ export function sidebarView(state: SidebarState): SidebarView {
     if (row.active) activeHasRow = true
     const bucket = bucketFor(lane.projectRoot, lane.projectName)
     if (matches(row)) bucket.rows.push(row)
+  }
+
+  const coordination = state.recentOnly
+    ? []
+    : coordinationGroupsOf(state, summaryById, laneBySession, active?.paneId, needle)
+  const coordinationByRoot = new Map<string, SidebarCoordinationGroup>()
+  for (const group of coordination) {
+    if (group.coordinator?.active || group.threads.some((row) => row.active)) activeHasRow = true
+    coordinationByRoot.set(group.projectRoot, group)
+    // A project known only from its coordination table still gets its group.
+    bucketFor(group.projectRoot, group.projectName)
   }
 
   // Drop only what the *search* emptied. Without a query an empty bucket keeps
@@ -506,7 +580,8 @@ export function sidebarView(state: SidebarState): SidebarView {
     // empty project — it is not being listed at all.
     .filter(([projectRoot]) => !state.removingProjects.has(projectRoot))
     .filter(([, bucket]) => !state.recentOnly || bucket.isGlobal)
-    .filter(([, bucket]) => !searching || bucket.rows.length > 0)
+    .filter(([projectRoot, bucket]) =>
+      !searching || bucket.rows.length > 0 || coordinationByRoot.has(projectRoot))
     .map(([projectRoot, bucket]) =>
       groupOf(projectRoot, bucket.projectName, bucket.rows, {
         // A search un-folds everything: the whole point of the query is to find a
@@ -519,6 +594,7 @@ export function sidebarView(state: SidebarState): SidebarView {
         // be unanswerable, so both read on the same filtered set the view draws.
         menuOpen: state.projectMenu === projectRoot,
         confirmingRemove: state.pendingRemoveProject === projectRoot,
+        coordination: coordinationByRoot.get(projectRoot),
       }),
     )
 
@@ -532,7 +608,9 @@ export function sidebarView(state: SidebarState): SidebarView {
   // Collapsed groups are drawn as a heading and nothing else, so they are absent
   // here: this list is the cursor's and the digit chords' index space, and both
   // have to mean what is on screen.
-  const rows = ordered.filter((group) => !group.collapsed).flatMap((group) => group.rows)
+  // Inside a group the coordinator and its threads are drawn above the ordinary
+  // rows, so they lead there too.
+  const rows = ordered.filter((group) => !group.collapsed).flatMap(groupRows)
 
   // `groups` is empty only when there is genuinely nothing; a collapsed group is
   // still something to show, so the empty state reads on the groups rather than
@@ -555,6 +633,112 @@ export function sidebarView(state: SidebarState): SidebarView {
   }
 }
 
+/**
+ * The 「项目调度」 section: one entry per project that has a coordinator pointer
+ * or threads, in workspace order. Only active-bucket threads get rows; the rest
+ * are a count. A search keeps the matching threads (and their coordinator as the
+ * parent) and drops an entry nothing matched in.
+ */
+function coordinationGroupsOf(
+  state: SidebarState,
+  summaryById: ReadonlyMap<string, WireSessionSummary>,
+  laneBySession: ReadonlyMap<string, WireLaneInfo>,
+  activePaneId: string | undefined,
+  needle: string,
+): SidebarCoordinationGroup[] {
+  const matches = (row: SidebarRow): boolean =>
+    needle === '' || row.title.toLowerCase().includes(needle)
+  const roots = [...workspaceRootsOf(state)]
+  for (const root of state.coordination.keys()) if (!roots.includes(root)) roots.push(root)
+
+  const groups: SidebarCoordinationGroup[] = []
+  for (const root of roots) {
+    const table = state.coordination.get(root)
+    if (!table) continue
+    const coordinatorId = table.coordinatorSessionId
+    if (coordinatorId === undefined && table.threads.length === 0) continue
+
+    let coordinator: SidebarRow | undefined
+    if (coordinatorId !== undefined && !state.deletingSessions.has(coordinatorId)) {
+      const lane = laneBySession.get(coordinatorId)
+      const summary = summaryById.get(coordinatorId)
+      coordinator = rowFor(
+        {
+          id: coordinatorId,
+          title: summary?.title ?? lane?.sessionTitle ?? SIDEBAR_COORDINATION_TITLE,
+          updatedAt: summary?.updatedAt ?? new Date(state.now).toISOString(),
+          messageCount: summary?.messageCount ?? 0,
+          coordinationRole: 'coordinator',
+        },
+        root,
+        lane?.lane,
+        activePaneId,
+        state,
+      )
+    }
+
+    const threads: SidebarRow[] = []
+    let hiddenCount = 0
+    for (const thread of table.threads) {
+      if (state.deletingSessions.has(thread.sessionId)) continue
+      if (threadBucket(thread.status) !== 'active') {
+        hiddenCount += 1
+        continue
+      }
+      const lane = laneBySession.get(thread.sessionId)
+      const row = rowFor(
+        {
+          id: thread.sessionId,
+          title: thread.title || '未命名线程',
+          updatedAt: thread.lastActivityAt,
+          messageCount: summaryById.get(thread.sessionId)?.messageCount ?? 0,
+        },
+        root,
+        lane?.lane,
+        activePaneId,
+        state,
+      )
+      const threadRow: SidebarRow = {
+        ...row,
+        nested: true,
+        statusLabel: THREAD_STATUS_LABEL[thread.status],
+        statusTone: threadTone(thread.status),
+      }
+      if (matches(threadRow)) threads.push(threadRow)
+    }
+
+    const searching = needle !== ''
+    const coordinatorShown = coordinator !== undefined && (!searching || threads.length > 0 || matches(coordinator))
+    if (searching && !coordinatorShown && threads.length === 0) continue
+    if (coordinator === undefined && threads.length === 0 && searching) continue
+
+    const { running, needsYou } = coordinationCounts(table.threads)
+    groups.push({
+      projectRoot: root,
+      projectName: projectNameOf(state, root),
+      ...(coordinatorShown && coordinator ? { coordinator } : {}),
+      running,
+      needsYou,
+      threads,
+      hiddenCount,
+    })
+  }
+  return groups
+}
+
+function projectNameOf(state: SidebarState, root: string): string {
+  return state.projects.find((project) => project.projectRoot === root)?.projectName
+    ?? state.lanes.find((lane) => lane.projectRoot === root)?.projectName
+    ?? (root.split(/[\\/]/).filter(Boolean).pop() ?? root)
+}
+
+/** The marker a coordination session's row carries; ordinary sessions have none. */
+export function roleMarkerFor(role: 'coordinator' | 'thread' | undefined): string | undefined {
+  if (role === 'coordinator') return '调度'
+  if (role === 'thread') return '线程'
+  return undefined
+}
+
 function rowFor(
   session: WireSessionSummary,
   projectRoot: string,
@@ -565,6 +749,9 @@ function rowFor(
   return {
     sessionId: session.id,
     title: session.title ?? '未命名会话',
+    ...(roleMarkerFor(session.coordinationRole) !== undefined
+      ? { roleMarker: roleMarkerFor(session.coordinationRole) }
+      : {}),
     projectRoot,
     ...(lane !== undefined ? { lane } : {}),
     badge: badgeFor(lane, state),
@@ -594,6 +781,7 @@ function groupOf(
     active: boolean
     menuOpen: boolean
     confirmingRemove: boolean
+    coordination?: SidebarCoordinationGroup
   },
 ): SidebarGroup {
   return {
@@ -604,8 +792,15 @@ function groupOf(
     menuOpen: options.menuOpen,
     confirmingRemove: options.confirmingRemove,
     collapsed: options.collapsed,
+    ...(options.coordination ? { coordination: options.coordination } : {}),
     rows: [...rows].sort((left, right) => touchedAt(right.updatedAt) - touchedAt(left.updatedAt)),
   }
+}
+
+/** A group's rows in screen order: coordinator, its threads, then ordinary sessions. */
+export function groupRows(group: SidebarGroup): SidebarRow[] {
+  const co = group.coordination
+  return [...(co?.coordinator ? [co.coordinator] : []), ...(co?.threads ?? []), ...group.rows]
 }
 
 function clampIndex(index: number, length: number): number {
@@ -644,6 +839,8 @@ export type SidebarIntent =
   /** Unregister the project. Its sessions stay on disk; only the row goes. */
   | { kind: 'confirm-remove-project'; projectRoot: string }
   | { kind: 'cancel-remove-project' }
+  /** Open (or focus) the project's coordinator session — the heading menu's 「项目调度」. */
+  | { kind: 'open-coordinator'; projectRoot: string }
   /** Open or close the footer's `?` panel. */
   | { kind: 'toggle-help' }
   /** Show only the sessions that belong to no project, or every workspace again. */
@@ -864,13 +1061,16 @@ export function sidebarRenderSignature(view: SidebarView): string {
     // brand-new session gets, and it arrives without any row changing.
     parts.push(
       `g:${group.projectRoot}${group.projectName}${group.collapsed ? '1' : '0'}${group.isGlobal ? 'g' : '-'}`
-        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}${group.active ? 'a' : '-'}`,
+        + `${group.menuOpen ? 'm' : '-'}${group.confirmingRemove ? 'r' : '-'}${group.rows.length}${group.coordination ? 'c' : '-'}${group.active ? 'a' : '-'}`,
     )
+    const co = group.coordination
+    if (co) parts.push(`k:${co.running}/${co.needsYou}/${co.hiddenCount}`)
     if (group.collapsed) continue
-    for (const row of group.rows) {
+    for (const row of groupRows(group)) {
       parts.push(
         `r:${row.sessionId}${row.lane ?? ''}${row.badge}${row.active ? '1' : '0'}`
-          + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`,
+          + `${row.confirmingDelete ? '1' : '0'}${row.title}${row.messageCount}`
+          + `${row.nested ? 'n' : ''}${row.statusLabel ?? ''}${row.statusTone ?? ''}${row.roleMarker ?? ''}`,
       )
     }
   }

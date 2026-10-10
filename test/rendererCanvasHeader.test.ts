@@ -132,3 +132,63 @@ test('a real rename is trimmed before it is sent', () => {
   assert.equal(renameCommit('old', '  new title '), 'new title')
   assert.equal(renameCommit('', 'first name'), 'first name')
 })
+
+test('a thread session gets a breadcrumb in place of the title', () => {
+  const view = canvasHeaderView({
+    lane: lane({ sessionTitle: '重构缓存层' }),
+    menuOpen: false,
+    renaming: false,
+    pendingDelete: undefined,
+    hasConversation: true,
+    role: 'thread',
+    thread: { title: '缓存迁移', statusLabel: '运行中', tone: 'running', canStop: true },
+  })
+  assert.deepEqual(view.breadcrumb, {
+    backLabel: '← 协调',
+    threadTitle: '缓存迁移',
+    statusLabel: '运行中',
+    tone: 'running',
+    canStop: true,
+  })
+  assert.equal(view.title, '重构缓存层', 'the session title is still what rename edits')
+  assert.equal(view.threadsButton, true)
+})
+
+test('the coordinator has no breadcrumb, but still offers the threads tab', () => {
+  const view = canvasHeaderView({
+    lane: lane(),
+    menuOpen: false,
+    renaming: false,
+    pendingDelete: undefined,
+    hasConversation: true,
+    role: 'coordinator',
+    thread: { title: 'ignored', statusLabel: '运行中', tone: 'running', canStop: true },
+  })
+  assert.equal(view.breadcrumb, undefined)
+  assert.equal(view.threadsButton, true)
+})
+
+test('an ordinary session shows neither the breadcrumb nor the threads button', () => {
+  const view = canvasHeaderView({
+    lane: lane(),
+    menuOpen: false,
+    renaming: false,
+    pendingDelete: undefined,
+    hasConversation: true,
+  })
+  assert.equal(view.breadcrumb, undefined)
+  assert.equal(view.threadsButton, false)
+})
+
+test('a thread role without its thread falls back to the plain title', () => {
+  const view = canvasHeaderView({
+    lane: lane(),
+    menuOpen: false,
+    renaming: false,
+    pendingDelete: undefined,
+    hasConversation: true,
+    role: 'thread',
+  })
+  assert.equal(view.breadcrumb, undefined)
+  assert.equal(view.threadsButton, true)
+})

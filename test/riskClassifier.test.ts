@@ -6,6 +6,7 @@ import path from 'node:path'
 
 import { classifyToolCall, createRiskContext, type RiskTier } from '../src/harness/risk/index.js'
 import type { Tool } from '../src/harness/types.js'
+import { getProjectPlansDir, getToolResultSpillDir } from '../src/utils/paths.js'
 
 const workspace = mkdtempSync(path.join(homedir(), 'risk-ws-'))
 mkdirSync(path.join(workspace, 'src'))
@@ -297,4 +298,18 @@ test('reasons carry a code and a message, highest first', () => {
   assert.ok(result.reasons.some((reason) => reason.code === 'privilege'))
   assert.ok(result.reasons.some((reason) => reason.code === 'git_push_force'))
   assert.ok(result.reasons.every((reason) => reason.message.length > 0))
+})
+
+test('projectDir keys the plans and spill dirs while the workspace stays cwd', () => {
+  const write = { name: 'Write', riskLevel: 'confirm' } as Tool
+  const projectDir = path.join(workspace, 'src')
+  const project = createRiskContext({ cwd: tempTree, projectDir, sessionId: 's1' })
+  const plan = path.join(getProjectPlansDir(projectDir), 'p.md')
+  const spill = path.join(getToolResultSpillDir(projectDir, 's1'), 'r.txt')
+  const level = (c: typeof ctx, filePath: string) => classifyToolCall(write, { filePath }, c).level
+  assert.ok(project.workspaceRoots.some((root) => plan.startsWith(root)))
+  assert.ok(project.workspaceRoots.some((root) => spill.startsWith(root)))
+  assert.equal(level(project, plan), 'normal')
+  assert.equal(level(project, spill), 'normal')
+  assert.equal(project.cwd, createRiskContext({ cwd: tempTree }).cwd)
 })

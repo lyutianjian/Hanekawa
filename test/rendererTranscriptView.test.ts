@@ -2236,3 +2236,37 @@ test('a user item without images paints no image row, and a repaint keeps the no
   render(transcript([{ id: 'm1', kind: 'user', text: '纯文字' }]))
   assert.equal(items()[0]!.node, before)
 })
+
+test('T6 thread note cards: head, status label, and 查看 only with a thread id', (t) => {
+  const opened: string[] = []
+  const stub = installDomStub()
+  t.after(() => stub.uninstall())
+  const container = stub.createContainer('transcript')
+  const host = stub.createContainer('pane')
+  const real = createTranscriptView(container, host, {
+    onToggle: () => {}, onTaskStep: () => {}, onOpenSubagent: () => {}, onOpenPath: () => {},
+    onViewImage: () => {}, imageThumbUrl: () => undefined, onCopy: () => {},
+    onOpenThread: (id) => opened.push(id),
+  })
+  const item: TranscriptItem = {
+    id: 'w', kind: 'thread-notes', text: 'wake',
+    threadNotes: { wake: { count: 2, limit: 10, reason: 'converged' }, cards: [
+      { threadId: 'thr_0123456789ab', status: 'idle', title: 'A', report: 'done' },
+      { status: 'weird', title: 'B' },
+    ] },
+  }
+  real.render({ ...createTranscriptState(), items: [item] }, NO_DISCLOSURE)
+  const root = stub.inspect(container)
+  const text = root.text
+  assert.ok(text.includes('自动唤醒 · 2/10'))
+  assert.ok(text.includes('空闲'))
+  assert.ok(text.includes('weird'))
+  const buttons = (function walk(n: StubView): StubView[] {
+    return [...(n.classes.includes('thread-note-open') ? [n] : []), ...n.children.flatMap(walk)]
+  })(root)
+  assert.equal(buttons.length, 2)
+  stub.dispatch(buttons[0]!.node, 'click', {})
+  assert.deepEqual(opened, ['thr_0123456789ab'])
+  assert.equal(buttons[1]!.disabled, true)
+  real.dispose()
+})

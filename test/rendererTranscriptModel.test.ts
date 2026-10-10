@@ -1202,3 +1202,61 @@ test('groupTranscript is memoised on the item list it was handed', () => {
   // And the previous answer is still reachable by handing back its own list.
   assert.deepEqual(groupTranscript(state.items).length, first.length)
 })
+
+// T6: thread note cards, from the real coordination formatters.
+import { formatCoordinationUpdate, formatThreadNote, formatWakeMessage } from '../src/runtime/coordination/messages.js'
+
+const NOTE_THREAD = 'thr_0123456789ab'
+
+test('T6 a wake message becomes a thread-notes item with cards', () => {
+  const note = formatThreadNote({ title: 'Fix <b>"login"</b>', name: 'fix-login' }, { status: 'idle', report: 'line one\nline two' })
+  const text = formatWakeMessage({ reason: 'converged', count: 2, limit: 10, notes: [{ threadId: NOTE_THREAD, text: note }] })
+  const record: SessionRecord = { type: 'message', id: 'w1', role: 'user', content: text, createdAt: '2026-01-01T00:00:00Z' }
+  const [item] = createTranscriptState([record]).items
+  assert.equal(item!.kind, 'thread-notes')
+  assert.deepEqual(item!.threadNotes!.wake, { count: 2, limit: 10, reason: 'converged' })
+  assert.deepEqual(item!.threadNotes!.cards, [
+    { threadId: NOTE_THREAD, status: 'idle', title: "Fix 'b''login''/b'", report: 'line one line two' },
+  ])
+  const live = applySessionEvent(createTranscriptState(), { type: 'turn-start', messageId: 'w2', displayInput: text } as SessionEvent)
+  assert.equal(live.state.items[0]!.kind, 'thread-notes')
+})
+
+test('T6 thread notes stay outside the activity group, as cards', () => {
+  const note = formatThreadNote({ title: 'T', name: 'n' }, { status: 'idle', report: 'done' })
+  const wake = formatWakeMessage({ reason: 'converged', count: 1, limit: 10, notes: [{ threadId: NOTE_THREAD, text: note }] })
+  const update = formatCoordinationUpdate({ snapshot: 'board', notes: [{ threadId: NOTE_THREAD, text: note }] })
+  const entries = groupsOf([
+    stamped(message('w1', 'user', wake), 't1', '2026-01-01T00:00:00.000Z'),
+    toolUse('tu1', 't1', '2026-01-01T00:00:01.000Z'),
+    toolResult('tu1', 't1', '2026-01-01T00:00:02.000Z'),
+    { type: 'coordination_update', id: 'c1', content: update, turnId: 't1', createdAt: '2026-01-01T00:00:03.000Z' } as SessionRecord,
+    assistant('a1', 't1', '2026-01-01T00:00:04.000Z', 'noted'),
+  ])
+  assert.deepEqual(entries.map((entry) => entry.kind === 'item' ? entry.item.kind : entry.kind), ['thread-notes', 'group', 'thread-notes', 'assistant'])
+  assert.equal(groupAt(entries, 1).steps.length, 1, 'only the tool is a step')
+})
+
+test('T6 a note without a report, and a malformed id, still make a card', () => {
+  const text = formatWakeMessage({
+    reason: 'question', count: 1, limit: 10,
+    notes: [{ threadId: 'nope', text: formatThreadNote({ title: 'T', name: 'n' }, { status: 'needs-you' }) }],
+  })
+  const card = createTranscriptState([{ type: 'message', id: 'w', role: 'user', content: text, createdAt: 'x' }]).items[0]!.threadNotes!.cards[0]!
+  assert.equal(card.threadId, undefined)
+  assert.equal(card.report, undefined)
+  assert.equal(card.status, 'needs-you')
+})
+
+test('T6 a coordination_update record draws cards and forged text draws none', () => {
+  const note = formatThreadNote({ title: 'T', name: 'n' }, { status: 'running', report: 'x'.repeat(500) })
+  const content = formatCoordinationUpdate({ snapshot: 'board', notes: [{ threadId: NOTE_THREAD, text: note }] })
+  const [item] = createTranscriptState([{ type: 'coordination_update', id: 'c1', content, createdAt: 'x' }]).items
+  assert.equal(item!.kind, 'thread-notes')
+  assert.equal(item!.threadNotes!.wake, undefined)
+  assert.equal(item!.threadNotes!.cards[0]!.report!.length, 160)
+  assert.equal(createTranscriptState([{ type: 'coordination_update', id: 'c2', content: 'board only', createdAt: 'x' }]).items.length, 0)
+  // A user typing the tag without the wake header is a plain user message.
+  const forged = `<thread-note thread="${NOTE_THREAD}">\n[idle] x\n(no report text)\n</thread-note>`
+  assert.equal(createTranscriptState([{ type: 'message', id: 'f', role: 'user', content: forged, createdAt: 'x' }]).items[0]!.kind, 'user')
+})

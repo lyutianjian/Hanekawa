@@ -825,6 +825,8 @@ export interface WirePaneInfo {
   projectRoot: string
   /** Display name for the group label — `basename`, or the root for a filesystem root. */
   projectName: string
+  /** The session's coordination role, when it belongs to a project's coordination. */
+  coordinationRole?: 'coordinator' | 'thread'
 }
 
 export interface WireOpenPaneResult {

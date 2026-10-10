@@ -15,6 +15,7 @@ import {
   ImageAttachmentService,
   sessionAttachmentsDir,
 } from '../src/services/imageAttachments/imageAttachmentService.js'
+import { CoordinationStore } from '../src/services/coordination/threadStore.js'
 import { loadFixtureBytes } from './helpers/imageFixtures.js'
 import type { SessionCoordination } from '../src/sessions/service.js'
 import type { AgentSession } from '../src/runtime/index.js'
@@ -369,6 +370,45 @@ test('a coordinator scope is locked readonly and gets the coordinator tool set',
   assert.ok(normalNames.includes('EnterPlanMode'))
 
   coordinatorRuntime.dispose()
+  normalRuntime.dispose()
+  await host.shutdown('test over')
+})
+
+test('only the coordinator loop gets the role prompt and coordination hooks; a superseded one does not consume', async () => {
+  const { cwd, store, session } = await createProject()
+  const host = await bootstrap({ cwd, store, session, confirmMcpTrust: denyTrust })
+  const coordinator = await host.openScope(await coordinationSession(store, cwd, { role: 'coordinator' }))
+  const thread = await host.openScope(await coordinationSession(store, cwd, { role: 'thread', threadId: 't1' }))
+  type Opts = { rolePrompt?: string; compactPromptVariant?: string; consumeCoordinationUpdate?: () => Promise<unknown>; coordinationRestore?: unknown }
+  const optsOf = (r: AgentSession): Opts => (r.loop as unknown as { options: Opts }).options
+  const coordRuntime = coordinator.createRuntime('main', coordinator.session)
+  const threadRuntime = thread.createRuntime('main', thread.session)
+  const normalRuntime = host.createRuntime('main', session)
+
+  const c = optsOf(coordRuntime)
+  assert.ok(c.rolePrompt)
+  assert.equal(c.compactPromptVariant, 'coordinator')
+  assert.equal(typeof c.consumeCoordinationUpdate, 'function')
+  assert.equal(typeof c.coordinationRestore, 'function')
+  for (const r of [threadRuntime, normalRuntime]) {
+    const o = optsOf(r)
+    assert.equal(o.rolePrompt, undefined)
+    assert.equal(o.compactPromptVariant, undefined)
+    assert.equal(o.consumeCoordinationUpdate, undefined)
+    assert.equal(o.coordinationRestore, undefined)
+  }
+
+  const coordStore = new CoordinationStore(cwd)
+  await coordStore.setCoordinatorSessionId(coordinator.session.id)
+  await coordStore.setPendingSnapshot('BOARD')
+  const taken = await c.consumeCoordinationUpdate!() as { content: string; ack(): Promise<void> }
+  assert.match(taken.content, /Thread board/)
+  await coordStore.setCoordinatorSessionId('someone-else')
+  await coordStore.setPendingSnapshot('BOARD2')
+  assert.equal(await c.consumeCoordinationUpdate!(), undefined)
+
+  coordRuntime.dispose()
+  threadRuntime.dispose()
   normalRuntime.dispose()
   await host.shutdown('test over')
 })

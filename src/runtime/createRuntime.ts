@@ -3,7 +3,10 @@ import { buildMemoryPrompt } from '../services/memory/memoryPrompt.js'
 import type { ConfigService, ModelConfig, ThinkingConfig } from '../config/service.js'
 import type { EffortLevel, EffortValue } from '../config/effort.js'
 import type { RoutingRole } from '../config/routing.js'
-import { validateSettings, type MyAgentSettings } from '../config/settings.js'
+import { coordinationSettings, validateSettings, type MyAgentSettings } from '../config/settings.js'
+import { COORDINATOR_ROLE_PROMPT } from '../prompts/coordinatorPrompt.js'
+import { CoordinationStore } from '../services/coordination/threadStore.js'
+import { formatCoordinationUpdate, formatCoordinatorRestore } from './coordination/messages.js'
 import { AgentLoop, type ActiveModelRuntime } from '../harness/loop.js'
 import { ContextBuilder } from '../harness/contextBuilder.js'
 import { PlanModeManager } from '../harness/planModeManager.js'
@@ -312,7 +315,35 @@ export function createRuntimeFactory(deps: CreateRuntimeDeps): CreateRuntime {
       postToolUse: getSettings().hooks?.postToolUse,
     })
 
+    // Only the coordinator lane reads the board; a superseded coordinator
+    // (the pointer moved on) consumes nothing.
+    const coordStore = role === 'coordinator'
+      ? new CoordinationStore(cwd, { lifecycle: () => coordinationSettings(getSettings()) })
+      : undefined
+    const coordinatorHooks = coordStore
+      ? {
+          rolePrompt: COORDINATOR_ROLE_PROMPT,
+          compactPromptVariant: 'coordinator' as const,
+          consumeCoordinationUpdate: async () => {
+            if ((await coordStore.read()).coordinator?.sessionId !== runtimeSession.id) return undefined
+            const update = await coordStore.peekCoordinationUpdate()
+            if (!update) return undefined
+            const content = formatCoordinationUpdate({ ...(update.snapshot ? { snapshot: update.snapshot } : {}), notes: update.notes.map((n) => n.text) })
+            if (!content) return undefined
+            return { content, ack: () => coordStore.ackCoordinationUpdate(update) }
+          },
+          coordinationRestore: async () => {
+            const update = await coordStore.peekCoordinationUpdate()
+            const notes = update?.notes ?? []
+            const text = formatCoordinatorRestore({ board: await coordStore.currentBoard(), notes: notes.map((n) => n.text) })
+            if (notes.length > 0) await coordStore.ackCoordinationUpdate({ notes })
+            return text
+          },
+        }
+      : {}
+
     loop = new AgentLoop({
+      ...coordinatorHooks,
       provider: targetProvider,
       model: targetModelConfig.model,
       modelKey,

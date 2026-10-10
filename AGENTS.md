@@ -66,6 +66,9 @@ tui/ or desktop/ -> runtime/ + harness/ -> config/providers/
 - One coordinator session per project (pointer in `<projectData>/coordination/coordination.json`, file-locked); threads are ordinary sessions. Thread worktrees live under `~/.myagent-worktrees/<projectDataKey>/<threadId>` on branch `hanekawa/<slug>-<threadId>`.
 - Coordination tools reach the host through the pure `CoordinationHost` interface (`runtime/protocol/coordinationHost.ts`), injected via `extraTools` and gated by `Tool.sessionRoles`.
 - Turn origins are `user|coordinator|wake`; coordinator messages are never steered into a user-driven turn. Wakes go only through the wake engine/`decideWake`, not background notifications.
+- Board snapshots and thread notes reach the coordinator as `coordination_update` records, delivered at step boundaries (and before a user/wake message) via `peekCoordinationUpdate` then `ackCoordinationUpdate` after the append; unsent snapshots coalesce, sent ones are never rewritten (cache prefix).
+- The shell pushes `coordination-threads` to the renderer, coalesced per root. Notes are wrapped in an app-added `<thread-note>` marker, parsed by `renderer/model/threadNotes.ts` into cards; keep the two in step.
+- Merges run in the app via git, never through the model: dirty main tree refuses, conflict runs `git merge --abort`.
 - Thread/coordinator sessions refuse `/clear`, `/resume` and session switches. Deleting a thread marks it stale; deleting the coordinator clears the pointer.
 
 ## Loop, tools, and context

@@ -160,6 +160,9 @@ const SPECS: Record<string, AliasSpec> = {
   Glob: {
     rename: { file_pattern: 'pattern' },
   },
+  // The model's prior for a message body is `message` or `content`.
+  MessageThread: { rename: { message: 'text', content: 'text' } },
+  AskCoordinator: { rename: { prompt: 'question', message: 'question', text: 'question', content: 'question' } },
   Browser: { ...BROWSER_SPEC, nested: { key: 'steps', spec: BROWSER_SPEC } },
 }
 

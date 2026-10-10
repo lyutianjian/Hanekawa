@@ -116,3 +116,12 @@ test('NotebookEdit takes camelCase aliases toward its snake_case schema', () => 
   })
   assert.equal(validateToolInput(tool('NotebookEdit'), normalized).ok, true)
 })
+
+test('MessageThread and AskCoordinator bodies are renamed onto their real parameter', () => {
+  assert.deepEqual(normalizeToolInput('MessageThread', { threadId: 't', message: 'hi' }), { threadId: 't', text: 'hi' })
+  assert.deepEqual(normalizeToolInput('MessageThread', { threadId: 't', content: 'hi', text: 'real' }), {
+    threadId: 't',
+    text: 'real',
+  })
+  assert.deepEqual(normalizeToolInput('AskCoordinator', { message: 'why?' }), { question: 'why?' })
+})

@@ -30,9 +30,9 @@ export const BROWSER_WIDTH_STORAGE_KEY = 'hanekawa.browserPanelWidth'
  * breakpoint and the panel stops showing what the user is actually building —
  * which is what `BROWSER_WIDTH_MIN` marks.
  */
-export const BROWSER_WIDTH_DEFAULT = 408
+export const BROWSER_WIDTH_DEFAULT = 340
 /** Under this the address bar cannot show a host *and* its controls. */
-export const BROWSER_WIDTH_MIN = 360
+export const BROWSER_WIDTH_MIN = 300
 /**
  * The wide end. Past this the transcript, not the browser, is the cramped
  * column — the same reasoning `SIDEBAR_WIDTH_MAX` uses, from the other side.

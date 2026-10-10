@@ -19,14 +19,14 @@ export const SIDEBAR_WIDTH_STORAGE_KEY = 'hanekawa.sidebarWidth'
  * The resting width, and the value the stylesheet falls back to when nothing has
  * been stored. Pinned against `styles.css` by `rendererStyleTokens.test.ts`.
  */
-export const SIDEBAR_WIDTH_DEFAULT = 280
+export const SIDEBAR_WIDTH_DEFAULT = 240
 /**
  * The narrow end. Below this the session rows stop being able to show a title
  * *and* its badge, so the rail would be draggable into uselessness.
  */
-export const SIDEBAR_WIDTH_MIN = 220
+export const SIDEBAR_WIDTH_MIN = 200
 /** The wide end: past this the canvas, not the sidebar, is the narrow column. */
-export const SIDEBAR_WIDTH_MAX = 480
+export const SIDEBAR_WIDTH_MAX = 320
 
 /** The CSS custom property both rules read. Spelled once, imported by `app.ts`. */
 export const SIDEBAR_WIDTH_VARIABLE = '--sidebar-width'

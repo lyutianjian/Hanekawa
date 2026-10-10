@@ -197,14 +197,14 @@
      the default and the range. Declared here so a first run — and every test
      that never touches localStorage — resolves to the resting width.
      `#sidebar` and `.sidebar-shell` both resolve from it; they are one axis. */
-  --sidebar-width: 280px;
+  --sidebar-width: 240px;
   /* The browser panel's width, the third layout number the renderer writes and
      declared here for the same reason the rail's is: `app.ts` re-declares it on
      `documentElement` when the handle between the canvas and the panel is
      dragged, while `model/browserPanel.ts` owns the default and the range.
      Declared so a first run — and every test that never touches localStorage —
      resolves to the resting width. */
-  --browser-panel-width: 408px;
+  --browser-panel-width: 340px;
   /* The seam from the sidebar's content edge to the canvas, and the part of it
      the sidebar's scrollbar is allowed to occupy. The overhang is the 10px seam
      minus 2px of air and the 1px sash line, so the scrollbar owns 7px and the
@@ -449,7 +449,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  flex: 0 0 calc(var(--sidebar-width) + var(--sidebar-gutter) - max(var(--space-3), var(--titlebar-inset-left)) - var(--space-1));
+  flex: 0 0 calc(var(--sidebar-width) + var(--sidebar-scrollbar-overhang) - max(var(--space-3), var(--titlebar-inset-left)) - var(--space-1));
   min-width: max-content;
   transition: flex-basis var(--motion-layout) var(--ease-standard);
 }
@@ -756,28 +756,13 @@ body:has(#sidebar.collapsed) .titlebar-lead {
      what keeps the pumping above from coming back. Here it is the 3px remainder
      of the sidebar seam; the sash reaches across it with its negative right
      margin, so its hover line lands on the canvas edge. */
-  margin: var(--space-2);
-  margin-left: calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang));
+  /* Flush, not a floating card: no margin, no radius. A 1px outer shadow on the
+     left edge is the divider to the sidebar; unlike a border it takes no layout,
+     so `#overlay`/`#rewind` still match the canvas edge for edge. */
+  margin: 0;
   background: var(--surface-canvas);
-  border-radius: var(--radius-lg);
   overflow: hidden;
-  /* The hairline that makes the panel *float* (todo V1). In dark the canvas is
-     eight luminance steps off the base and the two columns read as one black
-     rectangle; the token ladder holds symbolically and not in pixels.
-
-     An `outline` and not a `border`, deliberately, twice over:
-     - `#overlay`/`#rewind` are `absolute; inset: 0` since S6, which positions
-       them against the *padding* box. A border would inset them by 1px on every
-       side and break smoke S2's per-edge equality with `#canvas` — a judgement
-       D7 already decided must stay exact rather than be loosened.
-     - An inset `box-shadow` paints above this element's background but *below*
-       its descendants, so `#canvas-header` would cover the top edge. An outline
-       is painted after all in-flow descendants, and never enters
-       `getBoundingClientRect()`.
-     `overflow: hidden` does not clip an element's own outline, and the outline
-     follows `border-radius`. Same idiom as `.sidebar-list:focus` below. */
-  outline: 1px solid var(--border-subtle);
-  outline-offset: -1px;
+  box-shadow: -1px 0 0 var(--border-subtle);
 }
 
 /* --- sidebar --- */
@@ -892,12 +877,10 @@ body.resizing #sidebar { transition: none; }
   min-height: 0;
   display: flex;
   flex-direction: column;
-  margin: var(--space-2) var(--space-2) 0 0;
+  margin: 0;
   background: var(--surface-canvas);
-  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   overflow: hidden;
-  outline: 1px solid var(--border-subtle);
-  outline-offset: -1px;
+  box-shadow: -1px 0 0 var(--border-subtle);
 }
 #browser-panel[hidden] { display: none; }
 /* The hole. No padding, no border, no transform — it is a measurement, and

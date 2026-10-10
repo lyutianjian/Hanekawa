@@ -386,11 +386,11 @@ test('the palette is the one that was agreed, value for value', () => {
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
-      '--sidebar-width': '280px',
+      '--sidebar-width': '240px',
       // The browser panel's resting width, the same kind of exception as the
       // rail's above: a layout number `app.ts` re-declares on the document
       // element when the handle between the canvas and the panel is dragged.
-      '--browser-panel-width': '408px',
+      '--browser-panel-width': '340px',
       '--titlebar-inset-left': '0px',
       '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
@@ -499,11 +499,11 @@ test('the palette is the one that was agreed, value for value', () => {
       // The rail's resting width. A layout number, not a colour: `app.ts`
       // re-declares it on the document element when the handle is dragged, and
       // this declaration is the fallback every fresh profile resolves.
-      '--sidebar-width': '280px',
+      '--sidebar-width': '240px',
       // The browser panel's resting width, the same kind of exception as the
       // rail's above: a layout number `app.ts` re-declares on the document
       // element when the handle between the canvas and the panel is dragged.
-      '--browser-panel-width': '408px',
+      '--browser-panel-width': '340px',
       '--titlebar-inset-left': '0px',
       '--titlebar-inset-right': '138px',
       // The sidebar seam, and the 7px slice its scrollbar overhangs (2px of air
@@ -930,32 +930,15 @@ test('the serif is display-only, and only in the whitelisted spots', () => {
   }
 })
 
-test('the canvas is a clipped rounded panel', () => {
-  // `overflow: hidden` is load-bearing, not tidiness: the transcript scrolls
-  // inside this panel and its scrollbar would otherwise square off the corner
-  // the whole layout is built around.
+test('the canvas is a flush clipped pane divided by a hairline', () => {
   const canvas = blockFor('#canvas')
-  assert.ok(
-    declares(canvas, 'border-radius', 'var(--radius-lg)'),
-    '#canvas must carry the large radius; it is the panel the design nests everything in',
-  )
   assert.ok(declares(canvas, 'overflow', 'hidden'), '#canvas must clip its scrolling contents')
-
-  // The hairline that makes it float (todo V1), and the reason it is an outline.
-  // `#overlay`/`#rewind` are `absolute; inset: 0` since S6 — positioned against
-  // the padding box — so a scrim must match `#canvas` edge for edge. A border
-  // would inset it by 1px on all four sides, and D7 already decided that
-  // judgement stays exact rather than being loosened. An outline takes no layout
-  // at all, so this assertion *is* that decision. (Since the permission request
-  // moved into the composer no smoke step raises a scrim at all, which is why the
-  // claim is pinned here rather than there.)
-  const outline = canvas.decls.find((decl) => decl.prop === 'outline')
-  assert.ok(outline, '#canvas must carry a hairline; in dark it is otherwise flush with the base')
-  assert.match(outline.value, /var\(--border-subtle\)/)
-  assert.ok(
-    declares(canvas, 'outline-offset', '-1px'),
-    '#canvas draws its hairline inside itself, or the panel grows past its margin',
-  )
+  assert.ok(declares(canvas, 'margin', '0'), '#canvas must not float as a card')
+  assert.ok(!canvas.decls.some((decl) => decl.prop === 'border-radius'))
+  // A shadow, not a border: a border would inset the `absolute; inset: 0` scrims.
+  const line = canvas.decls.find((decl) => decl.prop === 'box-shadow')
+  assert.ok(line, '#canvas needs the divider against the sidebar')
+  assert.match(line.value, /var\(--border-subtle\)/)
   assert.ok(
     !canvas.decls.some((decl) => decl.prop === 'border' || decl.prop.startsWith('border-width')),
     '#canvas must not use a border: it would move the modal scrim off the canvas edge',
@@ -1417,18 +1400,7 @@ test('a collapsed sidebar is gone, and the column inside it does not resize with
     'the overhang is the gutter minus the 2px gap and the 1px sash line',
   )
   const canvasPanel = blockFor('#canvas')
-  assert.ok(
-    declares(canvasPanel, 'margin', 'var(--space-2)'),
-    '#canvas keeps its uniform margin; the left one is an override, not a replacement',
-  )
-  assert.ok(
-    declares(
-      canvasPanel,
-      'margin-left',
-      'calc(var(--sidebar-gutter) - var(--sidebar-scrollbar-overhang))',
-    ),
-    "#canvas's left inset is the seam the sash crosses to reach the canvas edge",
-  )
+  assert.ok(declares(canvasPanel, 'margin', '0'), '#canvas is flush against the sidebar')
   const resizer = blockFor('#sidebar-resizer')
   assert.ok(
     declares(

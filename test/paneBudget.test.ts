@@ -23,6 +23,7 @@ function entry(lane: string, overrides: Partial<PaneBudgetEntry> = {}): PaneBudg
     blocked: false,
     processes: false,
     tabs: false,
+    coordinator: false,
     lastActiveTick: 0,
     ...overrides,
   }
@@ -128,4 +129,26 @@ test('isPinned is the one place the exemption is spelled', () => {
   assert.equal(isPinned(entry('1', { blocked: true })), true)
   assert.equal(isPinned(entry('1', { processes: true })), true)
   assert.equal(isPinned(entry('1', { tabs: true })), true)
+  assert.equal(isPinned(entry('1', { coordinator: true })), true)
+})
+
+test('an idle, inactive, oldest coordinator is never evicted', () => {
+  const entries = [
+    entry('1', { lastActiveTick: 0, coordinator: true }),
+    entry('2', { lastActiveTick: 5 }),
+    entry('3', { lastActiveTick: 6 }),
+    entry('4', { lastActiveTick: 7 }),
+    entry('5', { lastActiveTick: 8, active: true }),
+  ]
+  assert.deepEqual(selectEvictions({ entries, limit: 2 }), ['2', '3', '4'])
+  assert.deepEqual(selectEvictions({ entries, limit: 0 }), ['2', '3', '4'])
+})
+
+test('an idle thread is still evictable', () => {
+  const entries = [
+    entry('1', { lastActiveTick: 0, coordinator: true }),
+    entry('2', { lastActiveTick: 1 }),
+    entry('3', { lastActiveTick: 2, active: true }),
+  ]
+  assert.deepEqual(selectEvictions({ entries, limit: 1 }), ['2'])
 })

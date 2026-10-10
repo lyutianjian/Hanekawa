@@ -44,6 +44,12 @@ export interface PaneBudgetEntry {
   /** The lane owns browser tabs, which die with the lane. */
   readonly tabs: boolean
   /**
+   * The project's coordinator. Evicting it orphans its threads' coordination
+   * (they report back to a pane that no longer exists), so it stays resident
+   * even when idle — a thread is still evictable.
+   */
+  readonly coordinator: boolean
+  /**
    * When this pane was last activated, as a monotonic counter rather than a
    * clock: `Date.now()` ties are real (two activations inside a millisecond) and
    * a test that has to sleep to order its fixtures is a test that will flake.
@@ -61,9 +67,9 @@ export interface PaneBudgetInput {
  * `limit`.
  *
  * A pane is *pinned* when it is active, streaming, holding an unanswered blocking
- * request, running a background process, or owning browser tabs — every state
- * whose teardown loses something. Pinned panes are never returned, and when everything left is
- * pinned this deliberately returns **fewer** lanes than the limit demands: going
+ * request, running a background process, owning browser tabs, or being a
+ * project's coordinator — every state whose teardown loses something. Pinned
+ * panes are never returned, and when everything left is pinned this deliberately returns **fewer** lanes than the limit demands: going
  * over budget costs memory, and killing a running turn costs the user their
  * work. Budget loses that argument every time.
  *
@@ -86,7 +92,14 @@ export function selectEvictions(input: PaneBudgetInput): string[] {
 
 /** Whether this pane is exempt from eviction, and why is in the field docs above. */
 export function isPinned(entry: PaneBudgetEntry): boolean {
-  return entry.active || entry.streaming || entry.blocked || entry.processes || entry.tabs
+  return (
+    entry.active ||
+    entry.streaming ||
+    entry.blocked ||
+    entry.processes ||
+    entry.tabs ||
+    entry.coordinator
+  )
 }
 
 /**

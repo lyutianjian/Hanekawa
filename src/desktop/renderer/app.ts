@@ -472,6 +472,7 @@ function laneStatuses(): Map<string, SidebarLaneStatus> {
 function applyPaneBudget(): void {
   const statuses = laneStatuses()
   const tabs = shellClient.getBrowserTabs()
+  const laneInfos = shellClient.getLanes()
   const entries: PaneBudgetEntry[] = [...paneSessions.keys()].map((lane) => ({
     lane,
     active: lane === activeLane,
@@ -479,6 +480,7 @@ function applyPaneBudget(): void {
     blocked: statuses.get(lane)?.blocked ?? false,
     processes: statuses.get(lane)?.processes ?? false,
     tabs: tabsForLane(tabs, lane).length > 0,
+    coordinator: laneInfos.find((info) => info.lane === lane)?.coordinationRole === 'coordinator',
     lastActiveTick: lastActiveTick.get(lane) ?? 0,
   }))
 

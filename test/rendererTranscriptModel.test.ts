@@ -1222,6 +1222,21 @@ test('T6 a wake message becomes a thread-notes item with cards', () => {
   assert.equal(live.state.items[0]!.kind, 'thread-notes')
 })
 
+test('T6 thread notes stay outside the activity group, as cards', () => {
+  const note = formatThreadNote({ title: 'T', name: 'n' }, { status: 'idle', report: 'done' })
+  const wake = formatWakeMessage({ reason: 'converged', count: 1, limit: 10, notes: [{ threadId: NOTE_THREAD, text: note }] })
+  const update = formatCoordinationUpdate({ snapshot: 'board', notes: [{ threadId: NOTE_THREAD, text: note }] })
+  const entries = groupsOf([
+    stamped(message('w1', 'user', wake), 't1', '2026-01-01T00:00:00.000Z'),
+    toolUse('tu1', 't1', '2026-01-01T00:00:01.000Z'),
+    toolResult('tu1', 't1', '2026-01-01T00:00:02.000Z'),
+    { type: 'coordination_update', id: 'c1', content: update, turnId: 't1', createdAt: '2026-01-01T00:00:03.000Z' } as SessionRecord,
+    assistant('a1', 't1', '2026-01-01T00:00:04.000Z', 'noted'),
+  ])
+  assert.deepEqual(entries.map((entry) => entry.kind === 'item' ? entry.item.kind : entry.kind), ['thread-notes', 'group', 'thread-notes', 'assistant'])
+  assert.equal(groupAt(entries, 1).steps.length, 1, 'only the tool is a step')
+})
+
 test('T6 a note without a report, and a malformed id, still make a card', () => {
   const text = formatWakeMessage({
     reason: 'question', count: 1, limit: 10,

@@ -5699,7 +5699,8 @@ body.settings-open #canvas-header,
   min-width: 0;
   padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
 }
-.merge-bar-project { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
+/* The branch absorbs the squeeze; a long project name is capped instead of shrunk with it. */
+.merge-bar-project { flex: 0 0 auto; max-width: 35%; min-width: 0; overflow: hidden; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
 .merge-bar-branch {
   flex: 1 1 auto;
   min-width: 0;

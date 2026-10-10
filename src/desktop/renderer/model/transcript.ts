@@ -1373,10 +1373,14 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
   const before: TranscriptItem[] = []
   const after: TranscriptItem[] = []
   const body: TranscriptItem[] = []
+  // Thread notes are cards, never steps: folded into the group they would be
+  // hidden behind 「已处理」 and drawn as the raw wake text when unfolded.
+  const notes: TranscriptItem[] = []
   let duration: TranscriptItem | undefined
 
   for (const item of run) {
     if (item.kind === 'user') (body.length === 0 ? before : body).push(item)
+    else if (item.kind === 'thread-notes') (body.length === 0 ? before : notes).push(item)
     else if (item.kind === 'duration') duration = item
     // An empty assistant record is the shape of a tool-only request: no bubble.
     else if (item.kind === 'assistant' && item.text.trim().length === 0) continue
@@ -1390,7 +1394,7 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
   const entries: TranscriptEntry[] = before.map((item) => ({ kind: 'item' as const, item }))
   if (steps.length === 0) {
     // The single elapsed line goes where it has always gone: under the answer.
-    entries.push(...after.map((item) => ({ kind: 'item' as const, item })))
+    entries.push(...[...notes, ...after].map((item) => ({ kind: 'item' as const, item })))
     if (duration) entries.push({ kind: 'item', item: duration })
     return entries
   }
@@ -1414,7 +1418,7 @@ function turnEntries(turnId: string, run: readonly TranscriptItem[]): Transcript
       )).length,
     },
   })
-  return [...entries, ...after.map((item) => ({ kind: 'item' as const, item }))]
+  return [...entries, ...[...notes, ...after].map((item) => ({ kind: 'item' as const, item }))]
 }
 
 /**

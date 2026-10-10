@@ -88,7 +88,7 @@ test('coordinator pointer change keeps threads and notes, resets counters', asyn
   assert.equal(f.coordinator!.autoWakeCount, 0)
   assert.equal(f.coordinator!.wakeLocked, false)
   assert.equal(f.coordinator!.notes.length, 1)
-  assert.equal(f.coordinator!.pendingSnapshot, 'snap')
+  assert.match(f.coordinator!.pendingSnapshot!, /Supersedes all previous snapshots/) // reseeded for the new coordinator session
   assert.equal(f.threads.length, 1)
   await store.setPendingSnapshot(undefined)
   assert.equal((await store.read()).coordinator!.pendingSnapshot, undefined)
@@ -112,4 +112,42 @@ test('removeAll deletes the coordination dir; threadsDir is lazy', async () => {
   await store.removeAll()
   assert.equal(existsSync(path.join(getProjectDataDir(cwd), 'coordination')), false)
   assert.deepEqual((await store.read()).threads, [])
+})
+
+test('thread changes regenerate the pending snapshot only with a coordinator', async () => {
+  const { store } = await scratch()
+  await store.upsertThread(thread('thr_a', { status: 'running' }))
+  assert.equal((await store.read()).coordinator, undefined)
+  await store.setCoordinatorSessionId('coord')
+  const seeded = (await store.read()).coordinator!.pendingSnapshot!
+  assert.match(seeded, /Supersedes all previous snapshots/)
+  assert.match(seeded, /thr_a/)
+  await store.patchThread('thr_a', { status: 'needs-you' })
+  assert.match((await store.read()).coordinator!.pendingSnapshot!, /\[needs-you\]/)
+})
+
+test('peek/ack keeps notes enqueued in between and snapshots changed in between', async () => {
+  const { store } = await scratch()
+  await store.setCoordinatorSessionId('coord')
+  await store.upsertThread(thread('thr_a', { status: 'running' }))
+  await store.enqueueNote({ ...note('thr_a'), at: '2026-01-01T00:00:01Z' })
+  const peeked = (await store.peekCoordinationUpdate())!
+  assert.equal(peeked.notes.length, 1)
+  assert.ok(peeked.snapshot)
+  assert.equal((await store.read()).coordinator!.notes.length, 1) // peek consumes nothing
+  await store.enqueueNote({ ...note('thr_b'), at: '2026-01-01T00:00:02Z' })
+  await store.upsertThread(thread('thr_b', { status: 'running' }))
+  await store.ackCoordinationUpdate(peeked)
+  const c = (await store.read()).coordinator!
+  assert.deepEqual(c.notes.map((n) => n.threadId), ['thr_b'])
+  assert.match(c.pendingSnapshot!, /thr_b/)
+  const again = (await store.peekCoordinationUpdate())!
+  await store.ackCoordinationUpdate(again)
+  assert.equal(await store.peekCoordinationUpdate(), undefined)
+})
+
+test('currentBoard renders fresh', async () => {
+  const { store } = await scratch()
+  await store.upsertThread(thread('thr_a', { status: 'running', name: 'alpha' }))
+  assert.match(await store.currentBoard(), /alpha/)
 })

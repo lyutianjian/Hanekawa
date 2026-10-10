@@ -3,8 +3,17 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { withFileLock } from '../../sessions/fileLock.js'
 import { getCoordinationNotesDir, getProjectDataDir } from '../../utils/paths.js'
+import { formatBoardSnapshot } from './boardSnapshot.js'
+import type { LifecycleSettings } from './lifecycle.js'
 import { enqueueNote as enqueueNoteInto } from './noteQueue.js'
 import type { CoordinationFile, CoordinatorNote, CoordinatorState, ThreadRecord } from './types.js'
+
+export interface CoordinationUpdate {
+  snapshot?: string
+  notes: CoordinatorNote[]
+  /** The stored pending value seen at peek; ack clears it only if still equal. */
+  seenPending?: string
+}
 
 export function newThreadId(): string {
   return `thr_${randomBytes(6).toString('hex')}`
@@ -25,7 +34,10 @@ export class CoordinationStore {
   private readonly lockPath: string
   private readonly projectCwd: string
 
-  constructor(cwd: string) {
+  private readonly lifecycle: () => LifecycleSettings
+
+  constructor(cwd: string, options: { lifecycle?: () => LifecycleSettings } = {}) {
+    this.lifecycle = options.lifecycle ?? (() => ({}))
     this.projectCwd = cwd
     this.dir = path.join(getProjectDataDir(cwd), 'coordination')
     this.filePath = path.join(this.dir, 'coordination.json')
@@ -56,10 +68,18 @@ export class CoordinationStore {
   async update(mutator: (f: CoordinationFile) => CoordinationFile | void): Promise<CoordinationFile> {
     return withFileLock(this.lockPath, async () => {
       const draft = structuredClone(await this.read())
+      const before = JSON.stringify(draft.threads)
       const next = mutator(draft) ?? draft
+      if (next.coordinator && JSON.stringify(next.threads) !== before) {
+        next.coordinator.pendingSnapshot = this.render(next.threads)
+      }
       await this.write(next)
       return next
     })
+  }
+
+  private render(threads: ThreadRecord[]): string {
+    return formatBoardSnapshot(threads, new Date(), this.lifecycle())
   }
 
   private async write(file: CoordinationFile): Promise<void> {
@@ -104,6 +124,9 @@ export class CoordinationStore {
       const cur = f.coordinator
       if (!cur) f.coordinator = emptyCoordinator(id)
       else if (cur.sessionId !== id) f.coordinator = { ...cur, sessionId: id, autoWakeCount: 0, wakeLocked: false }
+      if (f.threads.length > 0 && f.coordinator && (!cur || cur.sessionId !== id)) {
+        f.coordinator.pendingSnapshot = this.render(f.threads)
+      }
     })
   }
 
@@ -136,6 +159,39 @@ export class CoordinationStore {
       f.coordinator.notes = []
     })
     return taken
+  }
+
+  /**
+   * Reads what the coordinator is owed without consuming it. Append the result,
+   * then `ackCoordinationUpdate` it; a failed append loses nothing.
+   */
+  async peekCoordinationUpdate(): Promise<CoordinationUpdate | undefined> {
+    const f = await this.read()
+    const c = f.coordinator
+    if (!c) return undefined
+    const pending = c.pendingSnapshot
+    if (pending === undefined && c.notes.length === 0) return undefined
+    return {
+      ...(pending !== undefined ? { snapshot: this.render(f.threads) } : {}),
+      notes: [...c.notes],
+      ...(pending !== undefined ? { seenPending: pending } : {}),
+    }
+  }
+
+  /** Removes exactly the notes taken (threadId + at) and the pending snapshot if unchanged since the peek. */
+  async ackCoordinationUpdate(taken: CoordinationUpdate): Promise<void> {
+    const keys = new Set(taken.notes.map((n) => `${n.threadId}\u0000${n.at}`))
+    await this.update((f) => {
+      const c = f.coordinator
+      if (!c) return
+      c.notes = c.notes.filter((n) => !keys.has(`${n.threadId}\u0000${n.at}`))
+      if (taken.seenPending !== undefined && c.pendingSnapshot === taken.seenPending) delete c.pendingSnapshot
+    })
+  }
+
+  /** A fresh render of the board, independent of what is pending. */
+  async currentBoard(): Promise<string> {
+    return this.render((await this.read()).threads)
   }
 
   async setPendingSnapshot(text: string | undefined): Promise<void> {

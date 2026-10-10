@@ -12,6 +12,7 @@ import {
   sessionWorkspaceSatisfiesShellLaneWorkspace,
   type LaneAttach,
   type ShellLaneProject,
+  type ShellCoordination,
   type ShellLaneWorkspace,
 } from '../src/desktop/shellHost.js'
 import { ShellClient } from '../src/desktop/renderer/shellClient.js'
@@ -492,6 +493,8 @@ function createHarness(
     withPickImages?: boolean
     /** A shell that cannot write the registry — `remove-project` still detaches. */
     withForgetProject?: boolean
+    /** The host-side coordination commands. */
+    coordination?: ShellCoordination
   } = {},
 ): Harness {
   const [mainTransport, rendererTransport] = createMemoryChannelPair()
@@ -580,6 +583,7 @@ function createHarness(
             forgottenProjects.push(cwd)
           },
         }),
+    ...(options.coordination ? { coordination: options.coordination } : {}),
     isQuitting: () => quitting,
     onAllLanesClosed: (reason) => allLanesClosed.push(reason),
   })
@@ -684,6 +688,12 @@ const COMMAND_SAMPLES = {
     rect: { x: 0, y: 0, width: 480, height: 720 },
     visible: true,
   },
+  'open-coordinator': { type: 'open-coordinator', id: 'v', projectRoot: 'r' },
+  'coordination-stop-all': { type: 'coordination-stop-all', id: 'w', projectRoot: 'r' },
+  'thread-merges': { type: 'thread-merges', id: 'x', projectRoot: 'r' },
+  'thread-merge': { type: 'thread-merge', id: 'y', projectRoot: 'r', threadId: 't1' },
+  'thread-merge-dismiss': { type: 'thread-merge-dismiss', id: 'z', projectRoot: 'r', threadId: 't1' },
+  'thread-merge-resolve': { type: 'thread-merge-resolve', id: 'aa', projectRoot: 'r', threadId: 't1' },
 } as const satisfies Record<ShellCommand['type'], ShellCommand>
 
 /**
@@ -787,9 +797,11 @@ test('every shell command variant round-trips through its schema', () => {
       'browser-reload',
       'browser-set-bounds',
       'browser-take-over',
+      'coordination-stop-all',
       'delete-session',
       'get-settings',
       'list-sessions',
+      'open-coordinator',
       'open-in-editor',
       'open-project',
       'open-session',
@@ -799,9 +811,18 @@ test('every shell command variant round-trips through its schema', () => {
       'rename-session',
       'set-window-theme',
       'settings-change',
+      'thread-merge',
+      'thread-merge-dismiss',
+      'thread-merge-resolve',
+      'thread-merges',
     ],
     'a variant added to ShellCommand must fail the satisfies table by name',
   )
+})
+
+test('a coordination command without a thread id is rejected', () => {
+  assert.equal(parseShellCommand({ type: 'thread-merge', id: 'x', projectRoot: 'r' }).ok, false)
+  assert.equal(parseShellCommand({ type: 'open-coordinator', id: 'x', projectRoot: 'r', extra: 1 }).ok, false)
 })
 
 test('a malformed command fails with the id recovered', () => {
@@ -2772,4 +2793,99 @@ test('settings commands fail cleanly for a project that is not open', async () =
     h.client.renameSession(fixturePath('repo', 'never-opened'), 's1', 'x'),
     /No project is open/,
   )
+})
+
+// --- coordination ------------------------------------------------------------
+
+/** A coordination fake that creates the coordinator session in the project's store, like the service. */
+function fakeCoordination(store: () => FakeStore, calls: string[]): ShellCoordination {
+  let coordinatorId: string | undefined
+  return {
+    ensureCoordinator: async (cwd) => {
+      calls.push(`ensure:${cwd}`)
+      if (coordinatorId !== undefined && (await store().resolve(coordinatorId))) return coordinatorId
+      const meta = { ...sessionOf('coord-1', '项目调度'), coordination: { role: 'coordinator' as const, projectKey: 'k' } }
+      store().sessions.set(meta.id, meta)
+      calls.push('create')
+      coordinatorId = meta.id
+      return meta.id
+    },
+    stopAll: async (cwd) => {
+      calls.push(`stop-all:${cwd}`)
+    },
+    pendingMerges: async (cwd) => {
+      calls.push(`merges:${cwd}`)
+      return [{ threadId: 't1', title: 'T', branch: 'hanekawa/t-t1', added: 3, removed: 1, conflict: false }]
+    },
+    mergeThread: async (cwd, threadId) => {
+      calls.push(`merge:${cwd}:${threadId}`)
+      return { kind: 'merged' }
+    },
+    dismissMerge: async (cwd, threadId) => {
+      calls.push(`dismiss:${cwd}:${threadId}`)
+    },
+    resolveConflictViaThread: async (cwd, threadId) => {
+      calls.push(`resolve:${cwd}:${threadId}`)
+    },
+  }
+}
+
+test('open-coordinator creates the coordinator session once, then reuses its lane', async () => {
+  const calls: string[] = []
+  let store: FakeStore | undefined
+  const h = createHarness({ coordination: fakeCoordination(() => store!, calls) })
+  store = h.project.store
+
+  const first = await h.client.openCoordinator(h.entry.root)
+  await settle()
+  const second = await h.client.openCoordinator(h.entry.root)
+  await settle()
+
+  assert.deepEqual(calls, [`ensure:${h.entry.cwd}`, 'create', `ensure:${h.entry.cwd}`])
+  assert.equal(first.pane.sessionId, 'coord-1')
+  assert.equal(first.pane.coordinationRole, 'coordinator')
+  assert.equal(second.lane, first.lane, 'the second open reuses the lane')
+  assert.equal(h.attaches.length, 1)
+  assert.deepEqual(h.activates, [first.lane, first.lane])
+})
+
+test('the thread merge commands delegate to the coordination deps with the project cwd', async () => {
+  const calls: string[] = []
+  const h = createHarness({ coordination: fakeCoordination(() => h.project.store, calls) })
+  const cwd = h.entry.cwd
+
+  assert.deepEqual((await h.client.threadMerges(h.entry.root)).merges.map((m) => m.threadId), ['t1'])
+  assert.deepEqual(await h.client.mergeThread(h.entry.root, 't1'), { kind: 'merged' })
+  assert.deepEqual(await h.client.dismissThreadMerge(h.entry.root, 't1'), { ok: true })
+  assert.deepEqual(await h.client.resolveThreadMerge(h.entry.root, 't1'), { ok: true })
+  assert.deepEqual(await h.client.stopAllCoordination(h.entry.root), { ok: true })
+  assert.deepEqual(calls, [
+    `merges:${cwd}`,
+    `merge:${cwd}:t1`,
+    `dismiss:${cwd}:t1`,
+    `resolve:${cwd}:t1`,
+    `stop-all:${cwd}`,
+  ])
+})
+
+test('coordination commands reject when the shell has no coordination', async () => {
+  const h = createHarness()
+  await assert.rejects(h.client.mergeThread(h.entry.root, 't1'), /no project coordination/)
+})
+
+test('laneControlFor answers the occupant coordination control by session id', async () => {
+  const h = createHarness()
+  const result = await h.host.openLane(h.entry)
+  assert.equal(h.host.laneControlFor(result.pane.sessionId), undefined, 'the recorder exposes none')
+  assert.equal(h.host.laneControlFor('nope'), undefined)
+})
+
+test('list-sessions carries a session coordination role', async () => {
+  const h = createHarness()
+  h.project.store.sessions.set('c1', { ...sessionOf('c1'), coordination: { role: 'coordinator', projectKey: 'k' } })
+  h.project.store.sessions.set('p1', sessionOf('p1'))
+  const result = await h.client.listSessions()
+  const group = result.projects.find((p) => p.projectRoot === h.entry.root)!
+  assert.equal(group.sessions.find((s) => s.id === 'c1')?.coordinationRole, 'coordinator')
+  assert.equal('coordinationRole' in group.sessions.find((s) => s.id === 'p1')!, false)
 })

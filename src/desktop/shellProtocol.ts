@@ -201,6 +201,22 @@ export type ShellCommand =
       rect: WireBrowserRect
       visible: boolean
     }
+  /**
+   * Opens the project's coordinator session as the active lane, creating the
+   * session the first time; every later call reuses the one the project's
+   * coordination pointer names.
+   */
+  | { type: 'open-coordinator'; id: string; projectRoot: string }
+  /** Stops the coordinator and every thread of the project that has a live lane. */
+  | { type: 'coordination-stop-all'; id: string; projectRoot: string }
+  /** Worktree threads whose branch has commits the project's branch lacks. */
+  | { type: 'thread-merges'; id: string; projectRoot: string }
+  /** Merges a thread's branch into the project's checked-out branch. */
+  | { type: 'thread-merge'; id: string; projectRoot: string; threadId: string }
+  /** Hides a thread's merge prompt until its branch gets a new commit. */
+  | { type: 'thread-merge-dismiss'; id: string; projectRoot: string; threadId: string }
+  /** Asks the thread itself to bring its branch up to date and resolve the conflict. */
+  | { type: 'thread-merge-resolve'; id: string; projectRoot: string; threadId: string }
 
 // --- browser -----------------------------------------------------------------
 
@@ -649,6 +665,8 @@ export interface WireSessionSummary {
   title?: string
   updatedAt: string
   messageCount: number
+  /** The session's coordination role, when it belongs to a project's coordination. */
+  coordinationRole?: 'coordinator' | 'thread'
 }
 
 /** One project's session history. */
@@ -743,3 +761,34 @@ export interface WireShellBrowserOkResult {
   ok: true
 }
 
+/** `open-coordinator` answers like `open-session`: the lane it landed on. */
+export type WireShellOpenCoordinatorResult = WireShellOpenSessionResult
+
+/** `ok` means the command ran; a stop does not wait for the turns to drain. */
+export interface WireShellCoordinationOkResult {
+  ok: true
+}
+
+/** One thread branch waiting to be merged. */
+export interface WireThreadMerge {
+  threadId: string
+  title: string
+  branch: string
+  added: number
+  removed: number
+  /** The last merge attempt conflicted and was undone. */
+  conflict: boolean
+}
+
+export interface WireShellThreadMergesResult {
+  merges: WireThreadMerge[]
+}
+
+/**
+ * A merge attempt's outcome. Only `merged` changed anything: `dirty` and
+ * `running` refused up front, `conflict` was rolled back.
+ */
+export interface WireShellThreadMergeResult {
+  kind: 'merged' | 'dirty' | 'conflict' | 'error' | 'running' | 'no-worktree'
+  message?: string
+}

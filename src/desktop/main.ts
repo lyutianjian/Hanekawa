@@ -49,7 +49,7 @@
  * The `node:fs` imports and the wall-clock commands stay here, never in the
  * renderer bundle.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell as electronShell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell as electronShell } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -82,6 +82,11 @@ import { ShellHost } from './shellHost.js'
 import { BrowserTabHost } from './browser/tabs.js'
 import { DesktopBrowserHost } from './browser/host.js'
 import { createBrowserTool } from '../tools/BrowserTool/BrowserTool.js'
+import { createCoordinationTools } from '../tools/coordinationTools.js'
+import { CoordinationService } from '../runtime/coordination/service.js'
+import { CoordinationWakeEngine } from '../runtime/coordination/wakeEngine.js'
+import type { CoordinationLaneControl } from '../runtime/protocol/coordinationHost.js'
+import { coordinationSettings } from '../config/settings.js'
 import { openInEditor } from './openInEditor.js'
 import { isMacSessionCloseShortcut } from './renderer/model/desktopShortcuts.js'
 import {
@@ -163,6 +168,43 @@ const browserHost = new DesktopBrowserHost({
   laneForSession: (sessionId) => shell?.host.laneForSessionId(sessionId),
 })
 const browserTool = createBrowserTool(browserHost)
+
+/**
+ * Project coordination: the wake engine, the service the seven tools call,
+ * and the tools themselves. Module-level for the browser's reason — the tools
+ * go to `bootstrap()` before any window exists — so every lane lookup reads
+ * `shell` lazily, and a lane that has to be opened builds the window first.
+ *
+ * Two ports, because the engine and the service want different stores out of
+ * `storeFor`: the engine the project's thread table (the service's own
+ * instance, so there is one per project), the service the session store.
+ */
+const coordinationEngine = new CoordinationWakeEngine({
+  storeFor: (cwd) => coordination.coordinationStore(cwd),
+  laneControl: (sessionId) => shell?.host.laneControlFor(sessionId),
+  openLane: (cwd, sessionId, options) => openCoordinationLane(cwd, sessionId, options.activate),
+  notify: (notice) => notifyCoordination(notice),
+  onError: (error) => {
+    console.error('[hanekawa] coordination:', error)
+  },
+})
+const coordination = new CoordinationService(
+  {
+    storeFor: (cwd) => {
+      const entry = directory.get(cwd)
+      if (!entry) throw new Error(`No project is open at ${cwd}`)
+      return entry.project.store
+    },
+    laneControl: (sessionId) => shell?.host.laneControlFor(sessionId),
+    openLane: (cwd, sessionId, options) => openCoordinationLane(cwd, sessionId, options.activate),
+    notify: (notice) => notifyCoordination(notice),
+    settings: (cwd) => coordinationSettings(directory.get(cwd)?.project.getSettings() ?? {}),
+  },
+  coordinationEngine,
+)
+const coordinationTools = createCoordinationTools(coordination)
+/** Shown notifications, held until clicked or closed so a click is never collected away. */
+const liveNotifications = new Set<Notification>()
 
 if (!app.requestSingleInstanceLock()) {
   // `app.quit()` does not stop module evaluation, so everything below has to
@@ -293,6 +335,14 @@ async function bootstrapProject(
   await directory.whenClosed(cwd)
   const store = new SessionStore(cwd)
   await store.init()
+  // Nothing of this project runs before its bootstrap, so a thread still
+  // marked running was interrupted. Fail-open: a broken thread table must not
+  // keep the project from opening.
+  try {
+    await coordination.reconcileOnStartup(cwd)
+  } catch (error) {
+    console.error('[hanekawa] coordination reconcile failed:', error)
+  }
 
   // Every entry into a project is a *new* session — startup never resumes
   // history (`sessions.at(0)` is gone). A history row names the session it
@@ -316,7 +366,10 @@ async function bootstrapProject(
     // The one tool the shared registry cannot build: it needs this process's
     // window. The TUI's `bootstrap()` passes none, so `Browser` is desktop-only
     // by construction rather than by a runtime check.
-    extraTools: [browserTool],
+    // The coordination tools ride along: they reach the shell through
+    // `CoordinationService`, and `Tool.sessionRoles` keeps each one to the
+    // coordinator or thread sessions it belongs to.
+    extraTools: [browserTool, ...coordinationTools],
   })
 
   logDiagnostics(project.diagnostics)
@@ -535,6 +588,9 @@ async function ensureShell(): Promise<Shell> {
           shellHost?.broadcastLanes()
         },
       })
+      // Thread turn-ends become coordinator notes, and coordinator turn-ends
+      // re-evaluate waking it; the engine ignores lanes with no role.
+      const offCoordination = coordinationEngine.attachLane(attach.project.cwd, controller, sessionHost)
       // Delegated one for one rather than handing the `SessionHost` over as the
       // occupant: `LaneOccupant` is what `ShellHost` is allowed to say to a
       // lane, and keeping it a three-method view is what stops the shell from
@@ -542,6 +598,7 @@ async function ensureShell(): Promise<Shell> {
       return {
         dispose: () => {
           offTurnEnd()
+          offCoordination()
           sessionHost.dispose()
         },
         refreshAfterConfigChange: (options) => {
@@ -551,6 +608,7 @@ async function ensureShell(): Promise<Shell> {
           sessionHost.refreshSessionMeta(session)
         },
         activeModelKey: () => sessionHost.activeModelKey(),
+        coordination: sessionHost,
       }
     },
     onOpenProject: (path) => {
@@ -603,6 +661,7 @@ async function ensureShell(): Promise<Shell> {
       window.setTitleBarOverlay(WINDOW_CHROME[theme])
     },
     browser: browserTabs,
+    coordination,
     isQuitting: () => quitting,
     onAllLanesClosed: () => {
       // The last lane of the single window is the single-window equivalent of
@@ -689,6 +748,38 @@ function focusProject(project: ProjectEntry): void {
   const lanes = built.host.describeLanes().filter((lane) => lane.projectRoot === project.root)
   const latest = lanes.at(-1)
   if (latest) built.host.requestActivate(latest.lane)
+}
+
+/**
+ * Opens a session's lane for coordination. The window is built first when
+ * there is none, so a cold-opened thread or a wake still has a lane to run on.
+ */
+async function openCoordinationLane(
+  cwd: string,
+  sessionId: string,
+  activate: boolean,
+): Promise<CoordinationLaneControl> {
+  const built = await ensureShell()
+  return built.host.openLaneForCwd(cwd, sessionId, activate)
+}
+
+/** A coordination notice as an OS notification; clicking it brings that session's lane forward. */
+function notifyCoordination(notice: { title: string; body: string; sessionId: string }): void {
+  if (!Notification.isSupported()) return
+  const notification = new Notification({ title: notice.title, body: notice.body })
+  liveNotifications.add(notification)
+  notification.on('click', () => {
+    liveNotifications.delete(notification)
+    const built = shell
+    if (!built || built.window.isDestroyed()) return
+    focusWindow(built.window)
+    const lane = built.host.laneForSessionId(notice.sessionId)
+    if (lane !== undefined) built.host.requestActivate(lane)
+  })
+  notification.on('close', () => {
+    liveNotifications.delete(notification)
+  })
+  notification.show()
 }
 
 function focusWindow(window: BrowserWindow): void {

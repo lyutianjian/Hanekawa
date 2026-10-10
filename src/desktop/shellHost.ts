@@ -45,6 +45,7 @@ import type {
 } from '../runtime/projectDirectory.js'
 import { projectDisplayName, projectRootKey } from '../runtime/projectDirectory.js'
 import type { RuntimeChannel } from '../runtime/protocol/channel.js'
+import type { CoordinationLaneControl } from '../runtime/protocol/coordinationHost.js'
 import type { LaneMux } from '../runtime/protocol/laneChannel.js'
 import type { SessionPane, SessionWorkspace } from '../runtime/sessionWorkspace.js'
 import type { McpConnectionStatus, RuntimeHost } from '../runtime/types.js'
@@ -83,6 +84,11 @@ import {
   type WirePermissionsInfo,
   type WireEditorTarget,
   type SettingsChange,
+  type WireShellCoordinationOkResult,
+  type WireShellOpenCoordinatorResult,
+  type WireShellThreadMergeResult,
+  type WireShellThreadMergesResult,
+  type WireThreadMerge,
 } from './shellProtocol.js'
 
 /**
@@ -231,6 +237,26 @@ export interface LaneOccupant {
    * heavier (`retarget`) would interrupt the turn and reset usage for a title.
    */
   refreshSessionMeta(session: SessionMeta): void
+  /**
+   * The lane's session as coordination drives it — production hands the
+   * `SessionHost` itself. Optional: a lane without one cannot be reached by the
+   * coordinator, which is what a test recorder wants.
+   */
+  coordination?: CoordinationLaneControl
+}
+
+/**
+ * The host-side coordination commands, keyed by project `cwd`.
+ * `CoordinationService` satisfies it; the shell only routes to it.
+ */
+export interface ShellCoordination {
+  /** The coordinator session id, created when the project has none. */
+  ensureCoordinator(cwd: string): Promise<string>
+  stopAll(cwd: string): Promise<void>
+  pendingMerges(cwd: string): Promise<WireThreadMerge[]>
+  mergeThread(cwd: string, threadId: string): Promise<WireShellThreadMergeResult>
+  dismissMerge(cwd: string, threadId: string): Promise<void>
+  resolveConflictViaThread(cwd: string, threadId: string): Promise<void>
 }
 
 export interface LaneAttach<
@@ -359,6 +385,8 @@ export interface ShellHostDeps<
     releaseTab(tabId: string): void
     setBounds(tabId: string, rect: WireBrowserRect, visible: boolean): void
   }
+  /** Project coordination. Without it the coordination commands reject. */
+  coordination?: ShellCoordination
 }
 
 interface LaneEntry<P extends DirectoryProject, W extends DirectoryWorkspace, PaneT extends PaneLike> {
@@ -696,6 +724,39 @@ const SHELL_COMMAND_SCHEMAS = {
       visible: z.boolean(),
     })
     .strict(),
+  'open-coordinator': z
+    .object({ type: z.literal('open-coordinator'), id: commandId, projectRoot: z.string().min(1) })
+    .strict(),
+  'coordination-stop-all': z
+    .object({ type: z.literal('coordination-stop-all'), id: commandId, projectRoot: z.string().min(1) })
+    .strict(),
+  'thread-merges': z
+    .object({ type: z.literal('thread-merges'), id: commandId, projectRoot: z.string().min(1) })
+    .strict(),
+  'thread-merge': z
+    .object({
+      type: z.literal('thread-merge'),
+      id: commandId,
+      projectRoot: z.string().min(1),
+      threadId: z.string().min(1),
+    })
+    .strict(),
+  'thread-merge-dismiss': z
+    .object({
+      type: z.literal('thread-merge-dismiss'),
+      id: commandId,
+      projectRoot: z.string().min(1),
+      threadId: z.string().min(1),
+    })
+    .strict(),
+  'thread-merge-resolve': z
+    .object({
+      type: z.literal('thread-merge-resolve'),
+      id: commandId,
+      projectRoot: z.string().min(1),
+      threadId: z.string().min(1),
+    })
+    .strict(),
 } as const satisfies Record<ShellCommand['type'], z.ZodTypeAny>
 
 type CommandOption = (typeof SHELL_COMMAND_SCHEMAS)[ShellCommand['type']]
@@ -895,6 +956,26 @@ export class ShellHost<
 
   laneKeys(): string[] {
     return [...this.lanes.keys()]
+  }
+
+  /** The live lane of a session, as coordination drives it. Scans like {@link laneForSessionId}. */
+  laneControlFor(sessionId: string): CoordinationLaneControl | undefined {
+    const lane = this.laneForSessionId(sessionId)
+    return lane === undefined ? undefined : this.lanes.get(lane)?.occupant.coordination
+  }
+
+  /**
+   * Opens (or finds) a session's lane by project `cwd` — the coordinator's way
+   * in, which knows a directory rather than a wire root. A closed project is
+   * bootstrapped over that very session, so no throwaway draft pane is minted.
+   */
+  async openLaneForCwd(cwd: string, sessionId: string, activate: boolean): Promise<CoordinationLaneControl> {
+    const entry = this.deps.directory.get(cwd) ?? (await this.deps.ensureProject?.(cwd, { sessionId }))
+    if (!entry) throw new Error(`No project is open at ${cwd}`)
+    await this.openLane(entry, { sessionId, activate })
+    const control = this.laneControlFor(sessionId)
+    if (!control) throw new Error(`The lane for session ${sessionId} cannot be coordinated.`)
+    return control
   }
 
   // --- topology ------------------------------------------------------------
@@ -1110,9 +1191,61 @@ export class ShellHost<
         this.deps.browser?.setBounds(command.tabId, command.rect, command.visible)
         return { ok: true } satisfies WireShellBrowserOkResult
       }
+      case 'open-coordinator': {
+        const coordination = this.requireCoordination()
+        const entry = await this.ensureEntryForRoot(command.projectRoot)
+        const sessionId = await coordination.ensureCoordinator(entry.cwd)
+        return (await this.openLane(entry, { sessionId, activate: true })) satisfies WireShellOpenCoordinatorResult
+      }
+      case 'coordination-stop-all': {
+        const coordination = this.requireCoordination()
+        await coordination.stopAll(await this.requireCwdForRoot(command.projectRoot))
+        return { ok: true } satisfies WireShellCoordinationOkResult
+      }
+      case 'thread-merges': {
+        const coordination = this.requireCoordination()
+        const merges = await coordination.pendingMerges(await this.requireCwdForRoot(command.projectRoot))
+        return { merges } satisfies WireShellThreadMergesResult
+      }
+      case 'thread-merge': {
+        const coordination = this.requireCoordination()
+        const result = await coordination.mergeThread(await this.requireCwdForRoot(command.projectRoot), command.threadId)
+        return {
+          kind: result.kind,
+          ...(result.message !== undefined ? { message: result.message } : {}),
+        } satisfies WireShellThreadMergeResult
+      }
+      case 'thread-merge-dismiss': {
+        const coordination = this.requireCoordination()
+        await coordination.dismissMerge(await this.requireCwdForRoot(command.projectRoot), command.threadId)
+        return { ok: true } satisfies WireShellCoordinationOkResult
+      }
+      case 'thread-merge-resolve': {
+        // Live project: the message may have to cold-open the thread's lane.
+        const coordination = this.requireCoordination()
+        const entry = await this.ensureEntryForRoot(command.projectRoot)
+        await coordination.resolveConflictViaThread(entry.cwd, command.threadId)
+        return { ok: true } satisfies WireShellCoordinationOkResult
+      }
       default:
         return assertNever(command)
     }
+  }
+
+  private requireCoordination(): ShellCoordination {
+    const coordination = this.deps.coordination
+    if (!coordination) throw new Error('The shell has no project coordination.')
+    return coordination
+  }
+
+  /**
+   * A root-keyed command that only reads or writes the thread table and git:
+   * no runtime needed, so a closed project is not bootstrapped for it.
+   */
+  private async requireCwdForRoot(projectRoot: string): Promise<string> {
+    const cwd = await this.cwdForRoot(projectRoot)
+    if (cwd === undefined) throw new Error(`No project is known at ${projectRoot}`)
+    return cwd
   }
 
   private requireBrowser(): NonNullable<ShellHostDeps<P, PaneT, W>['browser']> {
@@ -1815,6 +1948,7 @@ function summarize(session: {
   updatedAt: string
   messageCount: number
   title?: string
+  coordination?: { role: 'coordinator' | 'thread' }
 }): WireSessionSummary {
   const summary: WireSessionSummary = {
     id: session.id,
@@ -1822,6 +1956,7 @@ function summarize(session: {
     messageCount: session.messageCount,
   }
   if (session.title !== undefined) summary.title = session.title
+  if (session.coordination !== undefined) summary.coordinationRole = session.coordination.role
   return summary
 }
 

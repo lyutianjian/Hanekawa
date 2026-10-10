@@ -22,6 +22,10 @@ import type {
   WireBrowserTabInfo,
   WireShellBrowserCreateTabResult,
   WireShellBrowserOkResult,
+  WireShellCoordinationOkResult,
+  WireShellOpenCoordinatorResult,
+  WireShellThreadMergeResult,
+  WireShellThreadMergesResult,
 } from '../shellProtocol.js'
 
 /**
@@ -216,6 +220,62 @@ export class ShellClient {
       id: crypto.randomUUID(),
       ...(projectRoot !== undefined ? { projectRoot } : {}),
     }) as Promise<WireShellPickImagesResult>
+  }
+
+  // --- coordination ----------------------------------------------------------
+
+  /** Opens the project's coordinator session as the active lane, creating it the first time. */
+  async openCoordinator(projectRoot: string): Promise<WireShellOpenCoordinatorResult> {
+    return this.send({
+      type: 'open-coordinator',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellOpenCoordinatorResult>
+  }
+
+  /** Stops the coordinator and every running thread of the project. */
+  async stopAllCoordination(projectRoot: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'coordination-stop-all',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  async threadMerges(projectRoot: string): Promise<WireShellThreadMergesResult> {
+    return this.send({
+      type: 'thread-merges',
+      id: crypto.randomUUID(),
+      projectRoot,
+    }) as Promise<WireShellThreadMergesResult>
+  }
+
+  async mergeThread(projectRoot: string, threadId: string): Promise<WireShellThreadMergeResult> {
+    return this.send({
+      type: 'thread-merge',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellThreadMergeResult>
+  }
+
+  async dismissThreadMerge(projectRoot: string, threadId: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'thread-merge-dismiss',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellCoordinationOkResult>
+  }
+
+  /** Hands a conflicting merge back to the thread to resolve on its branch. */
+  async resolveThreadMerge(projectRoot: string, threadId: string): Promise<WireShellCoordinationOkResult> {
+    return this.send({
+      type: 'thread-merge-resolve',
+      id: crypto.randomUUID(),
+      projectRoot,
+      threadId,
+    }) as Promise<WireShellCoordinationOkResult>
   }
 
   // --- browser ---------------------------------------------------------------

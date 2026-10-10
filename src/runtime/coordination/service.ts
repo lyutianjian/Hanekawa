@@ -6,6 +6,7 @@
  * through {@link CoordinationPort}, which `main.ts` implements.
  */
 
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import type { CoordinationSettings } from '../../config/settings.js'
 import type { SessionRecord } from '../../harness/types.js'
@@ -35,7 +36,8 @@ import type {
   ThreadMessage,
   ThreadSummary,
 } from '../protocol/coordinationHost.js'
-import { composeThreadKickoff, formatThreadNote, threadSlug } from './messages.js'
+import { lastCompactSummary } from './contextPolicy.js'
+import { composeThreadKickoff, formatCoordinatorSeed, formatThreadNote, threadSlug } from './messages.js'
 
 export const COORDINATOR_SESSION_TITLE = '项目调度'
 const FETCH_DEFAULT_LIMIT = 20
@@ -47,6 +49,7 @@ export interface CoordinationSessionStore {
   setCoordination(sessionIdOrPrefix: string, value: SessionCoordination | undefined): Promise<void>
   resolve(idOrPrefix: string): Promise<SessionMeta | undefined>
   loadRecords(sessionIdOrPrefix: string): Promise<SessionRecord[]>
+  appendRecord(sessionIdOrPrefix: string, record: SessionRecord): Promise<void>
 }
 
 /** What the shell provides; implemented by `main.ts`, faked in tests. */
@@ -110,7 +113,7 @@ export class CoordinationService implements CoordinationHost {
     const key = path.resolve(cwd)
     let store = this.stores.get(key)
     if (!store) {
-      store = new CoordinationStore(cwd)
+      store = new CoordinationStore(cwd, { lifecycle: () => this.port.settings(cwd) })
       this.stores.set(key, store)
     }
     return store
@@ -266,12 +269,57 @@ export class CoordinationService implements CoordinationHost {
     const sessions = this.port.storeFor(cwd)
     const pointer = await store.getCoordinatorSessionId()
     if (pointer && (await sessions.resolve(pointer))) return pointer
+    return await this.createCoordinatorSession(cwd)
+  }
 
+  /**
+   * Replaces a coordinator whose compaction circuit has opened: a new session
+   * seeded with the old one's last summary takes over the pointer. The old
+   * session keeps its role and stays as history. A no-op returning the current
+   * pointer once it no longer names `oldSessionId`.
+   */
+  async reseedCoordinator(cwd: string, oldSessionId: string): Promise<string> {
+    const store = this.coordinationStore(cwd)
+    const pointer = await store.getCoordinatorSessionId()
+    if (pointer !== oldSessionId) return pointer ?? oldSessionId
+    const sessions = this.port.storeFor(cwd)
+    const summary = lastCompactSummary(await sessions.loadRecords(oldSessionId))
+    const newId = await this.createCoordinatorSession(cwd, async (id) => {
+      // A pending boundary as the first record: the loop's post-compact restore
+      // adds the current board and the queued notes to the first request.
+      await sessions.appendRecord(id, {
+        id: randomUUID(),
+        type: 'compact_boundary',
+        summary: formatCoordinatorSeed({ previousSessionId: oldSessionId, ...(summary ? { summary } : {}) }),
+        preTokens: 0,
+        postCompactRestore: 'pending',
+        createdAt: new Date().toISOString(),
+      })
+    }, { alwaysOpen: true })
+    this.port.notify({
+      title: COORDINATOR_SESSION_TITLE,
+      body: 'The coordinator context could no longer be compacted; a new coordinator session continues from its last summary.',
+      sessionId: newId,
+    })
+    return newId
+  }
+
+  /** A fresh coordinator session behind the pointer; `seed` runs before the pointer moves and the lane opens. */
+  private async createCoordinatorSession(
+    cwd: string,
+    seed?: (sessionId: string) => Promise<void>,
+    options: { alwaysOpen?: boolean } = {},
+  ): Promise<string> {
+    const sessions = this.port.storeFor(cwd)
     const meta = await sessions.create(COORDINATOR_SESSION_TITLE)
     await sessions.setCoordination(meta.id, { role: 'coordinator', projectKey: projectDataKey(cwd) })
-    await store.setCoordinatorSessionId(meta.id)
+    await seed?.(meta.id)
+    await this.coordinationStore(cwd).setCoordinatorSessionId(meta.id)
     const model = this.port.settings(cwd).coordinatorModel
-    if (model) (await this.port.openLane(cwd, meta.id, { activate: false })).setModel(model)
+    if (model || options.alwaysOpen) {
+      const control = await this.port.openLane(cwd, meta.id, { activate: false })
+      if (model) control.setModel(model)
+    }
     return meta.id
   }
 

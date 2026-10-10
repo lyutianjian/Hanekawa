@@ -2,6 +2,7 @@
 // coordinator. The decision itself is `decideWake`; this module gathers its
 // input from the store and the live lanes, and acts on the verdict.
 
+import { COMPACT_FAILURE_LIMIT } from '../../harness/compact.js'
 import type { CoordinationRole, TurnOrigin } from '../../harness/types.js'
 import type { CoordinationStore } from '../../services/coordination/threadStore.js'
 import type { ThreadRecord } from '../../services/coordination/types.js'
@@ -25,6 +26,11 @@ export interface WakeEnginePort {
   /** Opens a lane for a session without a live one. */
   openLane(cwd: string, sessionId: string, options: { activate: boolean }): Promise<CoordinationLaneControl>
   notify(notice: { title: string; body: string; sessionId: string }): void
+  /**
+   * Replaces a coordinator whose compaction circuit opened with a freshly
+   * seeded session and moves the pointer; a no-op once the pointer moved.
+   */
+  reseedCoordinator?(cwd: string, sessionId: string): Promise<string>
   /** Background failures; the engine never throws out of an event handler. */
   onError?(error: unknown): void
 }
@@ -43,9 +49,12 @@ interface LaneTurn {
 
 interface ProjectState {
   startingThreads: number
+  /** The coordinator session whose turn is running, if any; a retired coordinator's lane never sets it. */
+  runningCoordinator: string | undefined
+  /** Coordinator sessions known to be replaced; their lanes are ignored synchronously. */
+  retired: Set<string>
   /** A wake was refused by the lock and must be replayed on release. */
   suppressed: boolean
-  coordinatorRunning: boolean
   lastTurnOutcome: WakeParentState['lastTurnOutcome']
   /** The last verdict asked to be re-evaluated when something settles. */
   retryPending: boolean
@@ -72,22 +81,30 @@ export class CoordinationWakeEngine {
     const sessionId = controller.getSessionId()
     const role = (): CoordinationRole | undefined => controller.getSessionMeta().coordination?.role
     let turn: LaneTurn | undefined
+    /** The compaction circuit opened on this coordinator lane; reseed at turn end. */
+    let circuitOpen = false
 
     const offEvent = controller.onEvent((event) => {
       const r = role()
       if (!r) return
       if (event.type === 'turn-start') {
         turn = { origin: event.origin ?? 'user', lastText: '' }
-        if (r === 'coordinator') this.coordinatorTurnStart(cwd, turn.origin)
+        if (r === 'coordinator') this.coordinatorTurnStart(cwd, sessionId, turn.origin)
         else this.threadTurnStart(cwd, sessionId)
       } else if (event.type === 'record') {
         const rec = event.record
+        if (r === 'coordinator' && rec.type === 'compact_attempt_failed' && rec.circuitOpen) circuitOpen = true
         if (turn && rec.type === 'message' && rec.role === 'assistant' && rec.content.trim()) turn.lastText = rec.content
       } else if (event.type === 'turn-end') {
         const ended = turn ?? { origin: event.origin ?? 'user', lastText: '' }
         turn = undefined
         const outcome = { aborted: event.aborted, failed: event.failed === true }
-        if (r === 'coordinator') this.coordinatorTurnEnd(cwd, event.origin ?? ended.origin, outcome)
+        if (r === 'coordinator') {
+          const failures = controller.getSessionMeta().compactFailureCount ?? 0
+          const reseed = circuitOpen || failures >= COMPACT_FAILURE_LIMIT
+          circuitOpen = false
+          this.coordinatorTurnEnd(cwd, sessionId, event.origin ?? ended.origin, outcome, reseed)
+        }
         else this.threadTurnEnd(cwd, sessionId, ended, outcome)
       }
     })
@@ -159,8 +176,9 @@ export class CoordinationWakeEngine {
     if (!p) {
       p = {
         startingThreads: 0,
+        runningCoordinator: undefined,
+        retired: new Set(),
         suppressed: false,
-        coordinatorRunning: false,
         lastTurnOutcome: 'none',
         retryPending: false,
         settling: new Set(),
@@ -180,24 +198,62 @@ export class CoordinationWakeEngine {
     p.chain = p.chain.then(job).catch((error: unknown) => this.port.onError?.(error))
   }
 
-  private coordinatorTurnStart(cwd: string, origin: TurnOrigin): void {
-    this.project(cwd).coordinatorRunning = true
+  // A coordinator lane whose session is no longer the pointer (replaced after
+  // its compaction circuit opened) is history: its turns touch nothing here.
+  // Known replacements are skipped synchronously; anything else is checked
+  // against the pointer on the chain, and `evaluate` only counts the running
+  // turn of the session the pointer names.
+
+  /** True (and remembered) when the pointer no longer names this coordinator session. */
+  private async isRetired(cwd: string, sessionId: string): Promise<boolean> {
+    const p = this.project(cwd)
+    if (p.retired.has(sessionId)) return true
+    if ((await this.port.storeFor(cwd).read()).coordinator?.sessionId === sessionId) return false
+    p.retired.add(sessionId)
+    return true
+  }
+
+  private coordinatorTurnStart(cwd: string, sessionId: string, origin: TurnOrigin): void {
+    const p = this.project(cwd)
+    if (p.retired.has(sessionId)) return
+    p.runningCoordinator = sessionId
     if (origin !== 'user') return
     this.schedule(cwd, async () => {
-      const store = this.port.storeFor(cwd)
-      if ((await store.read()).coordinator) await store.setAutoWakeCount(nextAutoWakeCount(0, 'user-message-in-coordinator'))
+      if (await this.isRetired(cwd, sessionId)) return
+      await this.port.storeFor(cwd).setAutoWakeCount(nextAutoWakeCount(0, 'user-message-in-coordinator'))
     })
   }
 
-  private coordinatorTurnEnd(cwd: string, origin: TurnOrigin, outcome: { aborted: boolean; failed: boolean }): void {
+  private coordinatorTurnEnd(
+    cwd: string,
+    sessionId: string,
+    origin: TurnOrigin,
+    outcome: { aborted: boolean; failed: boolean },
+    reseed: boolean,
+  ): void {
     const p = this.project(cwd)
-    p.coordinatorRunning = false
+    if (p.retired.has(sessionId)) return
+    if (p.runningCoordinator === sessionId) p.runningCoordinator = undefined
     p.lastTurnOutcome = outcome.aborted ? 'interrupted' : outcome.failed ? 'failed' : 'completed'
     this.schedule(cwd, async () => {
+      if (await this.isRetired(cwd, sessionId)) return
+      const store = this.port.storeFor(cwd)
       if (origin === 'wake') {
         p.suppressed = releaseWake({ locked: true, suppressed: p.suppressed }).state.suppressed
-        const store = this.port.storeFor(cwd)
-        if ((await store.read()).coordinator) await store.setWakeLocked(false)
+        await store.setWakeLocked(false)
+      }
+      if (reseed && this.port.reseedCoordinator) {
+        try {
+          const next = await this.port.reseedCoordinator(cwd, sessionId)
+          // The new session has not run: nothing it did can hold wakes back.
+          if (next !== sessionId) {
+            p.retired.add(sessionId)
+            p.lastTurnOutcome = 'none'
+          }
+        } catch (error) {
+          // The old coordinator stays in place; the next tripped turn retries.
+          this.port.onError?.(error)
+        }
       }
       // Also the replay of anything suppressed while the wake ran.
       await this.evaluate(cwd)
@@ -293,7 +349,7 @@ export class CoordinationWakeEngine {
     const control = this.port.laneControl(coord.sessionId)
     const live = control?.state()
     const parent: WakeParentState = {
-      status: p.coordinatorRunning || live?.streaming ? 'running' : 'idle',
+      status: p.runningCoordinator === coord.sessionId || live?.streaming ? 'running' : 'idle',
       lastTurnOutcome: p.lastTurnOutcome,
       pendingApproval: live?.pendingApproval ?? false,
       pendingDialog: live?.pendingDialog ?? false,

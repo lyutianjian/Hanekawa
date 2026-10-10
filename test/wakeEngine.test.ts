@@ -17,12 +17,15 @@ class FakeLane implements CoordinationLaneControl, WakeLaneController {
   streaming = false
   pendingApproval = false
   wakes: string[] = []
+  compactFailureCount: number | undefined
   private events = new Set<(e: SessionEvent) => void>()
   private states = new Set<() => void>()
   constructor(readonly id: string, readonly role: CoordinationRole) {}
   // WakeLaneController
   onEvent(l: (e: SessionEvent) => void) { this.events.add(l); return () => this.events.delete(l) }
-  getSessionMeta() { return { id: this.id, coordination: { role: this.role, projectKey: 'k' } } as unknown as SessionMeta }
+  getSessionMeta() {
+    return { id: this.id, coordination: { role: this.role, projectKey: 'k' }, compactFailureCount: this.compactFailureCount } as unknown as SessionMeta
+  }
   getSessionId() { return this.id }
   // CoordinationLaneControl
   async enqueueFromCoordinator() {}
@@ -47,7 +50,7 @@ class FakeLane implements CoordinationLaneControl, WakeLaneController {
   setApproval(b: boolean) { this.pendingApproval = b; for (const l of this.states) l() }
 }
 
-async function setup(threadCount = 2) {
+async function setup(threadCount = 2, options: { reseed?: (cwd: string, sessionId: string) => Promise<string> } = {}) {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-wake-'))
   const store = new CoordinationStore(cwd)
   await store.setCoordinatorSessionId(COORD)
@@ -66,6 +69,7 @@ async function setup(threadCount = 2) {
     },
     notify: (n) => notices.push(n.title),
     onError: (e) => errors.push(e),
+    ...(options.reseed ? { reseedCoordinator: options.reseed } : {}),
   }
   const engine = new CoordinationWakeEngine(port)
   const attach = (lane: FakeLane) => { lanes.set(lane.id, lane); return engine.attachLane(cwd, lane, lane) }
@@ -323,4 +327,69 @@ test('the persisted wake lock holds across a new engine (restart)', async () => 
   assert.equal(c.wakeLocked, true)
   assert.equal(c.autoWakeCount, 1)
   assert.equal(c.notes.length, 1)
+})
+
+function reseeder(getStore: () => CoordinationStore, calls: string[]) {
+  return async (_cwd: string, sessionId: string) => {
+    calls.push(sessionId)
+    const store = getStore()
+    if ((await store.getCoordinatorSessionId()) !== sessionId) return (await store.getCoordinatorSessionId())!
+    await store.setCoordinatorSessionId('s_coord2')
+    return 's_coord2'
+  }
+}
+
+test('a circuitOpen record on the coordinator lane reseeds at turn end, then wakes the new coordinator', async () => {
+  const calls: string[] = []
+  let store!: CoordinationStore
+  const h = await setup(1, { reseed: reseeder(() => store, calls) })
+  store = h.store
+  h.coord.start('user')
+  h.coord.emit({ type: 'record', record: {
+    id: 'f', type: 'compact_attempt_failed', error: 'x', failureCount: 3, circuitOpen: true, preTokens: 1, createdAt: '',
+  } })
+  await h.settle()
+  assert.deepEqual(calls, [])
+  await runThread(h.threads[0]!)
+  h.coord.end('user', { failed: true })
+  await h.settle()
+  assert.deepEqual(calls, [COORD])
+  assert.equal(await h.store.getCoordinatorSessionId(), 's_coord2')
+  // The old turn failed, but the new session never ran: the queued note wakes it.
+  assert.deepEqual(h.opened, [{ sessionId: 's_coord2', activate: false }])
+  assert.equal(h.lanes.get('s_coord2')!.wakes.length, 1)
+  assert.equal(h.coord.wakes.length, 0)
+})
+
+test('a persisted failure count at the limit also trips; an unflagged turn does not', async () => {
+  const calls: string[] = []
+  let store!: CoordinationStore
+  const h = await setup(0, { reseed: reseeder(() => store, calls) })
+  store = h.store
+  h.coord.compactFailureCount = 2
+  h.coord.start('user'); h.coord.end('user')
+  await h.settle()
+  assert.deepEqual(calls, [])
+  h.coord.compactFailureCount = 3
+  h.coord.start('user'); h.coord.end('user')
+  await h.settle()
+  assert.deepEqual(calls, [COORD])
+})
+
+test('a retired coordinator lane no longer drives the wake state', async () => {
+  const h = await setup(1)
+  await h.store.setCoordinatorSessionId('s_coord2')
+  const next = new FakeLane('s_coord2', 'coordinator')
+  h.attach(next)
+  // The old lane running does not hold back a wake of the new one.
+  h.coord.start('user')
+  await runThread(h.threads[0]!)
+  await h.settle()
+  assert.equal(next.wakes.length, 1)
+  // Nor does its failed turn end, or its user turn reset the count.
+  h.coord.end('user', { failed: true })
+  await h.settle()
+  const f = await h.store.read()
+  assert.equal(f.coordinator!.autoWakeCount, 1)
+  assert.equal(f.coordinator!.wakeLocked, true)
 })

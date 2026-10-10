@@ -184,6 +184,8 @@ const coordinationEngine = new CoordinationWakeEngine({
   laneControl: (sessionId) => shell?.host.laneControlFor(sessionId),
   openLane: (cwd, sessionId, options) => openCoordinationLane(cwd, sessionId, options.activate),
   notify: (notice) => notifyCoordination(notice),
+  // Lazy: the service is built after the engine.
+  reseedCoordinator: (cwd, sessionId) => coordination.reseedCoordinator(cwd, sessionId),
   onError: (error) => {
     console.error('[hanekawa] coordination:', error)
   },

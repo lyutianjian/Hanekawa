@@ -43,6 +43,7 @@ async function setup(t: TestContext, options: { git?: boolean } = {}) {
   await sessions.init()
   const lanes = new Map<string, FakeControl>()
   const opened: Array<{ sessionId: string; activate: boolean }> = []
+  const notices: Array<{ title: string; body: string; sessionId: string }> = []
   const settings: CoordinationSettings = { threadModel: 'thread-model' }
   const port: CoordinationPort = {
     storeFor: () => sessions,
@@ -53,7 +54,7 @@ async function setup(t: TestContext, options: { git?: boolean } = {}) {
       if (!control) lanes.set(sessionId, control = new FakeControl())
       return control
     },
-    notify: () => {},
+    notify: (n) => { notices.push(n) },
     settings: () => settings,
   }
   const calls: string[] = []
@@ -68,7 +69,7 @@ async function setup(t: TestContext, options: { git?: boolean } = {}) {
   const caller = { sessionId: coordinatorId, projectDir: cwd }
   const store = service.coordinationStore(cwd)
   const thread = async (id: string) => (await store.read()).threads.find((th) => th.threadId === id)!
-  return { cwd, git, sessions, lanes, opened, settings, calls, service, caller, store, thread, coordinatorId }
+  return { cwd, git, sessions, lanes, opened, notices, settings, calls, service, caller, store, thread, coordinatorId }
 }
 
 const request = { title: 'Fix the bug', brief: 'Fix it', background: 'b'.repeat(80), writesCode: false }
@@ -255,4 +256,45 @@ test('ensureCoordinator creates once and recreates when the session is gone', as
   await s.sessions.delete(next)
   const third = await s.service.ensureCoordinator(s.cwd)
   assert.deepEqual(s.lanes.get(third)!.models, ['coord-model'])
+})
+
+test('reseedCoordinator seeds a new session from the last summary and moves the pointer once', async (t) => {
+  const s = await setup(t)
+  const oldId = s.coordinatorId
+  await s.sessions.appendRecord(oldId, {
+    id: 'b1', type: 'compact_boundary', summary: 'first summary', preTokens: 10, createdAt: '2026-01-01T00:00:00Z',
+  })
+  await s.sessions.appendRecord(oldId, {
+    id: 'b2', type: 'compact_boundary', summary: 'latest summary', preTokens: 10, createdAt: '2026-01-01T00:00:01Z',
+  })
+  await s.store.enqueueNote({ threadId: 't', kind: 'report', userDriven: false, text: 'queued note', at: '2026-01-01T00:00:00Z' })
+
+  const newId = await s.service.reseedCoordinator(s.cwd, oldId)
+  assert.notEqual(newId, oldId)
+  const file = await s.store.read()
+  assert.equal(file.coordinator?.sessionId, newId)
+  assert.deepEqual(file.coordinator?.notes.map((n) => n.text), ['queued note'])
+  assert.equal((await s.sessions.resolve(newId))?.coordination?.role, 'coordinator')
+  assert.equal((await s.sessions.resolve(oldId))?.coordination?.role, 'coordinator')
+
+  const records = await s.sessions.loadRecords(newId)
+  assert.equal(records.length, 1)
+  const seed = records[0]!
+  assert.equal(seed.type, 'compact_boundary')
+  if (seed.type !== 'compact_boundary') return
+  assert.equal(seed.postCompactRestore, 'pending')
+  assert.equal(seed.preTokens, 0)
+  assert.match(seed.summary, new RegExp(oldId))
+  assert.match(seed.summary, /latest summary/)
+  assert.doesNotMatch(seed.summary, /first summary/)
+
+  assert.deepEqual(s.opened, [{ sessionId: newId, activate: false }])
+  assert.equal(s.notices.length, 1)
+  assert.equal(s.notices[0]!.sessionId, newId)
+
+  // The pointer already moved: a second trip from the old lane does nothing.
+  assert.equal(await s.service.reseedCoordinator(s.cwd, oldId), newId)
+  assert.equal(await s.store.getCoordinatorSessionId(), newId)
+  assert.equal(s.opened.length, 1)
+  assert.equal(await s.service.ensureCoordinator(s.cwd), newId)
 })

@@ -123,8 +123,8 @@ const WINDOW_CHROME = {
   // `height` is `#titlebar`'s in `styles.css`; the OS paints its three buttons
   // onto the same band, so the two numbers move together or the caption row and
   // the controls stop sharing a centre line.
-  dark: { color: '#262523', symbolColor: '#a19a90', height: 40 },
-  light: { color: '#f2efe9', symbolColor: '#6b655c', height: 40 },
+  dark: { color: '#242424', symbolColor: '#a6a6a5', height: 40 },
+  light: { color: '#f3f3f2', symbolColor: '#575756', height: 40 },
 } as const
 
 // A plain annotation rather than `as unknown as`: `ipcMain` really is

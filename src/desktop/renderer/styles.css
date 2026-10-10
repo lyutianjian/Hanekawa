@@ -22,21 +22,21 @@
      canvas and in dark it reads *lighter*, which is not a contradiction but the
      same rule: the frame recedes, the canvas is where the eye lands.
 
-     The ladder is warm-neutral end to end (r > g > b in both themes): the
-     paper metaphor does not survive a cool frame around a warm canvas, so the
-     old warm-canvas/cool-frame split is gone along with the wash it carried.
+     The ladder is near-neutral grey end to end: at most a whisper of warmth (channels
+     within 1-2 steps, saturation <= 2%) shared by every rung of both themes,
+     so frame and canvas never disagree about temperature.
      Everything stays far inside the ≤20 saturation the neutrality guard
      enforces. */
-  --surface-base: #262523;
-  --surface-canvas: #1c1b19;
-  --surface-card: #232220;
+  --surface-base: #242424;
+  --surface-canvas: #1c1c1c;
+  --surface-card: #262626;
   /* Pointer-over. Its own step because the four-layer ladder has no room for
      one: rows inside a panel sit *on* --surface-card, so hovering them to
      --surface-card would be invisible, and hovering them to --surface-active
      would make hover indistinguishable from selection. */
-  --surface-hover: #2e2c29;
+  --surface-hover: #2e2e2d;
   /* The row the keyboard is on, in either list. */
-  --surface-active: #383530;
+  --surface-active: #393938;
 
   /* The knob of a switch that is on. Its own token because it is the one
      surface that must NOT follow the theme: it sits on a saturated accent fill
@@ -46,7 +46,7 @@
   /* What a modal dims the app with. A token because both #overlay and #rewind
      draw it, and they must dim by the same amount or stacking them reads as a
      bug. Follows the theme: dark dims harder with plain black, light dims less
-     and with the paper's own warm cast. */
+     and with the graphite's own cast. */
   --surface-scrim: rgba(0, 0, 0, 0.55);
   /* The image viewer's own, and the reason it is a second token: the two modal
      layers dim *so the app stays readable behind the question they ask*, while
@@ -55,13 +55,13 @@
   --surface-scrim-strong: rgba(0, 0, 0, 0.88);
 
   /* --- text: three levels plus the one interactive colour --- */
-  --text-primary: #ede9e3;
-  --text-secondary: #a19a90;
+  --text-primary: #ebebea;
+  --text-secondary: #a6a6a5;
   /* Metadata, and only metadata: anything the user can click asks for one of
      the two rungs above. */
-  --text-tertiary: #857e74;
+  --text-tertiary: #858584;
   /* Links are brand-coloured text, and the *strong* brand rung is the one
-     cleared for text — `--accent-brand` itself carries only 3.9:1 on the paper
+     cleared for text — `--accent-brand` itself carries only 4.0:1 on the paper
      (design_guidance 二.2). An alias, so the equality cannot drift. */
   --link: var(--accent-brand-strong);
 
@@ -71,25 +71,24 @@
      colour means something when it does appear.
      `test/rendererStyleTokens.test.ts` enforces the property list.
 
-     The brand is two tokens, not one. `--accent-brand` is the clay orange for
-     glyphs, hairlines and indicator bars — 3.9:1 on the paper, enough for a
+     The brand is two tokens, not one. `--accent-brand` is the clay for
+     glyphs, hairlines and indicator bars — 4.0:1 on the paper, enough for a
      rule, not for text. `--accent-brand-strong` is the rung cleared for text
-     and fills (5.6:1 on paper, 5.8:1 under its own white). Dark keeps both at
-     the lighter clay: on charcoal the deep variant would read as mud, and the
+     and fills (5.5:1 on paper, 5.7:1 under its own white). Dark keeps both at
+     the lighter clay: on graphite the deep variant would read as mud, and the
      fill pairs with dark text instead (design_guidance 二.2/二.3). */
-  --accent-brand: #d97757;
-  --accent-brand-strong: #d97757;
+  --accent-brand: #d4806a;
+  --accent-brand-strong: #d4806a;
   /* The colour cleared to sit *on* a brand fill. Not `--surface-knob`: the knob
      is white in both themes, while this flips — white on clay in light, the
      canvas's own near-black in dark. */
-  --on-brand: #1c1b19;
-  /* The five semantic states, Flexoki-tinted to sit on warm paper rather than
-     on a cool one. */
-  --accent-info: #4385be;
-  --accent-tool: #8b7ec8;
-  --accent-review: #879a39;
-  --accent-warn: #d0a215;
-  --accent-danger: #d14d41;
+  --on-brand: #1c1c1c;
+  /* The five semantic states, tuned to sit on soft graphite. */
+  --accent-info: #6fa5dc;
+  --accent-tool: #a690d8;
+  --accent-review: #8dbd6a;
+  --accent-warn: #d5ad4c;
+  --accent-danger: #e5707f;
 
   /* Text that has to carry a state colour asks for it by *its own* name, so no
      rule ever spells `--accent-*` on a paragraph and the rule above stays
@@ -100,13 +99,13 @@
 
   /* --- lines ---
      Hairlines, and few of them: grouping is done with cards and spacing. */
-  --border-subtle: #322f2b;
-  --border-strong: #45413b;
+  --border-subtle: #2f2f2e;
+  --border-strong: #414140;
   /* The focus ring *is* the brand colour (design_guidance 二.2「焦点环 = 品牌色」)
      — the brand's one permitted appearance at hairline weight. An alias for
      the same reason `--link` is: the decision is the equality itself. */
   --focus-ring: var(--accent-brand);
-  --caret: #ede9e3;
+  --caret: #ebebea;
 
   /* --- elevation ---
      Two depths, and shadows for nothing else: only things that float over
@@ -115,7 +114,7 @@
      pill from the paper it covers, in dark the border does most of that work.
      `--shadow-modal` is the modal panels' depth: they sit above a dimmed app,
      not above text, and need the wider spread to read as above rather than in.
-     Both follow the theme — light shadows carry the paper's warm cast. */
+     Both follow the theme — light shadows carry the neutral cast. */
   --shadow-float: 0 6px 20px rgba(0, 0, 0, 0.45);
   --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.6);
 
@@ -299,12 +298,12 @@
   /* --- diff ---
      Content colours, not interface colours, and exempt from the neutrality rule
      for the same reason `theme.markdown` and `theme.syntax` are exempt in
-     `src/tui/theme.ts`: red and green *are* the meaning here. Flexoki values,
-     tuned for the warm paper rather than a neutral one (design_guidance 二.3). */
-  --diff-add-fg: #a8c06a;
-  --diff-add-bg: #1f2618;
-  --diff-del-fg: #e08a7f;
-  --diff-del-bg: #2a1c1a;
+     `src/tui/theme.ts`: red and green *are* the meaning here. Values
+     tuned for the graphite ladder (design_guidance 二.3). */
+  --diff-add-fg: #93c77a;
+  --diff-add-bg: #1f2a20;
+  --diff-del-fg: #e98a94;
+  --diff-del-bg: #33201f;
 }
 
 /* --- light theme ---
@@ -321,45 +320,45 @@
    enforces (so #e3ded5, not #d9d4c9 — chroma, not lightness, is what the guard
    bounds). */
 :root[data-theme="light"] {
-  --surface-base: #f2efe9;
-  --surface-canvas: #fdfcf9;
-  --surface-card: #f7f4ef;
-  --surface-hover: #ede9e2;
-  --surface-active: #e3ded5;
+  --surface-base: #f3f3f2;
+  --surface-canvas: #fdfdfd;
+  --surface-card: #f8f8f7;
+  --surface-hover: #eeeeed;
+  --surface-active: #e6e6e5;
 
-  /* The paper dims with its own warm cast, and less hard than dark's black. */
-  --surface-scrim: rgba(28, 25, 21, 0.32);
+  /* The paper dims with the neutral cast, and less hard than dark's black. */
+  --surface-scrim: rgba(26, 26, 26, 0.3);
   /* The viewer still goes almost opaque in light: a picture needs its own
-     field whatever the paper behind it is. Warm, not black, like the one above. */
-  --surface-scrim-strong: rgba(28, 25, 21, 0.92);
+     field whatever the paper behind it is. Tinted, not black, like the one above. */
+  --surface-scrim-strong: rgba(26, 26, 26, 0.92);
 
-  --text-primary: #1a1815;
-  --text-secondary: #6b655c;
-  --text-tertiary: #8f887d;
+  --text-primary: #1a1a1a;
+  --text-secondary: #575756;
+  --text-tertiary: #777776;
 
-  /* Here the two brand rungs split: #C96442 is the icon/hairline clay, #A8492B
-     the text-and-fill clay (5.6:1 on the paper). Dark has no use for the split
+  /* Here the two brand rungs split: #c2603f is the icon/hairline clay, #a44d30
+     the text-and-fill clay (5.7:1 on the paper). Dark has no use for the split
      and keeps both at the lighter value. */
-  --accent-brand: #c96442;
-  --accent-brand-strong: #a8492b;
+  --accent-brand: #c2603f;
+  --accent-brand-strong: #a44d30;
   --on-brand: #ffffff;
-  --accent-info: #205ea6;
-  --accent-tool: #5e409d;
-  --accent-review: #66800b;
-  --accent-warn: #ad8301;
-  --accent-danger: #af3029;
+  --accent-info: #33689f;
+  --accent-tool: #6e4fa3;
+  --accent-review: #44752a;
+  --accent-warn: #8a6604;
+  --accent-danger: #b02e46;
 
-  --border-subtle: #e6e1d8;
-  --border-strong: #d5cfc4;
-  --caret: #1a1815;
+  --border-subtle: #e5e5e4;
+  --border-strong: #d3d3d2;
+  --caret: #1a1a1a;
 
-  --shadow-float: 0 6px 20px rgba(28, 25, 21, 0.08), 0 1px 2px rgba(28, 25, 21, 0.06);
-  --shadow-modal: 0 16px 48px rgba(28, 25, 21, 0.16);
+  --shadow-float: 0 6px 20px rgba(26, 26, 26, 0.08), 0 1px 2px rgba(26, 26, 26, 0.06);
+  --shadow-modal: 0 16px 48px rgba(26, 26, 26, 0.16);
 
-  --diff-add-fg: #3a6b22;
-  --diff-add-bg: #edf3e2;
-  --diff-del-fg: #9e2b25;
-  --diff-del-bg: #f8eae8;
+  --diff-add-fg: #3c6e26;
+  --diff-add-bg: #e7f1e3;
+  --diff-del-fg: #a3283f;
+  --diff-del-bg: #f7e8e8;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }

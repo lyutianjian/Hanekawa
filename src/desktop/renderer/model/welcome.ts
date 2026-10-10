@@ -160,6 +160,7 @@ const COUNTS_AS_CONVERSATION = {
   tool: true,
   subagent: true,
   duration: true,
+  'thread-notes': true,
   notice: false,
   error: false,
 } as const satisfies Record<TranscriptItemKind, boolean>

@@ -2,6 +2,7 @@ import type { ModelStreamEvent, PersistedQueuedMessage, SessionRecord, SubagentT
 import type { SessionEvent, SubagentActivity } from '../../../runtime/sessionController.js'
 import type { ImageAttachmentRef } from '../../../media/types.js'
 import type { ToolDisplayDto } from '../../../runtime/protocol/wire.js'
+import { parseCoordinationUpdate, parseThreadNoteMessage, type ThreadNotesData } from './threadNotes.js'
 
 /**
  * The transcript as data: a list of items plus whatever is still in flight.
@@ -79,6 +80,7 @@ export type TranscriptItemKind =
   | 'error'
   | 'subagent'
   | 'duration'
+  | 'thread-notes'
 
 /**
  * How the host captions a `tool_use` record, by record id.
@@ -214,6 +216,8 @@ export interface TranscriptItem {
    * so {@link withQueuedMessages} stops drawing it once it is in the transcript.
    */
   readonly queuedMessageId?: string
+  /** On a `thread-notes` item: the wake message's / update's notes, drawn as cards. */
+  readonly threadNotes?: ThreadNotesData
 }
 
 /** One step inside an activity group. `text` is the body; heads are the view's job. */
@@ -407,7 +411,12 @@ export function applySessionEvent(
       return {
         state: {
           ...state,
-          items: [...state.items, {
+          items: [...state.items, parseThreadNoteMessage(event.displayInput) ? {
+            id: event.messageId,
+            kind: 'thread-notes',
+            text: event.displayInput,
+            threadNotes: parseThreadNoteMessage(event.displayInput)!,
+          } : {
             id: event.messageId,
             kind: 'user',
             text: event.displayInput,
@@ -851,6 +860,11 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
       // Likewise the `<subagent-summary>` the tool runner appends after an Agent
       // result: context for the model, whose facts the Agent step already shows.
       if (record.role === 'assistant' && isSubagentSummaryBlock(messageText(record))) return []
+      // The automatic wake is a user record the app wrote: its notes are cards.
+      if (record.role === 'user') {
+        const threadNotes = parseThreadNoteMessage(messageText(record))
+        if (threadNotes) return [{ id: record.id, kind: 'thread-notes', text: messageText(record), threadNotes, ...stamp }]
+      }
       const text: TranscriptItem = {
         id: record.id,
         kind: record.role === 'user' ? 'user' : 'assistant',
@@ -964,6 +978,11 @@ function recordItems(record: SessionRecord, context: ItemContext = {}): Transcri
         text: `${AGENT_LABEL} · ${record.subagentType} 已完成${record.summary ? `：${record.summary}` : ''}`,
         ...stamp,
       }]
+    }
+
+    case 'coordination_update': {
+      const threadNotes = parseCoordinationUpdate(record.content)
+      return threadNotes ? [{ id: record.id, kind: 'thread-notes', text: record.content, threadNotes, ...stamp }] : []
     }
 
     case 'turn_interruption':

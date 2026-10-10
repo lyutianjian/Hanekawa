@@ -284,6 +284,8 @@ export interface PaneSessionDeps {
   onUserMessage?: () => void
   /** An `Agent` row was clicked: show that run in the window's side panel. */
   onOpenSubagent?: (id: string) => void
+  /** A thread note card's 查看: open that thread's session. */
+  onOpenThread?: (threadId: string) => void
   /** The active pane repainted its transcript, so the side panel's list may have moved. */
   onSubagentsChanged?: () => void
 }
@@ -409,6 +411,7 @@ export function createPaneSession(deps: PaneSessionDeps): PaneSession {
   const transcriptView: TranscriptView = createTranscriptView(transcriptEl, paneEl, {
     onToggle: (id, expanded) => toggleDisclosureAt(id, expanded),
     onOpenSubagent: (id) => deps.onOpenSubagent?.(id),
+    onOpenThread: (id) => deps.onOpenThread?.(id),
     // The panel is a singleton the active pane drives, so a background pane
     // cannot reach it — and cannot be clicked either, since it does not paint.
     onTaskStep: () => {

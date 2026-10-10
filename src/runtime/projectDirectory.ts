@@ -219,6 +219,7 @@ export class ProjectDirectory<
         projectName: projectDisplayName(entry.cwd),
       }
       if (session.title !== undefined) info.sessionTitle = session.title
+      if (session.coordination !== undefined) info.coordinationRole = session.coordination.role
       out.push(info)
     }
     return out

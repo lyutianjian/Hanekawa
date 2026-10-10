@@ -842,6 +842,26 @@ test('open-session without a sessionId mints a fresh draft and a lane', async ()
   assert.deepEqual(h.activates, ['1'])
 })
 
+test('openLane with activate: false registers the lane without activating it', async () => {
+  const h = createHarness()
+  const result = await h.host.openLane(h.entry, { activate: false })
+  await settle()
+
+  assert.deepEqual(h.client.getLanes().map((lane) => lane.lane), [result.lane])
+  assert.equal(h.attaches.length, 1, 'the occupant is still built')
+  assert.deepEqual(h.activates, [], 'and nobody was asked to switch to it')
+})
+
+test('openLane activates by default, for a new lane and an existing one', async () => {
+  const h = createHarness()
+  const first = await h.host.openLane(h.entry)
+  const second = await h.host.openLane(h.entry, { sessionId: h.workspace.panes[0]!.getSession().id })
+  await settle()
+
+  assert.equal(second.lane, first.lane)
+  assert.deepEqual(h.activates, [first.lane, first.lane])
+})
+
 test('open-session defaults to the first open project', async () => {
   const h = createHarness()
   const result = await h.client.openSession()

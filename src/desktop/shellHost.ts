@@ -798,17 +798,18 @@ export class ShellHost<
    */
   async openLane(
     entry: ProjectEntry<P, W>,
-    options: { sessionId?: string; title?: string } = {},
+    options: { sessionId?: string; title?: string; activate?: boolean } = {},
   ): Promise<WireShellOpenSessionResult> {
+    const activate = options.activate ?? true
     if (options.sessionId !== undefined) {
       const existing = entry.workspace.paneForSession(options.sessionId)
-      if (existing) return this.registerLane(entry, existing)
+      if (existing) return this.registerLane(entry, existing, activate)
       const session = await entry.project.store.resolve(options.sessionId)
       if (!session) throw new Error(`Session not found: ${options.sessionId}`)
-      return this.registerLane(entry, await entry.workspace.open(session))
+      return this.registerLane(entry, await entry.workspace.open(session), activate)
     }
     const scope = await entry.project.openScope(entry.project.store.createDraft(options.title))
-    return this.registerLane(entry, entry.workspace.adopt(scope, {}))
+    return this.registerLane(entry, entry.workspace.adopt(scope, {}), activate)
   }
 
   /**
@@ -1728,10 +1729,14 @@ export class ShellHost<
 
   // --- internals -----------------------------------------------------------
 
-  private registerLane(entry: ProjectEntry<P, W>, pane: PaneT): WireShellOpenSessionResult {
+  private registerLane(
+    entry: ProjectEntry<P, W>,
+    pane: PaneT,
+    activate = true,
+  ): WireShellOpenSessionResult {
     const existing = this.laneForPane(pane)
     if (existing !== undefined) {
-      this.requestActivate(existing)
+      if (activate) this.requestActivate(existing)
       return { lane: existing, pane: this.describeOne(existing, this.lanes.get(existing)!) }
     }
     const lane = this.deps.nextLaneKey()
@@ -1745,7 +1750,7 @@ export class ShellHost<
     // `lanes` before `activate`: one channel is FIFO, so the renderer always
     // builds its pane session for a lane before being asked to switch to it.
     this.broadcastLanes()
-    this.requestActivate(lane)
+    if (activate) this.requestActivate(lane)
     return { lane, pane: this.describeOne(lane, this.lanes.get(lane)!) }
   }
 
@@ -1774,6 +1779,7 @@ export class ShellHost<
       lane,
     }
     if (pane.sessionTitle !== undefined) info.sessionTitle = pane.sessionTitle
+    if (pane.coordinationRole !== undefined) info.coordinationRole = pane.coordinationRole
     return info
   }
 

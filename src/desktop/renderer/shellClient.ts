@@ -370,7 +370,8 @@ function sameLaneList(current: readonly WireLaneInfo[], next: readonly WireLaneI
       a.sessionId !== b.sessionId ||
       a.projectRoot !== b.projectRoot ||
       a.projectName !== b.projectName ||
-      a.sessionTitle !== b.sessionTitle
+      a.sessionTitle !== b.sessionTitle ||
+      a.coordinationRole !== b.coordinationRole
     ) {
       return false
     }

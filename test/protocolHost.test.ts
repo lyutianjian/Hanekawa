@@ -98,6 +98,8 @@ interface HarnessOptions {
   describePanes?: () => WirePaneInfo[]
   /** What this host's *own* workspace lists, for the fallback projection. */
   workspacePanes?: SessionMeta[]
+  /** Records the session was reopened with; a queue is replayed from these. */
+  existingRecords?: SessionRecord[]
 }
 
 async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -255,7 +257,7 @@ async function createHarness(options: HarnessOptions = {}): Promise<Harness> {
     // resolves `/help` and `list-commands` through, and the `as unknown as`
     // below would happily hide its absence until the first slash command threw.
     commands: new CommandRegistry(),
-    existingRecords: [] as SessionRecord[],
+    existingRecords: options.existingRecords ?? [],
     diagnostics: [],
     mcp: { connected: [], failed: [] },
     hasRecoverableInterruption: false,
@@ -1587,6 +1589,40 @@ test('an idle host sends a queued message immediately', async () => {
   )
 
   assert.deepEqual(harness.calls.submits, ['now'])
+  harness.dispose()
+})
+
+test('a reopened session with an unsent queued message sends it once a renderer attaches', async () => {
+  const queued = {
+    id: 'reopened-1',
+    type: 'message_queue',
+    operation: 'enqueue',
+    message: {
+      id: 'queued-before-close',
+      content: 'left over from last time',
+      createdAt: '2026-10-10T00:00:00.000Z',
+      priority: 'next',
+    },
+    createdAt: '2026-10-10T00:00:00.000Z',
+  } as SessionRecord
+  const harness = await createHarness({ existingRecords: [queued] })
+
+  // Constructing the host replays the queue but does not pump it: nothing
+  // attaches a renderer yet, so nothing may be sent.
+  await givePumpAChance()
+  assert.deepEqual(harness.calls.submits, [], 'no send before a renderer says hello')
+
+  harness.send({ type: 'hello', id: 'reopen-hello' })
+  await waitFor(
+    () => (harness.calls.submits.length > 0 ? true : undefined),
+    'the reopened queue to be sent after hello',
+  )
+  assert.deepEqual(harness.calls.submits, ['left over from last time'])
+
+  await waitFor(
+    () => (latestQueue(harness.received).length === 0 ? true : undefined),
+    'the queue to empty once the message is sent',
+  )
   harness.dispose()
 })
 

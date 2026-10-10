@@ -19,7 +19,8 @@ import { createRuntimeFactory } from './createRuntime.js'
 import { reconcileOrphanedAgents } from './sessionSwitch.js'
 import type { ToolRegistry } from './toolRegistry.js'
 import type { SessionScope } from './types.js'
-import { getProjectMemoryDir } from '../utils/paths.js'
+import { getCoordinationNotesDir, getProjectMemoryDir } from '../utils/paths.js'
+import { initialPermissionMode, sessionRoleOf } from './sessionRole.js'
 
 /**
  * The project-level collaborators a scope builds on. Every one of these is
@@ -64,6 +65,14 @@ export async function createSessionScope(
   session: SessionMeta,
 ): Promise<SessionScope> {
   const settings = deps.getSettings()
+  const role = sessionRoleOf(session)
+  const workingDir = session.coordination?.workingDir ?? deps.cwd
+  const additionalDirectories = [
+    ...(settings.permissions?.additionalDirectories ?? []),
+    // Coordinator and threads share notes through this dir; the coordinator
+    // runs readonly, so it has to be a workspace root just to read them.
+    ...(role ? [getCoordinationNotesDir(deps.cwd)] : []),
+  ]
   const bridges = createUiBridges()
 
   const memoryDir = settings.autoMemory === false ? undefined : getProjectMemoryDir(deps.cwd)
@@ -79,13 +88,13 @@ export async function createSessionScope(
     bridges.prompt.prompt,
     permissionRulesFromSettings(settings.permissions),
     {
-      cwd: deps.cwd,
+      cwd: workingDir,
+      projectDir: deps.cwd,
       sessionId: session.id,
       ...(memoryDir ? { memoryDir } : {}),
-      ...(settings.permissions?.additionalDirectories
-        ? { additionalDirectories: settings.permissions.additionalDirectories }
-        : {}),
-      mode: settings.permissions?.mode ?? 'default',
+      ...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+      mode: initialPermissionMode(role, settings.permissions?.mode ?? 'default'),
+      lockMode: role === 'coordinator',
       persistRule: (rule) => persistPermissionRule(deps.cwd, rule),
     },
   )
@@ -99,6 +108,8 @@ export async function createSessionScope(
 
   const createRuntime = createRuntimeFactory({
     cwd: deps.cwd,
+    workingDir,
+    ...(role ? { role } : {}),
     config: deps.config,
     store: deps.store,
     getSettings: deps.getSettings,
@@ -142,6 +153,9 @@ export async function createSessionScope(
 
   return {
     session,
+    projectDir: deps.cwd,
+    workingDir,
+    ...(role ? { role } : {}),
     bridges,
     permissionGate,
     promptSections,

@@ -529,7 +529,7 @@ export class SessionHost {
         const response = await this.askUi({
           kind: 'permission',
           requestId,
-          payload: toPermissionDto(request, { cwd: this.project.cwd }),
+          payload: toPermissionDto(request, { cwd: this.scope.workingDir }),
         })
         if (response.kind !== 'permission') return false
         // Must run before we resolve: PermissionGate reads the captured

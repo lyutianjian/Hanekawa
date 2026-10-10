@@ -2,7 +2,7 @@ import type { AgentLoop, ActiveModelRuntime, AgentRunOverrides } from '../harnes
 import type { PlanModeManager } from '../harness/planModeManager.js'
 import type { PermissionGate } from '../harness/permissions.js'
 import type { SystemPromptSectionCache } from '../harness/sections.js'
-import type { AgentRunResult, SessionRecord, Tool } from '../harness/types.js'
+import type { AgentRunResult, CoordinationRole, SessionRecord, Tool } from '../harness/types.js'
 import type { RuntimeDiagnostic } from '../harness/diagnostics.js'
 import type { ConfigService, ModelConfig } from '../config/service.js'
 import type { EffortLevel } from '../config/effort.js'
@@ -169,6 +169,12 @@ export interface ProjectRuntime {
  */
 export interface SessionScope {
   session: SessionMeta
+  /** The project root that keys this scope's data dirs. */
+  projectDir: string
+  /** Where this scope's tools run: a thread's worktree, else `projectDir`. */
+  workingDir: string
+  /** The session's coordination role; undefined for a normal session. */
+  role?: CoordinationRole
   bridges: UiBridges
   permissionGate: PermissionGate
   promptSections: SystemPromptSectionCache

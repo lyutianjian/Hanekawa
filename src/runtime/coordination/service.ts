@@ -85,6 +85,14 @@ export interface PendingMerge {
   added: number
   removed: number
   conflict: boolean
+  /** The thread is still working (or waiting on the user); merging is not yet possible. */
+  running: boolean
+}
+
+/** One thread as the desktop sees it: the tool summary plus the session behind it. */
+export interface ThreadInfo extends ThreadSummary {
+  sessionId: string
+  statusLine?: string
 }
 
 export type ThreadMergeResult = MergeResult | { kind: 'running' | 'no-worktree'; message: string }
@@ -102,6 +110,7 @@ function quotable(text: string, max: number): string {
 
 export class CoordinationService implements CoordinationHost {
   private readonly stores = new Map<string, CoordinationStore>()
+  private readonly threadListeners = new Set<(cwd: string) => void>()
 
   constructor(
     private readonly port: CoordinationPort,
@@ -113,10 +122,55 @@ export class CoordinationService implements CoordinationHost {
     const key = path.resolve(cwd)
     let store = this.stores.get(key)
     if (!store) {
-      store = new CoordinationStore(cwd, { lifecycle: () => this.port.settings(cwd) })
+      store = new CoordinationStore(cwd, {
+        lifecycle: () => this.port.settings(cwd),
+        onWrite: () => {
+          for (const listener of [...this.threadListeners]) {
+            try {
+              listener(cwd)
+            } catch {
+              // a bad listener must not break the others
+            }
+          }
+        },
+      })
       this.stores.set(key, store)
     }
     return store
+  }
+
+  /** Fires after any write through a project's store; returns the unsubscribe. */
+  onThreadsChanged(listener: (cwd: string) => void): () => void {
+    this.threadListeners.add(listener)
+    return () => {
+      this.threadListeners.delete(listener)
+    }
+  }
+
+  /** The project's threads for the desktop, newest activity first; no coordinator check. */
+  async threadInfos(cwd: string): Promise<{ coordinatorSessionId?: string; threads: ThreadInfo[] }> {
+    const file = await this.coordinationStore(cwd).read()
+    const threads = applyLifecycle(file.threads, new Date(), this.port.settings(cwd))
+      .map((thread): ThreadInfo => ({
+        ...this.summarize(thread),
+        sessionId: thread.sessionId,
+        ...(thread.statusLine ? { statusLine: sanitizeReportText(thread.statusLine, REPORT_MAX) } : {}),
+      }))
+      .sort((a, b) => (b.lastActivityAt ?? '').localeCompare(a.lastActivityAt ?? ''))
+    return { ...(file.coordinator?.sessionId ? { coordinatorSessionId: file.coordinator.sessionId } : {}), threads }
+  }
+
+  private summarize(thread: ThreadRecord): ThreadSummary {
+    return {
+      threadId: thread.threadId,
+      title: sanitizeTitle(thread.title),
+      status: thread.status,
+      writesCode: thread.worktree !== undefined,
+      ...(thread.worktree ? { branch: thread.worktree.branch } : {}),
+      ...(thread.status === 'needs-you' ? { needsUser: true } : {}),
+      lastActivityAt: thread.lastActivityAt,
+      ...(thread.lastReport ? { lastReport: sanitizeReportText(thread.lastReport, REPORT_MAX) } : {}),
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -170,6 +224,8 @@ export class CoordinationService implements CoordinationHost {
         const control = await this.port.openLane(cwd, meta.id, { activate: false })
         const model = request.model ?? this.port.settings(cwd).threadModel
         if (model) control.setModel(model)
+        const effort = this.port.settings(cwd).threadEffort
+        if (effort) control.setEffort(effort)
         await control.enqueueFromCoordinator(composeThreadKickoff({
           background: request.background,
           brief: request.brief,
@@ -194,33 +250,34 @@ export class CoordinationService implements CoordinationHost {
 
   async stopThread(caller: CoordinationCaller, threadId: string): Promise<void> {
     await this.requireCoordinator(caller)
-    const thread = await this.findThread(caller.projectDir, threadId)
-    await this.stopSession(caller.projectDir, thread.sessionId)
+    await this.stopThreadById(caller.projectDir, threadId)
+  }
+
+  /** The user's stop: same effect as the tool, without the coordinator check. */
+  async stopThreadById(cwd: string, threadId: string): Promise<void> {
+    const thread = await this.findThread(cwd, threadId)
+    await this.stopSession(cwd, thread.sessionId)
+  }
+
+  /** The user's resolve: same effect as the tool, without the coordinator check. */
+  async resolveThreadById(cwd: string, threadId: string, note?: string): Promise<void> {
+    await this.findThread(cwd, threadId)
+    await this.coordinationStore(cwd).patchThread(threadId, {
+      status: 'resolved',
+      ...(note?.trim() ? { statusLine: sanitizeReportText(note, REPORT_MAX) } : {}),
+    })
   }
 
   async resolveThread(caller: CoordinationCaller, threadId: string, note?: string): Promise<void> {
     await this.requireCoordinator(caller)
-    await this.findThread(caller.projectDir, threadId)
-    await this.coordinationStore(caller.projectDir).patchThread(threadId, {
-      status: 'resolved',
-      ...(note?.trim() ? { statusLine: sanitizeReportText(note, REPORT_MAX) } : {}),
-    })
+    await this.resolveThreadById(caller.projectDir, threadId, note)
   }
 
   async listThreads(caller: CoordinationCaller): Promise<ThreadSummary[]> {
     await this.requireCoordinator(caller)
     const cwd = caller.projectDir
     const { threads } = await this.coordinationStore(cwd).read()
-    return applyLifecycle(threads, new Date(), this.port.settings(cwd)).map((thread) => ({
-      threadId: thread.threadId,
-      title: sanitizeTitle(thread.title),
-      status: thread.status,
-      writesCode: thread.worktree !== undefined,
-      ...(thread.worktree ? { branch: thread.worktree.branch } : {}),
-      ...(thread.status === 'needs-you' ? { needsUser: true } : {}),
-      lastActivityAt: thread.lastActivityAt,
-      ...(thread.lastReport ? { lastReport: sanitizeReportText(thread.lastReport, REPORT_MAX) } : {}),
-    }))
+    return applyLifecycle(threads, new Date(), this.port.settings(cwd)).map((thread) => this.summarize(thread))
   }
 
   async fetchThread(caller: CoordinationCaller, threadId: string, options: FetchThreadOptions = {}): Promise<FetchedThread> {
@@ -316,9 +373,11 @@ export class CoordinationService implements CoordinationHost {
     await seed?.(meta.id)
     await this.coordinationStore(cwd).setCoordinatorSessionId(meta.id)
     const model = this.port.settings(cwd).coordinatorModel
-    if (model || options.alwaysOpen) {
+    const effort = this.port.settings(cwd).coordinatorEffort
+    if (model || effort || options.alwaysOpen) {
       const control = await this.port.openLane(cwd, meta.id, { activate: false })
       if (model) control.setModel(model)
+      if (effort) control.setEffort(effort)
     }
     return meta.id
   }
@@ -354,7 +413,7 @@ export class CoordinationService implements CoordinationHost {
     const result: PendingMerge[] = []
     for (const thread of threads) {
       const wt = thread.worktree
-      if (!wt || thread.status === 'stale' || thread.status === 'running' || thread.status === 'needs-you') continue
+      if (!wt || thread.status === 'stale') continue
       let diff
       try {
         diff = await branchDiff(cwd, wt.branch)
@@ -369,6 +428,7 @@ export class CoordinationService implements CoordinationHost {
         added: diff.added,
         removed: diff.removed,
         conflict: thread.merge?.conflict === true,
+        running: thread.status === 'running' || thread.status === 'needs-you',
       })
     }
     return result

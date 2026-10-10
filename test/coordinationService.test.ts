@@ -17,12 +17,14 @@ import { SessionStore } from '../src/sessions/service.js'
 class FakeControl implements CoordinationLaneControl {
   enqueued: string[] = []
   models: string[] = []
+  efforts: string[] = []
   stops = 0
   streaming = false
   async enqueueFromCoordinator(text: string): Promise<void> { this.enqueued.push(text) }
   requestWake(): void {}
   async stop(): Promise<void> { this.stops++ }
   setModel(key: string): void { this.models.push(key) }
+  setEffort(level: string): void { this.efforts.push(level) }
   state() { return { streaming: this.streaming, pendingApproval: false, pendingDialog: false } }
   onStateChange(): () => void { return () => {} }
 }
@@ -183,10 +185,10 @@ test('merge success removes worktree and branch and resolves the thread', async 
   const started = await s.service.startThread(s.caller, { ...request, writesCode: true })
   const wt = (await s.thread(started.threadId)).worktree!
   await commitIn(wt.path, 'b.txt', 'x\ny\n')
-  assert.deepEqual(await s.service.pendingMerges(s.cwd), [], 'running threads are not offered')
+  assert.deepEqual((await s.service.pendingMerges(s.cwd)).map((p) => p.running), [true], 'a running thread is listed, flagged')
   await s.store.patchThread(started.threadId, { status: 'idle' })
   const pending = await s.service.pendingMerges(s.cwd)
-  assert.deepEqual(pending.map((p) => [p.branch, p.added, p.removed, p.conflict]), [[wt.branch, 2, 0, false]])
+  assert.deepEqual(pending.map((p) => [p.branch, p.added, p.removed, p.conflict, p.running]), [[wt.branch, 2, 0, false, false]])
 
   assert.equal((await s.service.mergeThread(s.cwd, started.threadId)).kind, 'merged')
   assert.ok(existsSync(path.join(s.cwd, 'b.txt')))
@@ -297,4 +299,49 @@ test('reseedCoordinator seeds a new session from the last summary and moves the 
   assert.equal(await s.store.getCoordinatorSessionId(), newId)
   assert.equal(s.opened.length, 1)
   assert.equal(await s.service.ensureCoordinator(s.cwd), newId)
+})
+
+test('threadInfos and the by-id commands work without a coordinator caller', async (t) => {
+  const s = await setup(t)
+  const a = await s.service.startThread(s.caller, request)
+  const b = await s.service.startThread(s.caller, { ...request, title: 'Second' })
+  await s.store.patchThread(a.threadId, { lastActivityAt: '2030-01-01T00:00:00Z', status: 'needs-you' })
+  const info = await s.service.threadInfos(s.cwd)
+  assert.equal(info.coordinatorSessionId, s.coordinatorId)
+  assert.deepEqual(info.threads.map((th) => th.threadId), [a.threadId, b.threadId])
+  assert.equal(info.threads[0]!.sessionId, a.sessionId)
+  assert.equal(info.threads[0]!.needsUser, true)
+
+  await s.service.stopThreadById(s.cwd, a.threadId)
+  assert.equal(s.lanes.get(a.sessionId)!.stops, 1)
+  await s.service.resolveThreadById(s.cwd, b.threadId, 'done')
+  const after = (await s.service.threadInfos(s.cwd)).threads.find((th) => th.threadId === b.threadId)!
+  assert.equal(after.status, 'resolved')
+  assert.equal(after.statusLine, 'done')
+  await assert.rejects(s.service.stopThreadById(s.cwd, 'thr_nope'), { code: 'THREAD_NOT_FOUND' })
+})
+
+test('onThreadsChanged fires on store writes until unsubscribed', async (t) => {
+  const s = await setup(t)
+  const seen: string[] = []
+  const off = s.service.onThreadsChanged((cwd) => { seen.push(cwd) })
+  await s.service.startThread(s.caller, request)
+  assert.ok(seen.length > 0)
+  assert.ok(seen.every((c) => c === s.cwd))
+  off()
+  const n = seen.length
+  await s.store.update(() => {})
+  assert.equal(seen.length, n)
+})
+
+test('coordinator and thread effort are applied with the model', async (t) => {
+  const s = await setup(t)
+  s.settings.threadEffort = 'low'
+  s.settings.coordinatorEffort = 'high'
+  const started = await s.service.startThread(s.caller, request)
+  assert.deepEqual(s.lanes.get(started.sessionId)!.efforts, ['low'])
+  await s.store.setCoordinatorSessionId('gone')
+  const fresh = await s.service.ensureCoordinator(s.cwd)
+  assert.notEqual(fresh, s.coordinatorId)
+  assert.deepEqual(s.lanes.get(fresh)!.efforts, ['high'])
 })

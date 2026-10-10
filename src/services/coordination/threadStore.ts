@@ -35,8 +35,10 @@ export class CoordinationStore {
   private readonly projectCwd: string
 
   private readonly lifecycle: () => LifecycleSettings
+  private readonly onWrite: (() => void) | undefined
 
-  constructor(cwd: string, options: { lifecycle?: () => LifecycleSettings } = {}) {
+  constructor(cwd: string, options: { lifecycle?: () => LifecycleSettings; onWrite?: () => void } = {}) {
+    this.onWrite = options.onWrite
     this.lifecycle = options.lifecycle ?? (() => ({}))
     this.projectCwd = cwd
     this.dir = path.join(getProjectDataDir(cwd), 'coordination')
@@ -74,6 +76,7 @@ export class CoordinationStore {
         next.coordinator.pendingSnapshot = this.render(next.threads)
       }
       await this.write(next)
+      this.notifyWrite()
       return next
     })
   }
@@ -220,5 +223,15 @@ export class CoordinationStore {
 
   async removeAll(): Promise<void> {
     await rm(this.dir, { recursive: true, force: true })
+    this.notifyWrite()
+  }
+
+  /** A listener that throws must not fail the write that already landed. */
+  private notifyWrite(): void {
+    try {
+      this.onWrite?.()
+    } catch {
+      // ignore
+    }
   }
 }

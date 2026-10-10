@@ -8,6 +8,8 @@
  * without importing an error class.
  */
 
+import type { EffortLevel } from '../../config/effort.js'
+
 /** The calling session, its project, and the turn making the call. */
 export interface CoordinationCaller {
   sessionId: string
@@ -93,6 +95,8 @@ export interface CoordinationLaneControl {
   /** Drop queued messages, then interrupt the running turn. */
   stop(): Promise<void>
   setModel(key: string): void
+  /** Applied after the model, since the level is clamped against it. */
+  setEffort(level: EffortLevel): void
   state(): { streaming: boolean; pendingApproval: boolean; pendingDialog: boolean }
   onStateChange(listener: () => void): () => void
 }

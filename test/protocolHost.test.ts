@@ -2204,6 +2204,17 @@ test('a coordinator message enqueued on an idle lane is pumped with its origin',
   harness.dispose()
 })
 
+test('CoordinationLaneControl.setEffort applies through the runtime slot', async () => {
+  const harness = await createHarness({ role: 'thread' })
+  harness.host.setEffort('low')
+  harness.send({ type: 'set-effort', id: 'e2', level: 'low' })
+  const reply = await waitFor(
+    () => harness.received.find((e) => e.type === 'reply' && e.id === 'e2'), 'set-effort')
+  assert.ok(reply.type === 'reply')
+  assert.deepEqual(reply.result, { effort: 'low', persisted: false })
+  harness.dispose()
+})
+
 test('stop discards what was queued, then interrupts', async () => {
   const harness = await createHarness({ role: 'thread' })
   harness.setStreaming(true)

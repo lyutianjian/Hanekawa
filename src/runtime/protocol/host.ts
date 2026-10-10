@@ -1264,6 +1264,10 @@ export class SessionHost implements CoordinationLaneControl {
     this.applyModel(key)
   }
 
+  setEffort(level: EffortLevel): void {
+    this.runtimeSlot.setEffort(level)
+  }
+
   state(): { streaming: boolean; pendingApproval: boolean; pendingDialog: boolean } {
     let pendingApproval = false
     let pendingDialog = false

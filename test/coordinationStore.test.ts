@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, writeFile, mkdir } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -150,4 +150,17 @@ test('currentBoard renders fresh', async () => {
   const { store } = await scratch()
   await store.upsertThread(thread('thr_a', { status: 'running', name: 'alpha' }))
   assert.match(await store.currentBoard(), /alpha/)
+})
+
+test('onWrite fires once per update and on removeAll', async (t) => {
+  const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-coord-'))
+  t.after(() => rm(cwd, { recursive: true, force: true }))
+  let writes = 0
+  const store = new CoordinationStore(cwd, { onWrite: () => { writes++ } })
+  await store.upsertThread(thread('thr_a'))
+  assert.equal(writes, 1)
+  await assert.rejects(store.patchThread('thr_missing', {}))
+  assert.equal(writes, 1)
+  await store.removeAll()
+  assert.equal(writes, 2)
 })

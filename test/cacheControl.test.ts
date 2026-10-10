@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   addCacheBreakpoints,
   getCacheControl,
+  promptCacheTtlMs,
   resetCacheTTLEvaluation,
   should1hCacheTTL,
   TRANSIENT_MESSAGE_KEY,
@@ -239,4 +240,24 @@ test('addCacheBreakpoints marks nothing when every message is transient', () => 
   const content = result[0]?.content as Array<Record<string, unknown>>
   assert.equal(content[0]?.cache_control, undefined)
   assert.ok(!(TRANSIENT_MESSAGE_KEY in result[0]))
+})
+
+test('promptCacheTtlMs is 1h by default and 5m when opted out, without latching', () => {
+  resetCacheTTLEvaluation()
+  assert.equal(promptCacheTtlMs({ env: {} }), 3_600_000)
+  assert.equal(promptCacheTtlMs({ settings: { cache: { ttl1h: false } }, env: {} }), 300_000)
+  assert.equal(promptCacheTtlMs({ env: { MYAGENT_PROMPT_CACHE_1H: '0' } }), 300_000)
+  // Evaluating TTL must not latch: a later evaluation with different inputs still answers fresh.
+  assert.equal(promptCacheTtlMs({ settings: { cache: { ttl1h: true } }, env: {} }), 3_600_000)
+  assert.equal(should1hCacheTTL({ settings: { cache: { ttl1h: false } }, env: {} }), false)
+  resetCacheTTLEvaluation()
+})
+
+test('promptCacheTtlMs reads the latched value once one exists', () => {
+  resetCacheTTLEvaluation()
+  assert.equal(should1hCacheTTL({ settings: { cache: { ttl1h: false } }, env: {} }), false)
+  assert.equal(promptCacheTtlMs({ settings: { cache: { ttl1h: true } }, env: {} }), 300_000)
+  resetCacheTTLEvaluation()
+  assert.equal(promptCacheTtlMs({ settings: { cache: { ttl1h: true } }, env: {} }), 3_600_000)
+  resetCacheTTLEvaluation()
 })

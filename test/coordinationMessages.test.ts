@@ -2,6 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   composeThreadKickoff,
+  formatCoordinationUpdate,
+  formatCoordinatorRestore,
+  formatCoordinatorSeed,
   formatThreadNote,
   formatWakeMessage,
   threadSlug,
@@ -88,4 +91,50 @@ test('threadStatusAfterTurn maps each outcome', () => {
   assert.equal(threadStatusAfterTurn({ aborted: false, failed: true, askedQuestion: true }), 'failed')
   assert.equal(threadStatusAfterTurn({ aborted: false, failed: false, askedQuestion: true }), 'awaiting-coordinator')
   assert.equal(threadStatusAfterTurn({ aborted: false, failed: false, askedQuestion: false }), 'idle')
+})
+
+test('formatCoordinationUpdate is empty when there is no snapshot and no notes', () => {
+  assert.equal(formatCoordinationUpdate({ notes: [] }), '')
+  assert.equal(formatCoordinationUpdate({ snapshot: '', notes: [] }), '')
+})
+
+test('formatCoordinationUpdate puts the snapshot first and labels notes as quoted data', () => {
+  const text = formatCoordinationUpdate({ snapshot: 'BOARD', notes: ['note A', 'note B'] })
+  assert.ok(text.indexOf('BOARD') < text.indexOf('note A'))
+  assert.ok(text.includes('quoted output from threads'))
+  assert.ok(text.indexOf('quoted output') < text.indexOf('note A'))
+  assert.ok(text.includes('note B'))
+})
+
+test('formatCoordinationUpdate with only a snapshot has no quoted-notes label', () => {
+  const text = formatCoordinationUpdate({ snapshot: 'BOARD', notes: [] })
+  assert.equal(text, 'BOARD')
+})
+
+test('formatCoordinatorRestore names the board as current state and includes notes', () => {
+  const text = formatCoordinatorRestore({ board: 'BOARD TEXT', notes: ['queued'] })
+  assert.ok(text.includes('Post-compaction restore'))
+  assert.ok(text.includes('current state'))
+  assert.ok(text.includes('BOARD TEXT'))
+  assert.ok(text.includes('quoted output from threads'))
+  assert.ok(text.includes('queued'))
+})
+
+test('formatCoordinatorRestore omits the notes label when there are no notes', () => {
+  const text = formatCoordinatorRestore({ board: 'BOARD TEXT', notes: [] })
+  assert.ok(text.includes('BOARD TEXT'))
+  assert.ok(!text.includes('quoted output from threads'))
+})
+
+test('formatCoordinatorSeed names the previous session and says its history remains there', () => {
+  const text = formatCoordinatorSeed({ previousSessionId: 'sess-1' })
+  assert.ok(text.includes('sess-1'))
+  assert.ok(text.includes('history remains'))
+  assert.ok(text.includes('Project instructions are already in the system prompt'))
+  assert.ok(!text.includes('Summary'))
+})
+
+test('formatCoordinatorSeed includes the summary when present', () => {
+  const text = formatCoordinatorSeed({ previousSessionId: 'sess-1', summary: 'SUMMARY BODY' })
+  assert.ok(text.includes('SUMMARY BODY'))
 })

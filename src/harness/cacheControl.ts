@@ -31,10 +31,24 @@ let latchedTtl1h: boolean | undefined
  */
 export function should1hCacheTTL(runtime?: CacheRuntime): boolean {
   if (latchedTtl1h !== undefined) return latchedTtl1h
-  latchedTtl1h = typeof runtime?.settings?.cache?.ttl1h === 'boolean'
+  latchedTtl1h = evaluate1hCacheTTL(runtime)
+  return latchedTtl1h
+}
+
+function evaluate1hCacheTTL(runtime?: CacheRuntime): boolean {
+  return typeof runtime?.settings?.cache?.ttl1h === 'boolean'
     ? runtime.settings.cache.ttl1h
     : (runtime?.env ?? process.env).MYAGENT_PROMPT_CACHE_1H !== '0'
-  return latchedTtl1h
+}
+
+/**
+ * The cache TTL a request would be written with, in milliseconds. Reads the
+ * latched value when one exists; otherwise evaluates without latching, so
+ * callers that only need to know the TTL (idle timing) never pin it.
+ */
+export function promptCacheTtlMs(runtime?: CacheRuntime): number {
+  const ttl1h = latchedTtl1h ?? evaluate1hCacheTTL(runtime)
+  return ttl1h ? 3_600_000 : 300_000
 }
 
 /** Clear the latched TTL so the next {@link should1hCacheTTL} re-evaluates. */

@@ -12,6 +12,8 @@ import type {
 } from '../harness/types.js'
 import { getRecordsAfterLastCompact } from '../harness/requestPrep.js'
 import { promptTokens } from '../harness/usage.js'
+import { promptCacheTtlMs } from '../harness/cacheControl.js'
+import { shouldIdleCompact } from './coordination/contextPolicy.js'
 import { isSystemReminderBlock } from '../harness/systemReminder.js'
 import { countSessionRecordsTokens } from '../prompts/budget.js'
 import { generateSessionTitle } from '../harness/sessionTitle.js'
@@ -193,6 +195,8 @@ export class SessionController {
   private readonly ledger: SessionRecordLedger
   /** Last record the most recent request carried; everything after it is estimated. */
   private usageAnchorRecordId: string | undefined
+  /** When the last provider response landed; idle compaction measures from here. */
+  private lastRequestAt: number | undefined
   /** Memo for {@link contextUsed}, invalidated by either input that feeds it. */
   private contextUsedMemo:
     | { anchor: string | undefined; size: number; base: number | undefined; tokens: number }
@@ -295,9 +299,10 @@ export class SessionController {
     const loop = agentSession.loop
     const messageId = randomUUID()
     const origin: TurnOrigin = options?.origin ?? 'user'
-    const runOverrides: AgentRunOverrides | undefined = handoff
+    let runOverrides: AgentRunOverrides | undefined = handoff
       ? { ...options, sourceQueuedMessageId: handoff.queuedMessageId }
       : options
+    if (this.shouldCompactIdle(loop)) runOverrides = { ...runOverrides, compactBeforeSend: true }
     let failed = false
 
     // Submission preparation (design §9.2): the new-image gate runs before
@@ -545,7 +550,33 @@ export class SessionController {
     this.runReportedUsage = addTokenUsage(this.runReportedUsage, usage)
     this.usage = { lastRequest: usage, total: addTokenUsage(this.usage.total, usage) }
     this.usageAnchorRecordId = anchorRecordId
+    this.lastRequestAt = Date.now()
     this.publish()
+  }
+
+  /** Coordinator sessions only: the prompt cache went cold while idle and the context is big enough to compact. */
+  private shouldCompactIdle(loop: AgentSession['loop']): boolean {
+    if (this.session.coordination?.role !== 'coordinator') return false
+    let at = this.lastRequestAt
+    if (at === undefined) {
+      const records = this.ledger.list()
+      for (let i = records.length - 1; i >= 0; i--) {
+        const record = records[i]!
+        if (record.type === 'message' && record.role === 'assistant') {
+          const parsed = Date.parse(record.createdAt)
+          if (Number.isFinite(parsed)) at = parsed
+          break
+        }
+      }
+    }
+    if (at === undefined) return false
+    const lastRequest = this.usage.lastRequest
+    return shouldIdleCompact({
+      idleMs: Date.now() - at,
+      cacheTtlMs: promptCacheTtlMs(),
+      ...(lastRequest ? { occupiedTokens: promptTokens(lastRequest) } : {}),
+      usableContextWindow: loop.getContextBudget().usableContextWindow,
+    })
   }
 
   /**

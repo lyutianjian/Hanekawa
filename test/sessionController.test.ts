@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { mock } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
@@ -8,6 +8,7 @@ import { SessionController, type SessionEvent } from '../src/runtime/sessionCont
 import { createRecordProxy } from '../src/runtime/bridges.js'
 import { SessionStore } from '../src/sessions/service.js'
 import type { SessionMeta } from '../src/sessions/service.js'
+import type { CoordinationRole } from '../src/harness/types.js'
 import type {
   AgentRunResult,
   SessionRecord,
@@ -60,13 +61,18 @@ async function createHarness(options: {
   untitled?: boolean
   /** The stub loop's image capability; defaults to capable. */
   imageCapable?: boolean
+  /** Coordination role stamped on the session. */
+  role?: CoordinationRole
+  /** The stub loop's usable context window. */
+  usableContextWindow?: number
   /** What the side model answers when asked to name the session. */
   titleReply?: string
 } = {}): Promise<Harness> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'myagent-controller-'))
   const store = new SessionStore(cwd)
   await store.init()
-  const session = options.untitled ? await store.create() : await store.create('controller test')
+  let session = options.untitled ? await store.create() : await store.create('controller test')
+  if (options.role) session = { ...session, coordination: { role: options.role, projectKey: 'p' } }
 
   const snapshotCalls: string[] = []
   const trackedFiles: string[] = []
@@ -89,6 +95,7 @@ async function createHarness(options: {
     assertImagesAllowedForSubmission: (input: UserInput) =>
       assertNewImagesAllowed(input.images, options.imageCapable !== false, 'test-model'),
     invalidateRecordsCache: () => { counters.invalidateCalls += 1 },
+    getContextBudget: () => ({ usableContextWindow: options.usableContextWindow ?? 1000 }),
   }
 
   const fileHistoryService = {
@@ -1012,4 +1019,39 @@ test('turn events carry the origin and whether the turn failed', async () => {
   await bad.controller.submit({ text: 'a' })
   const end = bad.events.at(-1)
   assert.ok(end?.type === 'turn-end' && end.failed === true && end.origin === 'user')
+})
+
+async function idleOverride(options: { role?: CoordinationRole; tokens?: number; idleMs: number }): Promise<unknown> {
+  mock.timers.enable({ apis: ['Date'], now: 1_000_000 })
+  try {
+    let seen: { compactBeforeSend?: boolean } | undefined
+    const harness = await createHarness({
+      ...(options.role ? { role: options.role } : {}),
+      run: async (_input, _signal, _id, overrides) => {
+        seen = overrides as { compactBeforeSend?: boolean } | undefined
+        return okResult()
+      },
+    })
+    if (options.tokens !== undefined) harness.proxy.onRequestUsage(usage(options.tokens, 1))
+    mock.timers.tick(options.idleMs)
+    await harness.controller.submit({ text: 'hi' })
+    return seen?.compactBeforeSend
+  } finally {
+    mock.timers.reset()
+  }
+}
+
+test('idle compaction: a coordinator past the cache TTL and over 40% compacts before sending', async () => {
+  assert.equal(await idleOverride({ role: 'coordinator', tokens: 500, idleMs: 3_700_000 }), true)
+})
+
+test('idle compaction: under 40%, within the TTL, or not a coordinator, nothing is forced', async () => {
+  assert.equal(await idleOverride({ role: 'coordinator', tokens: 300, idleMs: 3_700_000 }), undefined)
+  assert.equal(await idleOverride({ role: 'coordinator', tokens: 500, idleMs: 60_000 }), undefined)
+  assert.equal(await idleOverride({ role: 'thread', tokens: 500, idleMs: 3_700_000 }), undefined)
+  assert.equal(await idleOverride({ tokens: 500, idleMs: 3_700_000 }), undefined)
+})
+
+test('idle compaction: unknown occupancy never forces a compaction', async () => {
+  assert.equal(await idleOverride({ role: 'coordinator', idleMs: 3_700_000 }), undefined)
 })

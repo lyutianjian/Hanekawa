@@ -262,7 +262,7 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(async () => {
     // No application menu (5g): the window is frameless, and Electron's default
     // menu is an English File/Edit/View/Window bar in an otherwise Chinese
-    // interface. The renderer draws 文件 / 视图 / 帮助 in the title bar instead,
+    // interface. The renderer draws 文件 / 视图 in the title bar instead,
     // and the editing accelerators a textarea needs are the platform's own.
     // Not on darwin, where removing the menu also removes 退出 and the standard
     // clipboard roles, and the traffic lights are drawn by the OS regardless.

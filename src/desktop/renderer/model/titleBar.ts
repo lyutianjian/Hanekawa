@@ -65,11 +65,6 @@ export function titleBarMenus(platform: DesktopPlatform): readonly TitleBarMenu[
         { action: 'toggle-browser', label: '显示 / 隐藏浏览器', chord: '' },
       ],
     },
-    {
-      id: 'help',
-      label: '帮助',
-      items: [{ action: 'toggle-help', label: '快捷键', chord: '' }],
-    },
   ]
 }
 

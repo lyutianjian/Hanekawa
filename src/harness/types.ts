@@ -500,8 +500,13 @@ export interface AttachmentBytesLoader {
   >
 }
 
+/** A session's part in a project's coordination (see `services/coordination/`). */
+export type CoordinationRole = 'coordinator' | 'thread'
+
 export interface ToolContext {
   cwd: string
+  /** Key for per-project data dirs (plans, memory, spill, transcripts). Absent means `cwd`. */
+  projectDir?: string
   sessionId: string
   readFiles: Set<string>
   readFileState?: Map<string, ReadFileState>
@@ -640,6 +645,8 @@ export interface TaskDisplayCounts {
 
 export interface Tool {
   name: string
+  /** When set, the tool is offered only to sessions with one of these roles. Absent means available to everyone. */
+  sessionRoles?: readonly CoordinationRole[]
   description: string
   inputSchema: ZodTypeAny
   apiInputSchema?: JsonSchema

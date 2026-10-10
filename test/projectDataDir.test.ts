@@ -10,6 +10,7 @@ import {
   getProjectDataDir,
   getProjectMemoryDir,
   getProjectPlansDir,
+  getCoordinationNotesDir,
   getSessionsDir,
   getToolResultSpillDir,
   projectDataKey,
@@ -30,6 +31,28 @@ test('the key is readable and still tells apart paths that flatten alike', () =>
   assert.match(key, /Users-me-code-foo-[0-9a-f]{8}$/i)
   assert.notEqual(projectDataKey('/a/b-c'), projectDataKey('/a/b/c'))
   assert.equal(path.dirname(getProjectDataDir('/a/b')), path.join(os.homedir(), '.myagent', 'projects'))
+})
+
+test('resolveToolPath takes data roots from projectDir while resolving against cwd', async () => {
+  const projectDir = await makeProject()
+  const worktree = await makeProject()
+  try {
+    const context = { cwd: worktree, projectDir, sessionId: 'session-a' }
+    for (const p of [
+      path.join(getProjectPlansDir(projectDir), 'p.md'),
+      path.join(getProjectMemoryDir(projectDir), 'n.md'),
+      path.join(getCoordinationNotesDir(projectDir), 't.md'),
+      path.join(getToolResultSpillDir(projectDir, 'session-a'), 'x.txt'),
+    ]) assert.equal(resolveToolPath(context, p), p)
+    assert.equal(resolveToolPath(context, 'a.ts'), path.join(worktree, 'a.ts'))
+    assert.throws(() => resolveToolPath(context, path.join(getProjectPlansDir(worktree), 'p.md')), /runtime data/)
+    assert.throws(() => resolveToolPath(context, path.join(getProjectMemoryDir(worktree), 'n.md')), /runtime data/)
+    assert.throws(() => resolveToolPath(context, path.join(getToolResultSpillDir(worktree, 'session-a'), 'x.txt')), /runtime data/)
+    assert.throws(() => resolveToolPath(context, path.join(getSessionsDir(projectDir), 'index.json')), /runtime data/)
+  } finally {
+    await rm(projectDir, { recursive: true, force: true })
+    await rm(worktree, { recursive: true, force: true })
+  }
 })
 
 test('a session with records leaves no .myagent in the project', async () => {

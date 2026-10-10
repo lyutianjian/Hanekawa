@@ -122,3 +122,19 @@ test('removeServerTools drops a server from every registered array, in place', (
   registry.removeServerTools('a')
   assert.deepEqual(toolNames(runtimeTools), ['Read', 'mcp__b__one', 'Agent'])
 })
+
+test('role-filtered tool sets stay filtered across MCP refresh', () => {
+  const roleTool = { ...testTool('Spawn'), sessionRoles: ['coordinator'] } as Tool
+  const registry = new ToolRegistry([testTool('Read'), roleTool, testTool('EnterPlanMode'), testTool('ExitPlanMode')])
+  const normal = registry.buildRuntimeTools()
+  const coordinator = registry.buildRuntimeTools('coordinator')
+  registry.register(normal)
+  registry.register(coordinator, 'coordinator')
+  assert.deepEqual(toolNames(normal), ['Read', 'EnterPlanMode', 'ExitPlanMode'])
+  assert.deepEqual(toolNames(coordinator), ['Read', 'Spawn'])
+
+  coordinator.push(testTool('Agent'))
+  registry.setServerTools('github', [testTool('mcp__github__search')])
+  assert.deepEqual(toolNames(normal), ['Read', 'EnterPlanMode', 'ExitPlanMode', 'mcp__github__search'])
+  assert.deepEqual(toolNames(coordinator), ['Read', 'Spawn', 'mcp__github__search', 'Agent'])
+})

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { getSessionsDir } from '../utils/paths.js'
 import { migrateLegacyProjectData, type LegacyDataFinding } from './legacyProjectData.js'
 import { readJsonFile, writeJsonFile, parseJsonLines, parseJsonLinesWithDiagnostics } from '../utils/json.js'
-import type { SessionRecord, TokenUsage } from '../harness/types.js'
+import type { CoordinationRole, SessionRecord, TokenUsage } from '../harness/types.js'
 import type { SessionMetricInput, SessionMetric } from '../harness/metrics.js'
 import { OtlpMetricExporter } from '../harness/otlp.js'
 import { checkSessionInvariants, ensureToolResultPairing } from './invariants.js'
@@ -58,9 +58,11 @@ export interface SessionMeta {
 }
 
 export interface SessionCoordination {
-  role: 'coordinator' | 'thread'
+  role: CoordinationRole
   projectKey: string
   threadId?: string
+  /** The thread's worktree path. Absent means the project's cwd. */
+  workingDir?: string
 }
 
 interface SessionState {

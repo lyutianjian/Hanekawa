@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { withFileLock } from '../../sessions/fileLock.js'
-import { getProjectDataDir } from '../../utils/paths.js'
+import { getCoordinationNotesDir, getProjectDataDir } from '../../utils/paths.js'
 import { enqueueNote as enqueueNoteInto } from './noteQueue.js'
 import type { CoordinationFile, CoordinatorNote, CoordinatorState, ThreadRecord } from './types.js'
 
@@ -23,8 +23,10 @@ export class CoordinationStore {
   private readonly dir: string
   private readonly filePath: string
   private readonly lockPath: string
+  private readonly projectCwd: string
 
   constructor(cwd: string) {
+    this.projectCwd = cwd
     this.dir = path.join(getProjectDataDir(cwd), 'coordination')
     this.filePath = path.join(this.dir, 'coordination.json')
     this.lockPath = `${this.filePath}.lock`
@@ -157,7 +159,7 @@ export class CoordinationStore {
 
   /** The shared notes directory; not created until something writes into it. */
   threadsDir(): string {
-    return path.join(this.dir, 'notes')
+    return getCoordinationNotesDir(this.projectCwd)
   }
 
   async removeAll(): Promise<void> {

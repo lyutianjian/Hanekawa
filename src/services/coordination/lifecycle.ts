@@ -12,16 +12,9 @@
  * - A negative or non-finite setting is treated as the default; 0 disables that rule.
  */
 
-export type ThreadStatus =
-  | 'running'
-  | 'idle'
-  | 'awaiting-coordinator'
-  | 'needs-you'
-  | 'failed'
-  | 'interrupted'
-  | 'quiet'
-  | 'resolved'
-  | 'stale'
+import type { ThreadStatus } from './types.js'
+
+export type { ThreadStatus }
 
 export const DEFAULT_QUIET_DAYS = 3
 export const DEFAULT_AUTO_RESOLVE_DAYS = 7

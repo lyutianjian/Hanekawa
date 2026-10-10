@@ -7,6 +7,8 @@ import path from 'node:path'
 import { getGlobalMyAgentDir } from '../src/utils/paths.js'
 import { ConfigService } from '../src/config/service.js'
 import {
+  validateSettings,
+  type MyAgentSettings,
   loadLocalSettings,
   loadMergedSettings,
   localSettingsPath,
@@ -428,4 +430,36 @@ test('the project layer cannot pick the startup mode or pre-trust MCP servers', 
       assert.equal(merged.mcp?.trustedServers, undefined)
     },
   )
+})
+
+test('coordination: fields merge across layers, each one independently', async () => {
+  const home = process.env.USERPROFILE!
+  await mkdir(path.join(home, '.myagent'), { recursive: true })
+  await writeFile(
+    path.join(home, '.myagent', 'settings.json'),
+    JSON.stringify({ coordination: { quietDays: 5, threadModel: 'user-model' } }),
+    'utf8',
+  )
+  await withLocalLayer({ coordination: { autoResolveDays: 0 } }, async (cwd) => {
+    const merged = await loadMergedSettings(cwd)
+    assert.deepEqual(merged.coordination, { quietDays: 5, threadModel: 'user-model', autoResolveDays: 0 })
+
+    await mkdir(path.dirname(localSettingsPath(cwd)), { recursive: true })
+    await writeFile(localSettingsPath(cwd), JSON.stringify({ coordination: { quietDays: 2 } }), 'utf8')
+    const overridden = await loadMergedSettings(cwd)
+    assert.equal(overridden.coordination?.quietDays, 2)
+    assert.equal(overridden.coordination?.autoResolveDays, 0)
+    assert.equal(overridden.coordination?.threadModel, 'user-model')
+  })
+})
+
+test('coordination: negative or non-finite days and non-string models are rejected', () => {
+  const invalid = (coordination: Record<string, unknown>) =>
+    validateSettings({ coordination } as MyAgentSettings)
+
+  assert.match(invalid({ quietDays: -1 }).errors.join('\n'), /coordination\.quietDays must be a finite number >= 0/)
+  assert.match(invalid({ autoResolveDays: Number.NaN }).errors.join('\n'), /coordination\.autoResolveDays/)
+  assert.match(invalid({ coordinatorModel: 3 }).errors.join('\n'), /coordination\.coordinatorModel must be a string/)
+  assert.match(invalid({ threadEffort: 'extreme' }).errors.join('\n'), /coordination\.threadEffort/)
+  assert.equal(invalid({ quietDays: 0, autoResolveDays: 7.5, threadModel: 'm' }).valid, true)
 })

@@ -196,6 +196,15 @@ export function getCoordinationNotesDir(projectDir: string): string {
 }
 
 /**
+ * Where a coordination thread's git worktree lives. Outside `~/.myagent` (the
+ * file tools' hard wall), outside the project, and not in tmpdir (swept while a
+ * thread is still alive).
+ */
+export function getThreadWorktreeDir(projectDir: string, threadId: string): string {
+  return path.join(userHome(), '.myagent-worktrees', projectDataKey(projectDir), threadId)
+}
+
+/**
  * The file tools' path guard. The workspace boundary is not decided here: the
  * risk classifier grades a path outside it and the permission gate rules on
  * that grade, as it does for Bash. The one hard wall is Hanekawa's own

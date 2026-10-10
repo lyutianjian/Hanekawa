@@ -9,6 +9,15 @@ export type ThreadStatus =
   | 'resolved'
   | 'stale'
 
+export interface ThreadWorktree {
+  /** The worktree root. */
+  path: string
+  branch: string
+  baseRef: string
+  /** Where the thread works: the project cwd's counterpart inside the worktree. */
+  cwd: string
+}
+
 export interface ThreadRecord {
   threadId: string
   sessionId: string
@@ -17,7 +26,8 @@ export interface ThreadRecord {
   brief: string
   background: string
   status: ThreadStatus
-  worktree?: { path: string; branch: string }
+  worktree?: ThreadWorktree
+  merge?: { conflict?: boolean; dismissedHead?: string }
   createdAt: string
   lastActivityAt: string
   statusLine?: string

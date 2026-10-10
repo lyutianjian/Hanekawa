@@ -78,7 +78,7 @@ test('deleting a thread session removes its git worktree and branch', async () =
     try {
       git('worktree', 'add', '-q', '-b', 'thread/a', wt)
       const coord = new CoordinationStore(cwd)
-      await coord.upsertThread(thread('thr_a', T1, { worktree: { path: wt, branch: 'thread/a' } }))
+      await coord.upsertThread(thread('thr_a', T1, { worktree: { path: wt, branch: 'thread/a', baseRef: 'HEAD', cwd: wt } }))
       await deleteSessionArtifacts(cwd, noopStore, T1)
       assert.equal(existsSync(wt), false)
       assert.equal(git('branch', '--list', 'thread/a').trim(), '')
